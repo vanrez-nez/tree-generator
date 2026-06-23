@@ -4,6 +4,7 @@ import type {
   JointDocument,
   ModifierDocument,
 } from "./graph/document";
+import type { ModifierEnvelope } from "./graph/modifiers/modifier";
 
 // Domain layer: assembles a tree (trunk, branches, roots) as a plain line graph using the
 // generic graph primitives + modifiers. The graph engine stays tree-agnostic; all tree
@@ -118,7 +119,20 @@ function addSubLimbs(
   }
 }
 
-// The trunk: a single leader from the ground to the tip, gnarled and twisted.
+// Fades a modifier's displacement in from the base (t = 0), so the ground point is left
+// untouched — keeping the trunk anchored at the origin while it gnarls/twists higher up.
+function footAnchorEnvelope(): ModifierEnvelope {
+  return {
+    fadeInEnabled: true,
+    fadeIn: { min: 0, max: 0.08 },
+    fadeOutEnabled: false,
+    fadeOut: { min: 0.5, max: 1 },
+    curve: [0.5, 0, 0.5, 1],
+  };
+}
+
+// The trunk: a single leader from the ground to the tip, gnarled and twisted. Its base point
+// stays anchored at the origin (smooth pins endpoints; gnarl/twist fade in from the foot).
 function buildTrunk(params: TreeParams): GraphLineDocument {
   return {
     id: TRUNK_ID,
@@ -129,8 +143,16 @@ function buildTrunk(params: TreeParams): GraphLineDocument {
     ],
     modifiers: [
       { type: "smooth", params: { mode: "laplacian", segments: 24 } },
-      { type: "gnarl", params: { amount: 1, amplitude: 0.18, cycles: 1.6 } },
-      { type: "twist", params: { amount: 0.6, radius: 0.06, turns: 1 } },
+      {
+        type: "gnarl",
+        envelope: footAnchorEnvelope(),
+        params: { amount: 1, amplitude: 0.18, cycles: 1.6 },
+      },
+      {
+        type: "twist",
+        envelope: footAnchorEnvelope(),
+        params: { amount: 0.6, radius: 0.06, turns: 1 },
+      },
     ],
   };
 }
