@@ -52,7 +52,7 @@ function animate(timestamp?: number): void {
   stats.begin();
   timer.update(timestamp);
 
-  mainScene.update(timer.getDelta());
+  mainScene.update(timer.getDelta(), camera);
   controls.update();
   renderer.render(mainScene.scene, camera);
   stats.end();
