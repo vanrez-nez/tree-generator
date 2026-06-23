@@ -301,16 +301,39 @@ function buildLineLayers(): void {
 }
 
 function buildJointsPage(): void {
-  for (const { document } of mainScene.graph.getJointEntries()) {
-    const folder = jointsPage.addFolder({ title: document.id });
-    const jointView = {
-      id: document.id,
-      source: `${document.sourceLineId} @ ${document.sourceT.toFixed(2)}`,
-      target: `${document.targetLineId}[${document.targetPointIndex}]`,
-    };
+  for (const { document, joint } of mainScene.graph.getJointEntries()) {
+    // Collapsed by default; populate the bindings only the first time the folder is expanded,
+    // so opening the Joints tab doesn't build controls for every joint at once.
+    const folder = jointsPage.addFolder({ title: document.id, expanded: false });
+    let built = false;
 
-    folder.addBinding(jointView, "id", { readonly: true });
-    folder.addBinding(jointView, "source", { readonly: true });
-    folder.addBinding(jointView, "target", { readonly: true });
+    folder.on("fold", (event) => {
+      if (built || !event.expanded) {
+        return;
+      }
+      built = true;
+
+      const jointView = {
+        id: document.id,
+        parent: `${document.parentLineId} @ ${document.parentT.toFixed(2)}`,
+        child: `${document.childLineId}[${document.childPointIndex}]`,
+      };
+
+      folder.addBinding(jointView, "id", { readonly: true });
+      folder.addBinding(jointView, "parent", { readonly: true });
+      folder.addBinding(jointView, "child", { readonly: true });
+      folder.addBinding(joint, "maxLeanAngle", {
+        label: "Max lean (°)",
+        min: 0,
+        max: 90,
+        step: 1,
+      });
+      folder.addBinding(joint, "directionPoints", {
+        label: "Direction points",
+        min: 1,
+        max: 16,
+        step: 1,
+      });
+    });
   }
 }

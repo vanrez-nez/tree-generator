@@ -55,23 +55,25 @@ export class Graph {
   }
 
   addJoint(jointDocument: JointDocument): Joint | undefined {
-    const sourceLine = this.lineEntries.get(jointDocument.sourceLineId);
-    const targetLine = this.lineEntries.get(jointDocument.targetLineId);
+    const parentLine = this.lineEntries.get(jointDocument.parentLineId);
+    const childLine = this.lineEntries.get(jointDocument.childLineId);
 
-    if (!sourceLine || !targetLine || sourceLine === targetLine) {
+    if (!parentLine || !childLine || parentLine === childLine) {
       return undefined;
     }
 
-    if (!targetLine.points[jointDocument.targetPointIndex]) {
+    if (!childLine.points[jointDocument.childPointIndex]) {
       return undefined;
     }
 
     const joint = new Joint({
       id: jointDocument.id,
-      sourceLine,
-      sourceT: jointDocument.sourceT,
-      targetLine,
-      targetPointIndex: jointDocument.targetPointIndex,
+      parentLine,
+      parentT: jointDocument.parentT,
+      childLine,
+      childPointIndex: jointDocument.childPointIndex,
+      maxLeanAngle: jointDocument.maxLeanAngle,
+      directionPoints: jointDocument.directionPoints,
     });
 
     this.jointEntries.push({

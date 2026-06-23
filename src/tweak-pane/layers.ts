@@ -64,6 +64,7 @@ type LayerRecord = {
   type: string
   handle: LayerHandle
   controls: BladeApi[]
+  built: boolean
 }
 
 export function createLayers(
@@ -85,7 +86,33 @@ export function createLayers(
     return records.get(id)?.handle ?? null
   }
 
+  // Build a layer's controls on first reveal so panels with many/expensive controls (modifier
+  // stacks, envelope pickers) aren't all constructed up front for every layer.
+  function ensureBuilt(record: LayerRecord): void {
+    if (record.built) {
+      return
+    }
+    record.built = true
+    const type = types.get(record.type)
+    if (!type) {
+      return
+    }
+    const startIndex = folder.children.length
+    type.build(folder, record.handle)
+    const built = folder.children.slice(startIndex)
+    for (const control of built) {
+      control.hidden = true
+      record.controls.push(control)
+    }
+  }
+
   function showOnly(selectedId: string | null): void {
+    if (selectedId) {
+      const selected = records.get(selectedId)
+      if (selected) {
+        ensureBuilt(selected)
+      }
+    }
     for (const record of records.values()) {
       const hidden = record.id !== selectedId
       for (const control of record.controls) {
@@ -122,8 +149,8 @@ export function createLayers(
             : ({} as unknown),
     }
 
-    // Add this layer's controls straight into the layers folder, then track the blades
-    // that were created so they can be shown/hidden as a group on selection.
+    // Add the name field eagerly (cheap, drives the row label), but DEFER `type.build` — which
+    // may create many/expensive controls — until the layer is first selected (see `ensureBuilt`).
     const startIndex = folder.children.length
     // Tweakpane-native rename: editing the name field updates the row label live.
     folder
@@ -131,13 +158,18 @@ export function createLayers(
       .on('change', (event) => {
         blade.setName(handle.id, event.value)
       })
-    type.build(folder, handle)
     const controls = folder.children.slice(startIndex)
     for (const control of controls) {
       control.hidden = true
     }
 
-    records.set(handle.id, { id: handle.id, type: type.name, handle, controls })
+    records.set(handle.id, {
+      id: handle.id,
+      type: type.name,
+      handle,
+      controls,
+      built: false,
+    })
     blade.addItem({
       id: handle.id,
       name: handle.name,

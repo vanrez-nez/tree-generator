@@ -57,10 +57,12 @@ export type GraphLineDocument = {
 
 export type JointDocument = {
   id: string;
-  sourceLineId: string;
-  sourceT: number;
-  targetLineId: string;
-  targetPointIndex: number;
+  parentLineId: string;
+  parentT: number;
+  childLineId: string;
+  childPointIndex: number;
+  maxLeanAngle?: number;
+  directionPoints?: number;
 };
 
 export type GraphDocument = {

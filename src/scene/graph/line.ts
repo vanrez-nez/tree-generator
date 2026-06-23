@@ -66,6 +66,22 @@ export class VirtualLine {
     return this.getPointAt(step / steps);
   }
 
+  // Samples the structural (pre-modifier) skeleton, so callers that care about a
+  // line's authored direction aren't thrown off by twist/gnarl/coil wiggle.
+  getBasePointAt(t: number): THREE.Vector3 {
+    const basePoints = this.points;
+
+    if (basePoints.length === 0) {
+      return new THREE.Vector3();
+    }
+
+    if (basePoints.length === 1) {
+      return basePoints[0].clone();
+    }
+
+    return getLinearPointAt(basePoints, clamp01(t));
+  }
+
   getDrawPoints(): THREE.Vector3[] {
     return this.getTransformedPoints();
   }
@@ -371,6 +387,10 @@ export class GraphLine {
 
   getDrawnPointForIndex(index: number): THREE.Vector3 {
     return this.virtual.getDrawnPointForIndex(index);
+  }
+
+  getBasePointAt(t: number): THREE.Vector3 {
+    return this.virtual.getBasePointAt(t);
   }
 
   updateDrawing(camera?: THREE.Camera, viewportSize?: THREE.Vector2): void {
