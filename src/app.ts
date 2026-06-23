@@ -8,10 +8,6 @@ import {
   StatsPanePluginBundle,
 } from "./tweak-pane/stats-blade";
 
-const params = {
-  color: "#8fd3ff",
-};
-
 const app = document.querySelector<HTMLDivElement>("#app");
 
 if (!app) {
@@ -35,16 +31,12 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 const controls = new OrbitControls(camera, sceneCanvas);
 controls.enableDamping = true;
 
-const mainScene = new MainScene(params.color);
+const mainScene = new MainScene();
 
 const pane = new Pane({ container: paneHost, title: "Settings" });
 pane.registerPlugin(StatsPanePluginBundle);
 const stats = pane.addBlade({ view: "stats" }) as StatsBladeApi;
 stats.setRenderer(renderer.capabilities.isWebGL2 ? "WebGL2" : "WebGL");
-
-pane.addBinding(params, "color").on("change", () => {
-  mainScene.setCubeColor(params.color);
-});
 
 const timer = new THREE.Timer();
 timer.connect(document);
