@@ -13,6 +13,7 @@ import {
   StatsBladeApi,
   StatsPanePluginBundle,
 } from "./tweak-pane/stats-blade";
+import { createLayers, LayersPluginBundle } from "./tweak-pane/layers";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -43,13 +44,14 @@ const rendererSize = new THREE.Vector2();
 const pane = new Pane({ container: paneHost, title: "Settings" });
 pane.registerPlugin(EssentialsPlugin);
 pane.registerPlugin(StatsPanePluginBundle);
+pane.registerPlugin(LayersPluginBundle);
 const stats = pane.addBlade({ view: "stats" }) as StatsBladeApi;
 stats.setRenderer(renderer.capabilities.isWebGL2 ? "WebGL2" : "WebGL");
 
 const tab = pane.addTab({
-  pages: [{ title: "Line" }, { title: "Joints" }],
+  pages: [{ title: "Line" }, { title: "Joints" }, { title: "Layers" }],
 });
-const [linePage, jointsPage] = tab.pages;
+const [linePage, jointsPage, layersPage] = tab.pages;
 let selectedLineFolder: FolderApi | null = null;
 
 linePage
@@ -65,6 +67,7 @@ linePage
 
 rebuildSelectedLineFolder();
 buildJointsPage();
+buildLayersPage();
 
 const timer = new THREE.Timer();
 timer.connect(document);
@@ -198,6 +201,54 @@ function addModifierControls(parentFolder: FolderApi, modifier: LineModifier): v
   }
 
   addModifierEnvelopeControls(folder, modifier);
+}
+
+function buildLayersPage(): void {
+  createLayers(layersPage, {
+    types: [
+      {
+        name: "Smooth",
+        createState: () => ({ strength: 0.5, iterations: 4 }),
+        build: (folder, layer) => {
+          folder.addBinding(layer.state, "strength", {
+            min: 0,
+            max: 1,
+            step: 0.01,
+          });
+          folder.addBinding(layer.state, "iterations", {
+            min: 1,
+            max: 24,
+            step: 1,
+          });
+        },
+      },
+      {
+        name: "Gnarl",
+        createState: () => ({ amount: 1, amplitude: 0.25 }),
+        build: (folder, layer) => {
+          folder.addBinding(layer.state, "amount", {
+            min: 0,
+            max: 2,
+            step: 0.01,
+          });
+          folder.addBinding(layer.state, "amplitude", {
+            min: 0,
+            max: 0.75,
+            step: 0.01,
+          });
+        },
+      },
+    ],
+    onSelect: (layer) => {
+      console.log("[layers] select", layer ? layer.id : null);
+    },
+    onVisibility: (layer) => {
+      console.log("[layers] visibility", layer.id, layer.visible);
+    },
+    onReorder: (layers) => {
+      console.log("[layers] reorder", layers.map((layer) => layer.id));
+    },
+  });
 }
 
 function buildJointsPage(): void {
