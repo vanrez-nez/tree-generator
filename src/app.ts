@@ -2,8 +2,12 @@ import "./style.css";
 import * as EssentialsPlugin from "@tweakpane/plugin-essentials";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { Pane } from "tweakpane";
+import { FolderApi, Pane } from "tweakpane";
 import { MainScene } from "./scene/main";
+import type { LineModifier } from "./scene/graph/modifiers/modifier";
+import { GnarlModifier } from "./scene/graph/modifiers/gnarl";
+import { SmoothModifier } from "./scene/graph/modifiers/smooth";
+import { TwistModifier } from "./scene/graph/modifiers/twist";
 import { addModifierEnvelopeControls } from "./tweak-pane/modifier-envelope";
 import {
   StatsBladeApi,
@@ -42,102 +46,26 @@ pane.registerPlugin(StatsPanePluginBundle);
 const stats = pane.addBlade({ view: "stats" }) as StatsBladeApi;
 stats.setRenderer(renderer.capabilities.isWebGL2 ? "WebGL2" : "WebGL");
 
-const lineFolder = pane.addFolder({ title: "Line" });
-lineFolder.addBinding(mainScene, "linePreset", {
-  label: "preset",
-  options: {
-    Vertical: "vertical",
-    "L-Line": "l-line",
-  },
+const tab = pane.addTab({
+  pages: [{ title: "Line" }, { title: "Joints" }],
 });
-lineFolder.addBinding(mainScene.line, "pointCount", {
-  readonly: true,
-});
-lineFolder.addBinding(mainScene.line, "thickness", {
-  min: 1,
-  max: 10,
-  step: 1,
-});
-lineFolder.addBinding(mainScene.line, "debugT", {
-  min: 0,
-  max: 1,
-  step: 0.01,
-});
-lineFolder.addBinding(mainScene.line, "debugPointVisible");
-lineFolder.addBinding(mainScene.line, "debugLinePointsVisible");
+const [linePage, jointsPage] = tab.pages;
+let selectedLineFolder: FolderApi | null = null;
 
-const gnarlFolder = pane.addFolder({ title: "Gnarl" });
-gnarlFolder.addBinding(mainScene.gnarlModifier, "enabled");
-gnarlFolder.addBinding(mainScene.gnarlModifier.params, "seed", {
-  min: 0,
-  max: 100000,
-  step: 1,
-});
-gnarlFolder.addBinding(mainScene.gnarlModifier.params, "amount", {
-  min: 0,
-  max: 2,
-  step: 0.01,
-});
-gnarlFolder.addBinding(mainScene.gnarlModifier.params, "amplitude", {
-  min: 0,
-  max: 0.75,
-  step: 0.01,
-});
-gnarlFolder.addBinding(mainScene.gnarlModifier.params, "cycles", {
-  min: 0.1,
-  max: 8,
-  step: 0.1,
-});
-addModifierEnvelopeControls(gnarlFolder, mainScene.gnarlModifier);
+linePage
+  .addBinding(mainScene, "selectedLineId", {
+    label: "line",
+    options: Object.fromEntries(
+      mainScene.graph.getLineEntries().map(({ id }) => [id, id]),
+    ),
+  })
+  .on("change", () => {
+    rebuildSelectedLineFolder();
+  });
 
-const twistFolder = pane.addFolder({ title: "Twist" });
-twistFolder.addBinding(mainScene.twistModifier, "enabled");
-twistFolder.addBinding(mainScene.twistModifier.params, "seed", {
-  min: 0,
-  max: 100000,
-  step: 1,
-});
-twistFolder.addBinding(mainScene.twistModifier.params, "amount", {
-  min: 0,
-  max: 2,
-  step: 0.01,
-});
-twistFolder.addBinding(mainScene.twistModifier.params, "radius", {
-  min: 0,
-  max: 0.5,
-  step: 0.01,
-});
-twistFolder.addBinding(mainScene.twistModifier.params, "turns", {
-  min: 0,
-  max: 8,
-  step: 0.1,
-});
-addModifierEnvelopeControls(twistFolder, mainScene.twistModifier);
+rebuildSelectedLineFolder();
+buildJointsPage();
 
-const smoothFolder = pane.addFolder({ title: "Smooth" });
-smoothFolder.addBinding(mainScene.smoothModifier, "enabled");
-smoothFolder.addBinding(mainScene.smoothModifier.params, "mode", {
-  options: {
-    Laplacian: "laplacian",
-    Spline: "spline",
-  },
-});
-smoothFolder.addBinding(mainScene.smoothModifier.params, "iterations", {
-  min: 1,
-  max: 24,
-  step: 1,
-});
-smoothFolder.addBinding(mainScene.smoothModifier.params, "segments", {
-  min: 1,
-  max: 128,
-  step: 1,
-});
-smoothFolder.addBinding(mainScene.smoothModifier.params, "strength", {
-  min: 0,
-  max: 1,
-  step: 0.01,
-});
-addModifierEnvelopeControls(smoothFolder, mainScene.smoothModifier);
 const timer = new THREE.Timer();
 timer.connect(document);
 
@@ -163,3 +91,126 @@ function animate(timestamp?: number): void {
 window.addEventListener("resize", resize);
 resize();
 animate();
+
+function rebuildSelectedLineFolder(): void {
+  selectedLineFolder?.dispose();
+
+  const line = mainScene.graph.getLineById(mainScene.selectedLineId);
+
+  if (!line) {
+    return;
+  }
+
+  selectedLineFolder = linePage.addFolder({ title: "Selected Line" });
+  selectedLineFolder.addBinding(line, "pointCount", {
+    readonly: true,
+  });
+  selectedLineFolder.addBinding(line, "thickness", {
+    min: 1,
+    max: 10,
+    step: 1,
+  });
+  selectedLineFolder.addBinding(line, "debugT", {
+    min: 0,
+    max: 1,
+    step: 0.01,
+  });
+  selectedLineFolder.addBinding(line, "debugPointVisible");
+  selectedLineFolder.addBinding(line, "debugLinePointsVisible");
+
+  for (const modifier of line.modifiers) {
+    addModifierControls(selectedLineFolder, modifier);
+  }
+}
+
+function addModifierControls(parentFolder: FolderApi, modifier: LineModifier): void {
+  const folder = parentFolder.addFolder({ title: modifier.name });
+  folder.addBinding(modifier, "enabled");
+
+  if (modifier instanceof SmoothModifier) {
+    folder.addBinding(modifier.params, "mode", {
+      options: {
+        Laplacian: "laplacian",
+        Spline: "spline",
+      },
+    });
+    folder.addBinding(modifier.params, "iterations", {
+      min: 1,
+      max: 24,
+      step: 1,
+    });
+    folder.addBinding(modifier.params, "segments", {
+      min: 1,
+      max: 128,
+      step: 1,
+    });
+    folder.addBinding(modifier.params, "strength", {
+      min: 0,
+      max: 1,
+      step: 0.01,
+    });
+  }
+
+  if (modifier instanceof GnarlModifier) {
+    folder.addBinding(modifier.params, "seed", {
+      min: 0,
+      max: 100000,
+      step: 1,
+    });
+    folder.addBinding(modifier.params, "amount", {
+      min: 0,
+      max: 2,
+      step: 0.01,
+    });
+    folder.addBinding(modifier.params, "amplitude", {
+      min: 0,
+      max: 0.75,
+      step: 0.01,
+    });
+    folder.addBinding(modifier.params, "cycles", {
+      min: 0.1,
+      max: 8,
+      step: 0.1,
+    });
+  }
+
+  if (modifier instanceof TwistModifier) {
+    folder.addBinding(modifier.params, "seed", {
+      min: 0,
+      max: 100000,
+      step: 1,
+    });
+    folder.addBinding(modifier.params, "amount", {
+      min: 0,
+      max: 2,
+      step: 0.01,
+    });
+    folder.addBinding(modifier.params, "radius", {
+      min: 0,
+      max: 0.5,
+      step: 0.01,
+    });
+    folder.addBinding(modifier.params, "turns", {
+      min: 0,
+      max: 8,
+      step: 0.1,
+    });
+  }
+
+  addModifierEnvelopeControls(folder, modifier);
+}
+
+function buildJointsPage(): void {
+  for (const { document } of mainScene.graph.getJointEntries()) {
+    const folder = jointsPage.addFolder({ title: document.id });
+    const jointView = {
+      id: document.id,
+      source: `${document.sourceLineId} @ ${document.sourceT.toFixed(2)}`,
+      target: `${document.targetLineId}[${document.targetPointIndex}]`,
+    };
+
+    folder.addBinding(jointView, "id", { readonly: true });
+    folder.addBinding(jointView, "source", { readonly: true });
+    folder.addBinding(jointView, "target", { readonly: true });
+  }
+}

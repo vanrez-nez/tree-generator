@@ -1,36 +1,85 @@
 import * as THREE from "three";
+import type { GraphDocument } from "./graph/document";
 import { Graph } from "./graph/graph";
-import type { GraphLine } from "./graph/line";
-import { GnarlModifier } from "./graph/modifiers/gnarl";
-import { SmoothModifier } from "./graph/modifiers/smooth";
-import { TwistModifier } from "./graph/modifiers/twist";
 
-export type LinePreset = "vertical" | "l-line";
+const DEMO_GRAPH_DOCUMENT: GraphDocument = {
+  lines: [
+    {
+      id: "trunk",
+      color: 0x8fd3ff,
+      debugT: 0.5,
+      points: [
+        [0, -1.2, 0],
+        [0, 1.2, 0],
+      ],
+      thickness: 1,
+      modifiers: [
+        {
+          type: "smooth",
+          enabled: true,
+          params: {
+            mode: "laplacian",
+            segments: 16,
+          },
+        },
+        {
+          type: "gnarl",
+          enabled: true,
+          params: {
+            amount: 1,
+          },
+        },
+        {
+          type: "twist",
+          enabled: true,
+          params: {
+            amount: 1,
+          },
+        },
+      ],
+    },
+    {
+      id: "branch",
+      color: 0xffd36a,
+      debugT: 0.5,
+      points: [
+        [0.4, 0, 0],
+        [1.3, 0.7, 0],
+      ],
+      thickness: 1,
+      modifiers: [
+        {
+          type: "smooth",
+          enabled: true,
+          params: {
+            mode: "laplacian",
+            segments: 12,
+          },
+        },
+      ],
+    },
+  ],
+  joints: [
+    {
+      id: "trunk-to-branch",
+      sourceLineId: "trunk",
+      sourceT: 0.5,
+      targetLineId: "branch",
+      targetPointIndex: 0,
+    },
+  ],
+};
 
 export class MainScene {
   readonly scene = new THREE.Scene();
   readonly graph = new Graph();
-  readonly gnarlModifier = new GnarlModifier({ amount: 1 });
-  readonly smoothModifier = new SmoothModifier({
-    enabled: true,
-    mode: "laplacian",
-    segments: 16,
-  });
-  readonly twistModifier = new TwistModifier({ amount: 1 });
-  readonly line: GraphLine;
-  private currentLinePreset: LinePreset = "vertical";
+
+  selectedLineId = DEMO_GRAPH_DOCUMENT.lines[0].id;
 
   constructor() {
     this.scene.background = new THREE.Color(0x111111);
     this.scene.add(this.graph.group);
-
-    this.line = this.graph.addLine({
-      color: 0x8fd3ff,
-      debugT: 0.5,
-      points: getLinePresetPoints(this.currentLinePreset),
-      modifiers: [this.smoothModifier, this.gnarlModifier, this.twistModifier],
-      thickness: 1,
-    });
+    this.graph.loadDocument(DEMO_GRAPH_DOCUMENT);
 
     const light = new THREE.DirectionalLight(0xffffff, 3);
     light.position.set(2, 2, 3);
@@ -38,31 +87,7 @@ export class MainScene {
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.8));
   }
 
-  get linePreset(): LinePreset {
-    return this.currentLinePreset;
-  }
-
-  set linePreset(preset: LinePreset) {
-    this.currentLinePreset = preset;
-    this.line.points = getLinePresetPoints(preset);
-  }
-
   update(_deltaTime: number, camera: THREE.Camera, viewportSize?: THREE.Vector2): void {
     this.graph.update(camera, viewportSize);
   }
-}
-
-function getLinePresetPoints(preset: LinePreset): THREE.Vector3[] {
-  if (preset === "l-line") {
-    return [
-      new THREE.Vector3(-0.8, 1.2, 0),
-      new THREE.Vector3(-0.8, -1.2, 0),
-      new THREE.Vector3(0.8, -1.2, 0),
-    ];
-  }
-
-  return [
-    new THREE.Vector3(0, -1.2, 0),
-    new THREE.Vector3(0, 1.2, 0),
-  ];
 }
