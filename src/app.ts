@@ -64,6 +64,7 @@ lineFolder.addBinding(mainScene.line, "debugT", {
   step: 0.01,
 });
 lineFolder.addBinding(mainScene.line, "debugPointVisible");
+lineFolder.addBinding(mainScene.line, "debugLinePointsVisible");
 
 const gnarlFolder = pane.addFolder({ title: "Gnarl" });
 gnarlFolder.addBinding(mainScene.gnarlModifier, "enabled");

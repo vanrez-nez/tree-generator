@@ -68,11 +68,6 @@ export class TwistModifier implements LineModifier<TwistModifierParams> {
 
     return points.map((point, index) => {
       const t = index / (points.length - 1);
-
-      if (index === 0 || index === points.length - 1) {
-        return point.clone();
-      }
-
       const angle = phase + sign * turns * t * Math.PI * 2;
       const magnitude = radius;
 

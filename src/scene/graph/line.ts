@@ -10,6 +10,7 @@ export type GraphLineStyle = "normal" | "dashed";
 export type GraphLineOptions = {
   color?: THREE.ColorRepresentation;
   dashSize?: number;
+  debugLinePointsVisible?: boolean;
   debugPointVisible?: boolean;
   debugT?: number;
   gapSize?: number;
@@ -25,7 +26,7 @@ type LineGeometryWithInstanceCache = LineGeometry & {
 };
 
 const DEBUG_POINT_RADIUS = 0.055;
-const DEBUG_POINT_SCREEN_RADIUS = 0.014;
+const DEBUG_POINT_SCREEN_RADIUS = 0.0047;
 
 export class VirtualLine {
   modifiers: LineModifier[];
@@ -98,6 +99,12 @@ export class GraphLineVisual {
     depthWrite: false,
   });
   private readonly debugPoint = new THREE.Mesh(this.debugGeometry, this.debugMaterial);
+  private readonly linePointDebugMaterial = new THREE.MeshBasicMaterial({
+    color: 0xfff06a,
+    depthTest: false,
+    depthWrite: false,
+  });
+  private readonly linePointDebugMarkers: THREE.Mesh[] = [];
   private readonly geometry = new LineGeometry();
   private readonly material = new LineMaterial({ color: 0xffffff });
   private readonly line = new Line2(this.geometry, this.material);
@@ -125,7 +132,9 @@ export class GraphLineVisual {
     this.debugPoint.position.copy(this.lineState.getPointAt(this.lineState.debugT));
     this.updateDebugPointScale(camera);
 
-    this.setGeometryPoints(this.lineState.virtual.getDrawPoints());
+    const drawPoints = this.lineState.virtual.getDrawPoints();
+    this.updateLinePointDebugMarkers(drawPoints, camera);
+    this.setGeometryPoints(drawPoints);
 
     if (this.lineState.style === "dashed") {
       this.line.computeLineDistances();
@@ -139,6 +148,7 @@ export class GraphLineVisual {
     this.material.dispose();
     this.debugGeometry.dispose();
     this.debugMaterial.dispose();
+    this.linePointDebugMaterial.dispose();
   }
 
   private updateDebugPointScale(camera?: THREE.Camera): void {
@@ -180,11 +190,77 @@ export class GraphLineVisual {
       this.geometry.instanceCount;
     this.geometry.computeBoundingSphere();
   }
+
+  private updateLinePointDebugMarkers(
+    drawPoints: THREE.Vector3[],
+    camera?: THREE.Camera,
+  ): void {
+    const points = this.lineState.points;
+    const pointTs = getPolylinePointTs(points);
+    this.syncLinePointDebugMarkerCount(points.length);
+
+    for (let index = 0; index < this.linePointDebugMarkers.length; index += 1) {
+      const marker = this.linePointDebugMarkers[index];
+      marker.visible = this.lineState.debugLinePointsVisible;
+
+      if (!marker.visible) {
+        continue;
+      }
+
+      marker.position.copy(getLinearPointAt(drawPoints, pointTs[index]));
+      this.updateMarkerScale(marker, camera);
+    }
+  }
+
+  private syncLinePointDebugMarkerCount(count: number): void {
+    while (this.linePointDebugMarkers.length < count) {
+      const marker = new THREE.Mesh(this.debugGeometry, this.linePointDebugMaterial);
+      marker.renderOrder = 11;
+      this.linePointDebugMarkers.push(marker);
+      this.object.add(marker);
+    }
+
+    while (this.linePointDebugMarkers.length > count) {
+      const marker = this.linePointDebugMarkers.pop();
+
+      if (marker) {
+        this.object.remove(marker);
+      }
+    }
+  }
+
+  private updateMarkerScale(marker: THREE.Mesh, camera?: THREE.Camera): void {
+    if (!camera) {
+      marker.scale.setScalar(1);
+      return;
+    }
+
+    if (camera instanceof THREE.PerspectiveCamera) {
+      const distance = camera.position.distanceTo(marker.getWorldPosition(_worldPosition));
+      const visibleHeight =
+        2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) * distance;
+      marker.scale.setScalar(
+        (visibleHeight * DEBUG_POINT_SCREEN_RADIUS) / DEBUG_POINT_RADIUS,
+      );
+      return;
+    }
+
+    if (camera instanceof THREE.OrthographicCamera) {
+      const visibleHeight = (camera.top - camera.bottom) / camera.zoom;
+      marker.scale.setScalar(
+        (visibleHeight * DEBUG_POINT_SCREEN_RADIUS) / DEBUG_POINT_RADIUS,
+      );
+      return;
+    }
+
+    marker.scale.setScalar(1);
+  }
 }
 
 export class GraphLine {
   color: THREE.ColorRepresentation;
   dashSize: number;
+  debugLinePointsVisible: boolean;
   debugPointVisible: boolean;
   debugT: number;
   gapSize: number;
@@ -199,6 +275,7 @@ export class GraphLine {
   constructor({
     color = 0xffffff,
     dashSize = 0.2,
+    debugLinePointsVisible = false,
     debugPointVisible = true,
     debugT = 0.5,
     gapSize = 0.1,
@@ -210,6 +287,7 @@ export class GraphLine {
   }: GraphLineOptions = {}) {
     this.color = color;
     this.dashSize = dashSize;
+    this.debugLinePointsVisible = debugLinePointsVisible;
     this.debugPointVisible = debugPointVisible;
     this.debugT = debugT;
     this.gapSize = gapSize;
@@ -291,6 +369,30 @@ function getLinearPointAt(points: THREE.Vector3[], t: number): THREE.Vector3 {
   const end = points[segmentIndex + 1];
 
   return start.clone().lerp(end, segmentT);
+}
+
+function getPolylinePointTs(points: THREE.Vector3[]): number[] {
+  if (points.length === 0) {
+    return [];
+  }
+
+  if (points.length === 1) {
+    return [0];
+  }
+
+  const distances = [0];
+
+  for (let index = 1; index < points.length; index += 1) {
+    distances[index] = distances[index - 1] + points[index - 1].distanceTo(points[index]);
+  }
+
+  const totalDistance = distances[distances.length - 1];
+
+  if (totalDistance <= 1e-6) {
+    return points.map((_point, index) => index / Math.max(points.length - 1, 1));
+  }
+
+  return distances.map((distance) => distance / totalDistance);
 }
 
 const _worldPosition = new THREE.Vector3();

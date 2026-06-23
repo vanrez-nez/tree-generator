@@ -68,11 +68,6 @@ export class GnarlModifier implements LineModifier<GnarlModifierParams> {
 
     return points.map((point, index) => {
       const t = index / (points.length - 1);
-
-      if (index === 0 || index === points.length - 1) {
-        return point.clone();
-      }
-
       const angleNoise = noise(t * this.params.cycles + phase);
       const radiusNoise = 0.65 + 0.35 * noise(t * this.params.cycles * 1.37 + phase + 17.23);
       const angle = angleNoise * Math.PI * 2;
