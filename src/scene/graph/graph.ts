@@ -8,6 +8,7 @@ import type {
 import { Joint } from "./joint";
 import { GraphLine, type GraphLineOptions } from "./line";
 import type { LineModifier } from "./modifiers/modifier";
+import { CoilModifier } from "./modifiers/coil";
 import { GnarlModifier } from "./modifiers/gnarl";
 import { SmoothModifier } from "./modifiers/smooth";
 import { TwistModifier } from "./modifiers/twist";
@@ -180,7 +181,15 @@ function createModifier(modifierDocument: ModifierDocument): LineModifier {
     });
   }
 
-  return new TwistModifier({
+  if (modifierDocument.type === "twist") {
+    return new TwistModifier({
+      ...modifierDocument.params,
+      enabled: modifierDocument.enabled,
+      envelope: modifierDocument.envelope,
+    });
+  }
+
+  return new CoilModifier({
     ...modifierDocument.params,
     enabled: modifierDocument.enabled,
     envelope: modifierDocument.envelope,

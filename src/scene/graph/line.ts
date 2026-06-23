@@ -70,6 +70,28 @@ export class VirtualLine {
     return this.getTransformedPoints();
   }
 
+  getDrawnPointForIndex(index: number): THREE.Vector3 {
+    const basePoints = this.points;
+
+    if (index < 0 || index >= basePoints.length) {
+      return new THREE.Vector3();
+    }
+
+    const drawPoints = this.getTransformedPoints();
+
+    if (drawPoints.length === 0) {
+      return basePoints[index].clone();
+    }
+
+    if (drawPoints.length === 1) {
+      return drawPoints[0].clone();
+    }
+
+    const pointTs = getPolylinePointTs(basePoints);
+
+    return getLinearPointAt(drawPoints, pointTs[index]);
+  }
+
   getTransformedPoints(): THREE.Vector3[] {
     let transformedPoints = this.getBasePoints();
 
@@ -345,6 +367,10 @@ export class GraphLine {
 
   getPointAtStep(step: number, steps: number): THREE.Vector3 {
     return this.virtual.getPointAtStep(step, steps);
+  }
+
+  getDrawnPointForIndex(index: number): THREE.Vector3 {
+    return this.virtual.getDrawnPointForIndex(index);
   }
 
   updateDrawing(camera?: THREE.Camera, viewportSize?: THREE.Vector2): void {

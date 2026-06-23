@@ -1,5 +1,6 @@
 import type { GraphLineStyle } from "./line";
 import type { ModifierEnvelope } from "./modifiers/modifier";
+import type { CoilModifierParams } from "./modifiers/coil";
 import type { GnarlModifierParams } from "./modifiers/gnarl";
 import type { SmoothModifierParams } from "./modifiers/smooth";
 import type { TwistModifierParams } from "./modifiers/twist";
@@ -27,10 +28,18 @@ export type TwistModifierDocument = {
   params?: Partial<TwistModifierParams>;
 };
 
+export type CoilModifierDocument = {
+  type: "coil";
+  enabled?: boolean;
+  envelope?: ModifierEnvelope;
+  params?: Partial<CoilModifierParams>;
+};
+
 export type ModifierDocument =
   | SmoothModifierDocument
   | GnarlModifierDocument
-  | TwistModifierDocument;
+  | TwistModifierDocument
+  | CoilModifierDocument;
 
 export type GraphLineDocument = {
   id: string;

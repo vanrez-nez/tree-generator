@@ -35,12 +35,13 @@ export class Joint {
       return;
     }
 
-    const targetPoint = this.targetLine.points[this.targetPointIndex];
-
-    if (!targetPoint) {
+    if (!this.targetLine.points[this.targetPointIndex]) {
       return;
     }
 
+    // Anchor the child by its rendered position at the target index, not its
+    // base vertex, so the child's own modifiers can't pull the connection apart.
+    const targetPoint = this.targetLine.getDrawnPointForIndex(this.targetPointIndex);
     const sourcePoint = this.sourceLine.getPointAt(THREE.MathUtils.clamp(this.sourceT, 0, 1));
     const delta = sourcePoint.sub(targetPoint);
 

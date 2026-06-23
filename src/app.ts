@@ -6,6 +6,7 @@ import { FolderApi, Pane } from "tweakpane";
 import { MainScene } from "./scene/main";
 import { GraphLine } from "./scene/graph/line";
 import type { LineModifier } from "./scene/graph/modifiers/modifier";
+import { CoilModifier } from "./scene/graph/modifiers/coil";
 import { GnarlModifier } from "./scene/graph/modifiers/gnarl";
 import { SmoothModifier } from "./scene/graph/modifiers/smooth";
 import { TwistModifier } from "./scene/graph/modifiers/twist";
@@ -159,6 +160,29 @@ function buildModifierControls(folder: FolderApi, modifier: LineModifier): void 
     });
   }
 
+  if (modifier instanceof CoilModifier) {
+    folder.addBinding(modifier.params, "seed", {
+      min: 0,
+      max: 100000,
+      step: 1,
+    });
+    folder.addBinding(modifier.params, "amount", {
+      min: 0,
+      max: 2,
+      step: 0.01,
+    });
+    folder.addBinding(modifier.params, "turns", {
+      min: 0,
+      max: 8,
+      step: 0.1,
+    });
+    folder.addBinding(modifier.params, "bias", {
+      min: 0.25,
+      max: 4,
+      step: 0.05,
+    });
+  }
+
   addModifierEnvelopeControls(folder, modifier);
 }
 
@@ -168,6 +192,9 @@ function modifierTypeName(modifier: LineModifier): string {
   }
   if (modifier instanceof TwistModifier) {
     return "Twist";
+  }
+  if (modifier instanceof CoilModifier) {
+    return "Coil";
   }
   return "Smooth";
 }
@@ -189,6 +216,11 @@ function buildModifierLayers(folder: FolderApi, line: GraphLine): void {
     {
       name: "Twist",
       createState: () => new TwistModifier(),
+      build: (modFolder, layer) => buildModifierControls(modFolder, layer.state),
+    },
+    {
+      name: "Coil",
+      createState: () => new CoilModifier(),
       build: (modFolder, layer) => buildModifierControls(modFolder, layer.state),
     },
   ];
