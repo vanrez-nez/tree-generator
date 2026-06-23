@@ -1,5 +1,10 @@
 import * as THREE from "three";
-import type { LineModifier, SeededModifierParams } from "./modifier";
+import {
+  createDefaultEnvelope,
+  type LineModifier,
+  type ModifierEnvelope,
+  type SeededModifierParams,
+} from "./modifier";
 import {
   makePerpendicularBasis,
   makeValueNoise,
@@ -14,11 +19,13 @@ export type GnarlModifierParams = SeededModifierParams & {
 
 export type GnarlModifierOptions = Partial<GnarlModifierParams> & {
   enabled?: boolean;
+  envelope?: ModifierEnvelope;
 };
 
 export class GnarlModifier implements LineModifier<GnarlModifierParams> {
   readonly name = "gnarl";
   enabled: boolean;
+  envelope: ModifierEnvelope;
   params: GnarlModifierParams;
 
   constructor({
@@ -26,9 +33,11 @@ export class GnarlModifier implements LineModifier<GnarlModifierParams> {
     amount = 1,
     cycles = 1.6,
     enabled = true,
+    envelope = createDefaultEnvelope(),
     seed = 73192,
   }: GnarlModifierOptions = {}) {
     this.enabled = enabled;
+    this.envelope = envelope;
     this.params = {
       amplitude,
       amount,
@@ -64,11 +73,10 @@ export class GnarlModifier implements LineModifier<GnarlModifierParams> {
         return point.clone();
       }
 
-      const envelope = Math.sin(Math.PI * t);
       const angleNoise = noise(t * this.params.cycles + phase);
       const radiusNoise = 0.65 + 0.35 * noise(t * this.params.cycles * 1.37 + phase + 17.23);
       const angle = angleNoise * Math.PI * 2;
-      const magnitude = amplitude * radiusNoise * envelope;
+      const magnitude = amplitude * radiusNoise;
 
       return point
         .clone()

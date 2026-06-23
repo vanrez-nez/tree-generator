@@ -1,8 +1,10 @@
 import "./style.css";
+import * as EssentialsPlugin from "@tweakpane/plugin-essentials";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { Pane } from "tweakpane";
 import { MainScene } from "./scene/main";
+import { addModifierEnvelopeControls } from "./tweak-pane/modifier-envelope";
 import {
   StatsBladeApi,
   StatsPanePluginBundle,
@@ -35,18 +37,21 @@ const mainScene = new MainScene();
 const rendererSize = new THREE.Vector2();
 
 const pane = new Pane({ container: paneHost, title: "Settings" });
+pane.registerPlugin(EssentialsPlugin);
 pane.registerPlugin(StatsPanePluginBundle);
 const stats = pane.addBlade({ view: "stats" }) as StatsBladeApi;
 stats.setRenderer(renderer.capabilities.isWebGL2 ? "WebGL2" : "WebGL");
 
 const lineFolder = pane.addFolder({ title: "Line" });
+lineFolder.addBinding(mainScene, "linePreset", {
+  label: "preset",
+  options: {
+    Vertical: "vertical",
+    "L-Line": "l-line",
+  },
+});
 lineFolder.addBinding(mainScene.line, "pointCount", {
   readonly: true,
-});
-lineFolder.addBinding(mainScene.line, "segments", {
-  min: 1,
-  max: 128,
-  step: 1,
 });
 lineFolder.addBinding(mainScene.line, "thickness", {
   min: 1,
@@ -82,6 +87,7 @@ gnarlFolder.addBinding(mainScene.gnarlModifier.params, "cycles", {
   max: 8,
   step: 0.1,
 });
+addModifierEnvelopeControls(gnarlFolder, mainScene.gnarlModifier);
 
 const twistFolder = pane.addFolder({ title: "Twist" });
 twistFolder.addBinding(mainScene.twistModifier, "enabled");
@@ -105,6 +111,7 @@ twistFolder.addBinding(mainScene.twistModifier.params, "turns", {
   max: 8,
   step: 0.1,
 });
+addModifierEnvelopeControls(twistFolder, mainScene.twistModifier);
 
 const smoothFolder = pane.addFolder({ title: "Smooth" });
 smoothFolder.addBinding(mainScene.smoothModifier, "enabled");
@@ -119,11 +126,17 @@ smoothFolder.addBinding(mainScene.smoothModifier.params, "iterations", {
   max: 24,
   step: 1,
 });
+smoothFolder.addBinding(mainScene.smoothModifier.params, "segments", {
+  min: 1,
+  max: 128,
+  step: 1,
+});
 smoothFolder.addBinding(mainScene.smoothModifier.params, "strength", {
   min: 0,
   max: 1,
   step: 0.01,
 });
+addModifierEnvelopeControls(smoothFolder, mainScene.smoothModifier);
 const timer = new THREE.Timer();
 timer.connect(document);
 

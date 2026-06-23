@@ -1,5 +1,10 @@
 import * as THREE from "three";
-import type { LineModifier, SeededModifierParams } from "./modifier";
+import {
+  createDefaultEnvelope,
+  type LineModifier,
+  type ModifierEnvelope,
+  type SeededModifierParams,
+} from "./modifier";
 import {
   makePerpendicularBasis,
   seededRandom,
@@ -13,21 +18,25 @@ export type TwistModifierParams = SeededModifierParams & {
 
 export type TwistModifierOptions = Partial<TwistModifierParams> & {
   enabled?: boolean;
+  envelope?: ModifierEnvelope;
 };
 
 export class TwistModifier implements LineModifier<TwistModifierParams> {
   readonly name = "twist";
   enabled: boolean;
+  envelope: ModifierEnvelope;
   params: TwistModifierParams;
 
   constructor({
     amount = 1,
     enabled = true,
+    envelope = createDefaultEnvelope(),
     radius = 0.12,
     seed = 73192,
     turns = 1.5,
   }: TwistModifierOptions = {}) {
     this.enabled = enabled;
+    this.envelope = envelope;
     this.params = {
       amount,
       radius,
@@ -64,9 +73,8 @@ export class TwistModifier implements LineModifier<TwistModifierParams> {
         return point.clone();
       }
 
-      const envelope = Math.sin(Math.PI * t);
       const angle = phase + sign * turns * t * Math.PI * 2;
-      const magnitude = radius * envelope;
+      const magnitude = radius;
 
       return point
         .clone()

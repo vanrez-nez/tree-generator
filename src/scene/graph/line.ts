@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
-import type { LineModifier } from "./modifiers/modifier";
+import { applyEnvelope, type LineModifier } from "./modifiers/modifier";
 import { SmoothModifier } from "./modifiers/smooth";
 
 export type GraphLineStyle = "normal" | "dashed";
@@ -15,7 +15,6 @@ export type GraphLineOptions = {
   gapSize?: number;
   modifiers?: LineModifier[];
   points?: THREE.Vector3[];
-  segments?: number;
   smooth?: boolean;
   style?: GraphLineStyle;
   thickness?: number;
@@ -25,23 +24,19 @@ type LineGeometryWithInstanceCache = LineGeometry & {
   _maxInstanceCount?: number;
 };
 
-const DEFAULT_SEGMENTS = 64;
 const DEBUG_POINT_RADIUS = 0.055;
 const DEBUG_POINT_SCREEN_RADIUS = 0.014;
 
 export class VirtualLine {
   modifiers: LineModifier[];
   points: THREE.Vector3[];
-  segments: number;
 
   constructor({
     modifiers = [],
     points = [],
-    segments = DEFAULT_SEGMENTS,
     smooth = false,
-  }: Pick<GraphLineOptions, "modifiers" | "points" | "segments" | "smooth"> = {}) {
+  }: Pick<GraphLineOptions, "modifiers" | "points" | "smooth"> = {}) {
     this.points = points;
-    this.segments = segments;
     this.modifiers = smooth
       ? [...modifiers, new SmoothModifier({ mode: "spline" })]
       : modifiers;
@@ -79,7 +74,9 @@ export class VirtualLine {
 
     for (const modifier of this.modifiers) {
       if (modifier.enabled) {
-        transformedPoints = modifier.apply(transformedPoints);
+        const inputPoints = transformedPoints;
+        const outputPoints = modifier.apply(inputPoints);
+        transformedPoints = applyEnvelope(inputPoints, outputPoints, modifier.envelope);
       }
     }
 
@@ -87,11 +84,7 @@ export class VirtualLine {
   }
 
   private getBasePoints(): THREE.Vector3[] {
-    if (this.points.length < 2) {
-      return this.points.map((point) => point.clone());
-    }
-
-    return subdivideSegments(this.points, Math.max(1, Math.floor(this.segments)));
+    return this.points.map((point) => point.clone());
   }
 }
 
@@ -211,7 +204,6 @@ export class GraphLine {
     gapSize = 0.1,
     modifiers = [],
     points = [],
-    segments = DEFAULT_SEGMENTS,
     smooth = false,
     style = "normal",
     thickness = 1,
@@ -223,7 +215,7 @@ export class GraphLine {
     this.gapSize = gapSize;
     this.style = style;
     this.thickness = thickness;
-    this.virtual = new VirtualLine({ modifiers, points, segments, smooth });
+    this.virtual = new VirtualLine({ modifiers, points, smooth });
     this.visual = new GraphLineVisual(this);
     this.object = this.visual.object;
   }
@@ -246,14 +238,6 @@ export class GraphLine {
 
   get pointCount(): number {
     return this.virtual.points.length;
-  }
-
-  get segments(): number {
-    return this.virtual.segments;
-  }
-
-  set segments(segments: number) {
-    this.virtual.segments = Math.max(1, Math.floor(segments));
   }
 
   get smooth(): boolean {
@@ -307,23 +291,6 @@ function getLinearPointAt(points: THREE.Vector3[], t: number): THREE.Vector3 {
   const end = points[segmentIndex + 1];
 
   return start.clone().lerp(end, segmentT);
-}
-
-function subdivideSegments(points: THREE.Vector3[], subdivisions: number): THREE.Vector3[] {
-  const subdividedPoints: THREE.Vector3[] = [];
-
-  for (let index = 0; index < points.length - 1; index += 1) {
-    const start = points[index];
-    const end = points[index + 1];
-
-    for (let step = 0; step < subdivisions; step += 1) {
-      subdividedPoints.push(start.clone().lerp(end, step / subdivisions));
-    }
-  }
-
-  subdividedPoints.push(points[points.length - 1].clone());
-
-  return subdividedPoints;
 }
 
 const _worldPosition = new THREE.Vector3();
