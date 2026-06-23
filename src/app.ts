@@ -32,12 +32,98 @@ const controls = new OrbitControls(camera, sceneCanvas);
 controls.enableDamping = true;
 
 const mainScene = new MainScene();
+const rendererSize = new THREE.Vector2();
 
 const pane = new Pane({ container: paneHost, title: "Settings" });
 pane.registerPlugin(StatsPanePluginBundle);
 const stats = pane.addBlade({ view: "stats" }) as StatsBladeApi;
 stats.setRenderer(renderer.capabilities.isWebGL2 ? "WebGL2" : "WebGL");
 
+const lineFolder = pane.addFolder({ title: "Line" });
+lineFolder.addBinding(mainScene.line, "pointCount", {
+  readonly: true,
+});
+lineFolder.addBinding(mainScene.line, "segments", {
+  min: 1,
+  max: 128,
+  step: 1,
+});
+lineFolder.addBinding(mainScene.line, "thickness", {
+  min: 1,
+  max: 10,
+  step: 1,
+});
+lineFolder.addBinding(mainScene.line, "debugT", {
+  min: 0,
+  max: 1,
+  step: 0.01,
+});
+lineFolder.addBinding(mainScene.line, "debugPointVisible");
+
+const gnarlFolder = pane.addFolder({ title: "Gnarl" });
+gnarlFolder.addBinding(mainScene.gnarlModifier, "enabled");
+gnarlFolder.addBinding(mainScene.gnarlModifier.params, "seed", {
+  min: 0,
+  max: 100000,
+  step: 1,
+});
+gnarlFolder.addBinding(mainScene.gnarlModifier.params, "amount", {
+  min: 0,
+  max: 2,
+  step: 0.01,
+});
+gnarlFolder.addBinding(mainScene.gnarlModifier.params, "amplitude", {
+  min: 0,
+  max: 0.75,
+  step: 0.01,
+});
+gnarlFolder.addBinding(mainScene.gnarlModifier.params, "cycles", {
+  min: 0.1,
+  max: 8,
+  step: 0.1,
+});
+
+const twistFolder = pane.addFolder({ title: "Twist" });
+twistFolder.addBinding(mainScene.twistModifier, "enabled");
+twistFolder.addBinding(mainScene.twistModifier.params, "seed", {
+  min: 0,
+  max: 100000,
+  step: 1,
+});
+twistFolder.addBinding(mainScene.twistModifier.params, "amount", {
+  min: 0,
+  max: 2,
+  step: 0.01,
+});
+twistFolder.addBinding(mainScene.twistModifier.params, "radius", {
+  min: 0,
+  max: 0.5,
+  step: 0.01,
+});
+twistFolder.addBinding(mainScene.twistModifier.params, "turns", {
+  min: 0,
+  max: 8,
+  step: 0.1,
+});
+
+const smoothFolder = pane.addFolder({ title: "Smooth" });
+smoothFolder.addBinding(mainScene.smoothModifier, "enabled");
+smoothFolder.addBinding(mainScene.smoothModifier.params, "mode", {
+  options: {
+    Laplacian: "laplacian",
+    Spline: "spline",
+  },
+});
+smoothFolder.addBinding(mainScene.smoothModifier.params, "iterations", {
+  min: 1,
+  max: 24,
+  step: 1,
+});
+smoothFolder.addBinding(mainScene.smoothModifier.params, "strength", {
+  min: 0,
+  max: 1,
+  step: 0.01,
+});
 const timer = new THREE.Timer();
 timer.connect(document);
 
@@ -52,7 +138,8 @@ function animate(timestamp?: number): void {
   stats.begin();
   timer.update(timestamp);
 
-  mainScene.update(timer.getDelta(), camera);
+  renderer.getDrawingBufferSize(rendererSize);
+  mainScene.update(timer.getDelta(), camera, rendererSize);
   controls.update();
   renderer.render(mainScene.scene, camera);
   stats.end();

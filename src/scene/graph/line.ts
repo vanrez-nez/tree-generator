@@ -1,6 +1,9 @@
 import * as THREE from "three";
+import { Line2 } from "three/examples/jsm/lines/Line2.js";
+import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
+import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import type { LineModifier } from "./modifiers/modifier";
-import { SplineModifier } from "./modifiers/spline";
+import { SmoothModifier } from "./modifiers/smooth";
 
 export type GraphLineStyle = "normal" | "dashed";
 
@@ -18,7 +21,9 @@ export type GraphLineOptions = {
   thickness?: number;
 };
 
-type GraphLineMaterial = THREE.LineBasicMaterial | THREE.LineDashedMaterial;
+type LineGeometryWithInstanceCache = LineGeometry & {
+  _maxInstanceCount?: number;
+};
 
 const DEFAULT_SEGMENTS = 64;
 const DEBUG_POINT_RADIUS = 0.055;
@@ -27,6 +32,7 @@ const DEBUG_POINT_SCREEN_RADIUS = 0.014;
 export class VirtualLine {
   modifiers: LineModifier[];
   points: THREE.Vector3[];
+  segments: number;
 
   constructor({
     modifiers = [],
@@ -35,8 +41,9 @@ export class VirtualLine {
     smooth = false,
   }: Pick<GraphLineOptions, "modifiers" | "points" | "segments" | "smooth"> = {}) {
     this.points = points;
+    this.segments = segments;
     this.modifiers = smooth
-      ? [...modifiers, new SplineModifier({ segments })]
+      ? [...modifiers, new SmoothModifier({ mode: "spline" })]
       : modifiers;
   }
 
@@ -68,7 +75,7 @@ export class VirtualLine {
   }
 
   getTransformedPoints(): THREE.Vector3[] {
-    let transformedPoints = this.points.map((point) => point.clone());
+    let transformedPoints = this.getBasePoints();
 
     for (const modifier of this.modifiers) {
       if (modifier.enabled) {
@@ -77,6 +84,14 @@ export class VirtualLine {
     }
 
     return transformedPoints;
+  }
+
+  private getBasePoints(): THREE.Vector3[] {
+    if (this.points.length < 2) {
+      return this.points.map((point) => point.clone());
+    }
+
+    return subdivideSegments(this.points, Math.max(1, Math.floor(this.segments)));
   }
 }
 
@@ -90,32 +105,26 @@ export class GraphLineVisual {
     depthWrite: false,
   });
   private readonly debugPoint = new THREE.Mesh(this.debugGeometry, this.debugMaterial);
-  private readonly geometry = new THREE.BufferGeometry();
-  private readonly line: THREE.Line<THREE.BufferGeometry, GraphLineMaterial>;
-  private material: GraphLineMaterial;
+  private readonly geometry = new LineGeometry();
+  private readonly material = new LineMaterial({ color: 0xffffff });
+  private readonly line = new Line2(this.geometry, this.material);
 
   constructor(private readonly lineState: GraphLine) {
-    this.material = this.createMaterial();
-    this.line = new THREE.Line(this.geometry, this.material);
     this.object.add(this.line);
     this.object.add(this.debugPoint);
     this.debugPoint.renderOrder = 10;
     this.updateDrawing();
   }
 
-  updateDrawing(camera?: THREE.Camera): void {
-    if (!this.materialMatchesStyle()) {
-      this.material.dispose();
-      this.material = this.createMaterial();
-      this.line.material = this.material;
-    }
-
+  updateDrawing(camera?: THREE.Camera, viewportSize?: THREE.Vector2): void {
     this.material.color.set(this.lineState.color);
     this.material.linewidth = this.lineState.thickness;
+    this.material.dashed = this.lineState.style === "dashed";
+    this.material.dashSize = this.lineState.dashSize;
+    this.material.gapSize = this.lineState.gapSize;
 
-    if (this.material instanceof THREE.LineDashedMaterial) {
-      this.material.dashSize = this.lineState.dashSize;
-      this.material.gapSize = this.lineState.gapSize;
+    if (viewportSize) {
+      this.material.resolution.copy(viewportSize);
     }
 
     this.debugMaterial.color.set(this.lineState.color);
@@ -123,7 +132,7 @@ export class GraphLineVisual {
     this.debugPoint.position.copy(this.lineState.getPointAt(this.lineState.debugT));
     this.updateDebugPointScale(camera);
 
-    this.geometry.setFromPoints(this.lineState.virtual.getDrawPoints());
+    this.setGeometryPoints(this.lineState.virtual.getDrawPoints());
 
     if (this.lineState.style === "dashed") {
       this.line.computeLineDistances();
@@ -137,30 +146,6 @@ export class GraphLineVisual {
     this.material.dispose();
     this.debugGeometry.dispose();
     this.debugMaterial.dispose();
-  }
-
-  private createMaterial(): GraphLineMaterial {
-    if (this.lineState.style === "dashed") {
-      return new THREE.LineDashedMaterial({
-        color: this.lineState.color,
-        dashSize: this.lineState.dashSize,
-        gapSize: this.lineState.gapSize,
-        linewidth: this.lineState.thickness,
-      });
-    }
-
-    return new THREE.LineBasicMaterial({
-      color: this.lineState.color,
-      linewidth: this.lineState.thickness,
-    });
-  }
-
-  private materialMatchesStyle(): boolean {
-    return this.material.type === this.getMaterialType();
-  }
-
-  private getMaterialType(): string {
-    return this.lineState.style === "dashed" ? "LineDashedMaterial" : "LineBasicMaterial";
   }
 
   private updateDebugPointScale(camera?: THREE.Camera): void {
@@ -188,6 +173,19 @@ export class GraphLineVisual {
     }
 
     this.debugPoint.scale.setScalar(1);
+  }
+
+  private setGeometryPoints(points: THREE.Vector3[]): void {
+    if (points.length < 2) {
+      this.line.visible = false;
+      return;
+    }
+
+    this.line.visible = true;
+    this.geometry.setFromPoints(points);
+    (this.geometry as LineGeometryWithInstanceCache)._maxInstanceCount =
+      this.geometry.instanceCount;
+    this.geometry.computeBoundingSphere();
   }
 }
 
@@ -246,40 +244,36 @@ export class GraphLine {
     this.virtual.modifiers = modifiers;
   }
 
-  get segments(): number {
-    const splineModifier = this.virtual.modifiers.find(
-      (modifier): modifier is SplineModifier => modifier instanceof SplineModifier,
-    );
+  get pointCount(): number {
+    return this.virtual.points.length;
+  }
 
-    return splineModifier?.params.segments ?? DEFAULT_SEGMENTS;
+  get segments(): number {
+    return this.virtual.segments;
   }
 
   set segments(segments: number) {
-    for (const modifier of this.virtual.modifiers) {
-      if (modifier instanceof SplineModifier) {
-        modifier.params.segments = segments;
-      }
-    }
+    this.virtual.segments = Math.max(1, Math.floor(segments));
   }
 
   get smooth(): boolean {
     return this.virtual.modifiers.some(
-      (modifier) => modifier instanceof SplineModifier && modifier.enabled,
+      (modifier) => modifier instanceof SmoothModifier && modifier.enabled,
     );
   }
 
   set smooth(smooth: boolean) {
-    const splineModifier = this.virtual.modifiers.find(
-      (modifier): modifier is SplineModifier => modifier instanceof SplineModifier,
+    const smoothModifier = this.virtual.modifiers.find(
+      (modifier): modifier is SmoothModifier => modifier instanceof SmoothModifier,
     );
 
-    if (splineModifier) {
-      splineModifier.enabled = smooth;
+    if (smoothModifier) {
+      smoothModifier.enabled = smooth;
       return;
     }
 
     if (smooth) {
-      this.virtual.modifiers.push(new SplineModifier());
+      this.virtual.modifiers.push(new SmoothModifier());
     }
   }
 
@@ -291,8 +285,8 @@ export class GraphLine {
     return this.virtual.getPointAtStep(step, steps);
   }
 
-  updateDrawing(camera?: THREE.Camera): void {
-    this.visual.updateDrawing(camera);
+  updateDrawing(camera?: THREE.Camera, viewportSize?: THREE.Vector2): void {
+    this.visual.updateDrawing(camera, viewportSize);
   }
 
   dispose(): void {
@@ -313,6 +307,23 @@ function getLinearPointAt(points: THREE.Vector3[], t: number): THREE.Vector3 {
   const end = points[segmentIndex + 1];
 
   return start.clone().lerp(end, segmentT);
+}
+
+function subdivideSegments(points: THREE.Vector3[], subdivisions: number): THREE.Vector3[] {
+  const subdividedPoints: THREE.Vector3[] = [];
+
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const start = points[index];
+    const end = points[index + 1];
+
+    for (let step = 0; step < subdivisions; step += 1) {
+      subdividedPoints.push(start.clone().lerp(end, step / subdivisions));
+    }
+  }
+
+  subdividedPoints.push(points[points.length - 1].clone());
+
+  return subdividedPoints;
 }
 
 const _worldPosition = new THREE.Vector3();

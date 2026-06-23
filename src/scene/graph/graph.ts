@@ -41,9 +41,9 @@ export class Graph {
     return [...this.lines];
   }
 
-  update(camera: THREE.Camera): void {
+  update(camera: THREE.Camera, viewportSize?: THREE.Vector2): void {
     for (const line of this.lines) {
-      line.updateDrawing(camera);
+      line.updateDrawing(camera, viewportSize);
     }
   }
 
