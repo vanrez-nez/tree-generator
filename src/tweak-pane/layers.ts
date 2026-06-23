@@ -1,8 +1,9 @@
-// Composes the `layers` blade with per-layer Tweakpane control folders. Each layer type
-// defines its own controls via a `build(folder, layer)` callback; selecting a layer shows
-// that layer's folder and hides the others. The blade owns the Add/Remove footer (and its
-// type-picker menu + confirm dialog); this helper reacts to its events and manages folders.
-import type { ContainerApi, FolderApi } from '@tweakpane/core'
+// Composes the `layers` blade with per-layer Tweakpane controls. Each layer type defines
+// its controls via a `build(folder, layer)` callback; the controls are added straight into
+// the layers folder (no extra wrapper), and selecting a layer shows that layer's controls
+// while hiding the others. The blade owns the Add/Remove footer (and its type-picker menu +
+// confirm dialog); this helper reacts to its events and manages the controls.
+import type { BladeApi, ContainerApi, FolderApi } from '@tweakpane/core'
 import {
   type LayerItem,
   LayersBladeApi,
@@ -22,16 +23,27 @@ export type LayerHandle<T = unknown> = {
 export type LayerType<T = any> = {
   /** Display name; also the label shown in the "Add Layer" menu. */
   name: string
-  /** Populate the per-layer control folder with normal Tweakpane bindings. */
+  /** Add this layer's controls (folders, bindings) into the layers folder. */
   build: (folder: FolderApi, layer: LayerHandle<T>) => void
   /** Create the per-layer control state object bound by `build`. */
   createState?: () => T
+}
+
+/** A layer to pre-populate the list with (e.g. one per existing object). */
+export type InitialLayer = {
+  type: string
+  id?: string
+  name?: string
+  state?: unknown
+  visible?: boolean
 }
 
 export type CreateLayersOptions = {
   title?: string
   addLabel?: string
   types: LayerType[]
+  /** Layers added before the first user interaction. The first becomes selected. */
+  initialLayers?: InitialLayer[]
   onSelect?: (layer: LayerHandle | null) => void
   onVisibility?: (layer: LayerHandle) => void
   onAdd?: (layer: LayerHandle) => void
@@ -51,7 +63,7 @@ type LayerRecord = {
   id: string
   type: string
   handle: LayerHandle
-  folder: FolderApi
+  controls: BladeApi[]
 }
 
 export function createLayers(
@@ -68,7 +80,6 @@ export function createLayers(
     addLabel: options.addLabel ?? 'Add Layer',
     types: options.types.map((type) => type.name),
   }) as LayersBladeApi
-  const controlsHost = folder.addFolder({ title: 'Controls' })
 
   function findHandle(id: string): LayerHandle | null {
     return records.get(id)?.handle ?? null
@@ -76,41 +87,72 @@ export function createLayers(
 
   function showOnly(selectedId: string | null): void {
     for (const record of records.values()) {
-      record.folder.hidden = record.id !== selectedId
+      const hidden = record.id !== selectedId
+      for (const control of record.controls) {
+        control.hidden = hidden
+      }
     }
   }
 
-  function addLayer(typeName: string): LayerHandle | null {
+  function createLayer(
+    typeName: string,
+    init?: { id?: string; name?: string; state?: unknown; visible?: boolean },
+  ): LayerHandle | null {
     const type = types.get(typeName)
     if (!type) {
       return null
     }
 
-    counter += 1
-    const id = `layer-${counter}`
-    const name = `${type.name} ${counter}`
+    let id = init?.id
+    if (!id) {
+      counter += 1
+      id = `layer-${counter}`
+    }
+    const name = init?.name ?? `${type.name} ${counter}`
     const handle: LayerHandle = {
       id,
       type: type.name,
       name,
-      visible: true,
-      state: type.createState ? type.createState() : ({} as unknown),
+      visible: init?.visible ?? true,
+      state:
+        init?.state !== undefined
+          ? init.state
+          : type.createState
+            ? type.createState()
+            : ({} as unknown),
     }
 
-    const layerFolder = controlsHost.addFolder({ title: name, hidden: true })
+    // Add this layer's controls straight into the layers folder, then track the blades
+    // that were created so they can be shown/hidden as a group on selection.
+    const startIndex = folder.children.length
     // Tweakpane-native rename: editing the name field updates the row label live.
-    layerFolder
+    folder
       .addBinding(handle, 'name', { label: 'name' })
       .on('change', (event) => {
-        layerFolder.title = event.value
-        blade.setName(id, event.value)
+        blade.setName(handle.id, event.value)
       })
-    type.build(layerFolder, handle)
+    type.build(folder, handle)
+    const controls = folder.children.slice(startIndex)
+    for (const control of controls) {
+      control.hidden = true
+    }
 
-    records.set(id, { id, type: type.name, handle, folder: layerFolder })
-    blade.addItem({ id, name, visible: true } satisfies LayerItem)
-    blade.select(id)
-    showOnly(id)
+    records.set(handle.id, { id: handle.id, type: type.name, handle, controls })
+    blade.addItem({
+      id: handle.id,
+      name: handle.name,
+      visible: handle.visible,
+    } satisfies LayerItem)
+    return handle
+  }
+
+  function addLayer(typeName: string): LayerHandle | null {
+    const handle = createLayer(typeName)
+    if (!handle) {
+      return null
+    }
+    blade.select(handle.id)
+    showOnly(handle.id)
     options.onAdd?.(handle)
     options.onSelect?.(handle)
     return handle
@@ -148,7 +190,9 @@ export function createLayers(
     if (!record) {
       return
     }
-    record.folder.dispose()
+    for (const control of record.controls) {
+      control.dispose()
+    }
     records.delete(id)
     blade.removeItem(id)
 
@@ -163,6 +207,16 @@ export function createLayers(
     }
     options.onRemove?.(record.handle)
   })
+
+  for (const init of options.initialLayers ?? []) {
+    createLayer(init.type, init)
+  }
+  const firstId = blade.getItems()[0]?.id ?? null
+  if (firstId) {
+    blade.select(firstId)
+    showOnly(firstId)
+    options.onSelect?.(findHandle(firstId))
+  }
 
   return {
     addLayer,

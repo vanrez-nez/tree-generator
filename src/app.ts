@@ -4,6 +4,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { FolderApi, Pane } from "tweakpane";
 import { MainScene } from "./scene/main";
+import { GraphLine } from "./scene/graph/line";
 import type { LineModifier } from "./scene/graph/modifiers/modifier";
 import { GnarlModifier } from "./scene/graph/modifiers/gnarl";
 import { SmoothModifier } from "./scene/graph/modifiers/smooth";
@@ -13,7 +14,11 @@ import {
   StatsBladeApi,
   StatsPanePluginBundle,
 } from "./tweak-pane/stats-blade";
-import { createLayers, LayersPluginBundle } from "./tweak-pane/layers";
+import {
+  createLayers,
+  type LayerType,
+  LayersPluginBundle,
+} from "./tweak-pane/layers";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -49,25 +54,12 @@ const stats = pane.addBlade({ view: "stats" }) as StatsBladeApi;
 stats.setRenderer(renderer.capabilities.isWebGL2 ? "WebGL2" : "WebGL");
 
 const tab = pane.addTab({
-  pages: [{ title: "Line" }, { title: "Joints" }, { title: "Layers" }],
+  pages: [{ title: "Line" }, { title: "Joints" }],
 });
-const [linePage, jointsPage, layersPage] = tab.pages;
-let selectedLineFolder: FolderApi | null = null;
+const [linePage, jointsPage] = tab.pages;
 
-linePage
-  .addBinding(mainScene, "selectedLineId", {
-    label: "line",
-    options: Object.fromEntries(
-      mainScene.graph.getLineEntries().map(({ id }) => [id, id]),
-    ),
-  })
-  .on("change", () => {
-    rebuildSelectedLineFolder();
-  });
-
-rebuildSelectedLineFolder();
+buildLineLayers();
 buildJointsPage();
-buildLayersPage();
 
 const timer = new THREE.Timer();
 timer.connect(document);
@@ -95,41 +87,8 @@ window.addEventListener("resize", resize);
 resize();
 animate();
 
-function rebuildSelectedLineFolder(): void {
-  selectedLineFolder?.dispose();
-
-  const line = mainScene.graph.getLineById(mainScene.selectedLineId);
-
-  if (!line) {
-    return;
-  }
-
-  selectedLineFolder = linePage.addFolder({ title: "Selected Line" });
-  selectedLineFolder.addBinding(line, "pointCount", {
-    readonly: true,
-  });
-  selectedLineFolder.addBinding(line, "thickness", {
-    min: 1,
-    max: 10,
-    step: 1,
-  });
-  selectedLineFolder.addBinding(line, "debugT", {
-    min: 0,
-    max: 1,
-    step: 0.01,
-  });
-  selectedLineFolder.addBinding(line, "debugPointVisible");
-  selectedLineFolder.addBinding(line, "debugLinePointsVisible");
-
-  for (const modifier of line.modifiers) {
-    addModifierControls(selectedLineFolder, modifier);
-  }
-}
-
-function addModifierControls(parentFolder: FolderApi, modifier: LineModifier): void {
-  const folder = parentFolder.addFolder({ title: modifier.name });
-  folder.addBinding(modifier, "enabled");
-
+function buildModifierControls(folder: FolderApi, modifier: LineModifier): void {
+  // `enabled` is driven by the layer's eye toggle, so only params + envelope here.
   if (modifier instanceof SmoothModifier) {
     folder.addBinding(modifier.params, "mode", {
       options: {
@@ -203,50 +162,108 @@ function addModifierControls(parentFolder: FolderApi, modifier: LineModifier): v
   addModifierEnvelopeControls(folder, modifier);
 }
 
-function buildLayersPage(): void {
-  createLayers(layersPage, {
-    types: [
-      {
-        name: "Smooth",
-        createState: () => ({ strength: 0.5, iterations: 4 }),
-        build: (folder, layer) => {
-          folder.addBinding(layer.state, "strength", {
-            min: 0,
-            max: 1,
-            step: 0.01,
-          });
-          folder.addBinding(layer.state, "iterations", {
-            min: 1,
-            max: 24,
-            step: 1,
-          });
-        },
-      },
-      {
-        name: "Gnarl",
-        createState: () => ({ amount: 1, amplitude: 0.25 }),
-        build: (folder, layer) => {
-          folder.addBinding(layer.state, "amount", {
-            min: 0,
-            max: 2,
-            step: 0.01,
-          });
-          folder.addBinding(layer.state, "amplitude", {
-            min: 0,
-            max: 0.75,
-            step: 0.01,
-          });
-        },
-      },
-    ],
-    onSelect: (layer) => {
-      console.log("[layers] select", layer ? layer.id : null);
+function modifierTypeName(modifier: LineModifier): string {
+  if (modifier instanceof GnarlModifier) {
+    return "Gnarl";
+  }
+  if (modifier instanceof TwistModifier) {
+    return "Twist";
+  }
+  return "Smooth";
+}
+
+// Each line's modifiers are themselves a sortable layer list: add/remove modifiers,
+// toggle them with the eye (`enabled`), and reorder them to change the modifier stack.
+function buildModifierLayers(folder: FolderApi, line: GraphLine): void {
+  const modifierTypes: LayerType<LineModifier>[] = [
+    {
+      name: "Smooth",
+      createState: () => new SmoothModifier(),
+      build: (modFolder, layer) => buildModifierControls(modFolder, layer.state),
     },
+    {
+      name: "Gnarl",
+      createState: () => new GnarlModifier(),
+      build: (modFolder, layer) => buildModifierControls(modFolder, layer.state),
+    },
+    {
+      name: "Twist",
+      createState: () => new TwistModifier(),
+      build: (modFolder, layer) => buildModifierControls(modFolder, layer.state),
+    },
+  ];
+
+  createLayers(folder, {
+    title: "Modifiers",
+    addLabel: "Add Modifier",
+    types: modifierTypes,
+    initialLayers: line.modifiers.map((modifier) => ({
+      type: modifierTypeName(modifier),
+      name: modifier.name,
+      state: modifier,
+      visible: modifier.enabled,
+    })),
     onVisibility: (layer) => {
-      console.log("[layers] visibility", layer.id, layer.visible);
+      (layer.state as LineModifier).enabled = layer.visible;
+    },
+    onAdd: (layer) => {
+      const modifier = layer.state as LineModifier;
+      modifier.enabled = layer.visible;
+      line.modifiers.push(modifier);
+    },
+    onRemove: (layer) => {
+      line.modifiers = line.modifiers.filter((modifier) => modifier !== layer.state);
     },
     onReorder: (layers) => {
-      console.log("[layers] reorder", layers.map((layer) => layer.id));
+      line.modifiers = layers.map((layer) => layer.state as LineModifier);
+    },
+  });
+}
+
+function buildLineLayers(): void {
+  // Each graph line is a layer; selecting one reveals its properties + modifier layers.
+  const lineType: LayerType<GraphLine> = {
+    name: "Line",
+    createState: () =>
+      mainScene.graph.addLine({
+        color: 0x9ad1ff,
+        points: [
+          new THREE.Vector3(-0.5, 0, 0),
+          new THREE.Vector3(0.5, 0, 0),
+        ],
+      }),
+    build: (folder, layer) => {
+      const line = layer.state;
+      folder.addBinding(line, "pointCount", { readonly: true });
+      folder.addBinding(line, "thickness", { min: 1, max: 10, step: 1 });
+      folder.addBinding(line, "debugT", { min: 0, max: 1, step: 0.01 });
+      folder.addBinding(line, "debugPointVisible");
+      folder.addBinding(line, "debugLinePointsVisible");
+      buildModifierLayers(folder, line);
+    },
+  };
+
+  createLayers(linePage, {
+    title: "Lines",
+    addLabel: "Add Line",
+    types: [lineType],
+    initialLayers: mainScene.graph.getLineEntries().map(({ id, line }) => ({
+      type: "Line",
+      id,
+      name: id,
+      state: line,
+      visible: line.object.visible,
+    })),
+    onSelect: (layer) => {
+      if (layer) {
+        mainScene.selectedLineId = layer.id;
+      }
+    },
+    onVisibility: (layer) => {
+      (layer.state as GraphLine).object.visible = layer.visible;
+    },
+    onRemove: (layer) => {
+      mainScene.graph.removeLine(layer.state as GraphLine);
     },
   });
 }
