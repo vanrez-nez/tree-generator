@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { Graph } from "./graph/graph";
+import { SplineModifier } from "./graph/modifiers/spline";
 
 export class MainScene {
   readonly scene = new THREE.Scene();
@@ -18,7 +19,7 @@ export class MainScene {
         new THREE.Vector3(0.5, -0.25, 0),
         new THREE.Vector3(1.5, 0.9, 0),
       ],
-      smooth: true,
+      modifiers: [new SplineModifier({ segments: 64 })],
       thickness: 1,
     });
 
