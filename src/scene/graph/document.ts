@@ -1,4 +1,5 @@
 import type { GraphLineStyle } from "./line";
+import type { LineTubeOptions } from "./line-tube";
 import type { ModifierEnvelope } from "./modifiers/modifier";
 import type { CoilModifierParams } from "./modifiers/coil";
 import type { GnarlModifierParams } from "./modifiers/gnarl";
@@ -53,6 +54,7 @@ export type GraphLineDocument = {
   points: GraphPointDocument[];
   style?: GraphLineStyle;
   thickness?: number;
+  tube?: LineTubeOptions;
 };
 
 export type JointDocument = {

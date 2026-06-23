@@ -4,6 +4,7 @@ import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { applyEnvelope, type LineModifier } from "./modifiers/modifier";
 import { SmoothModifier } from "./modifiers/smooth";
+import { LineTube, type LineTubeOptions } from "./line-tube";
 
 export type GraphLineStyle = "normal" | "dashed";
 
@@ -19,6 +20,7 @@ export type GraphLineOptions = {
   smooth?: boolean;
   style?: GraphLineStyle;
   thickness?: number;
+  tube?: LineTubeOptions;
 };
 
 type LineGeometryWithInstanceCache = LineGeometry & {
@@ -150,6 +152,11 @@ export class GraphLineVisual {
   constructor(private readonly lineState: GraphLine) {
     this.object.add(this.line);
     this.object.add(this.debugPoint);
+
+    if (this.lineState.tube) {
+      this.object.add(this.lineState.tube.object);
+    }
+
     this.debugPoint.renderOrder = 10;
     this.updateDrawing();
   }
@@ -173,6 +180,7 @@ export class GraphLineVisual {
     const drawPoints = this.lineState.virtual.getDrawPoints();
     this.updateLinePointDebugMarkers(drawPoints, camera);
     this.setGeometryPoints(drawPoints);
+    this.lineState.tube?.update(drawPoints);
 
     if (this.lineState.style === "dashed") {
       this.line.computeLineDistances();
@@ -182,6 +190,12 @@ export class GraphLineVisual {
   dispose(): void {
     this.object.remove(this.line);
     this.object.remove(this.debugPoint);
+
+    if (this.lineState.tube) {
+      this.object.remove(this.lineState.tube.object);
+      this.lineState.tube.dispose();
+    }
+
     this.geometry.dispose();
     this.material.dispose();
     this.debugGeometry.dispose();
@@ -307,6 +321,7 @@ export class GraphLine {
 
   readonly object: THREE.Group;
   readonly virtual: VirtualLine;
+  readonly tube?: LineTube;
 
   private readonly visual: GraphLineVisual;
 
@@ -322,6 +337,7 @@ export class GraphLine {
     smooth = false,
     style = "normal",
     thickness = 1,
+    tube,
   }: GraphLineOptions = {}) {
     this.color = color;
     this.dashSize = dashSize;
@@ -332,6 +348,7 @@ export class GraphLine {
     this.style = style;
     this.thickness = thickness;
     this.virtual = new VirtualLine({ modifiers, points, smooth });
+    this.tube = tube ? new LineTube(tube) : undefined;
     this.visual = new GraphLineVisual(this);
     this.object = this.visual.object;
   }

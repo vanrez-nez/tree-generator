@@ -1,10 +1,12 @@
 import "./style.css";
 import * as EssentialsPlugin from "@tweakpane/plugin-essentials";
+import type { CubicBezierApi } from "@tweakpane/plugin-essentials";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { FolderApi, Pane } from "tweakpane";
 import { MainScene } from "./scene/main";
 import { GraphLine } from "./scene/graph/line";
+import type { CubicBezierCurve } from "./scene/graph/curve";
 import type { LineModifier } from "./scene/graph/modifiers/modifier";
 import { CoilModifier } from "./scene/graph/modifiers/coil";
 import { GnarlModifier } from "./scene/graph/modifiers/gnarl";
@@ -87,6 +89,35 @@ function animate(timestamp?: number): void {
 window.addEventListener("resize", resize);
 resize();
 animate();
+
+// Per-line disc-tube controls: radius (max), tip taper, opacity, visibility, and a cubic-Bézier
+// curve that shapes how the radius falls off from the line's start to its tip.
+function addLineTubeControls(folder: FolderApi, line: GraphLine): void {
+  const tube = line.tube;
+
+  if (!tube) {
+    return;
+  }
+
+  const tubeFolder = folder.addFolder({ title: "Tube", expanded: false });
+  tubeFolder.addBinding(tube, "visible");
+  tubeFolder.addBinding(tube, "radius", { min: 0, max: 1, step: 0.005 });
+  tubeFolder.addBinding(tube, "density", { min: 1, max: 48, step: 1 });
+  tubeFolder.addBinding(tube, "tipScale", { label: "tip", min: 0, max: 1, step: 0.01 });
+  tubeFolder.addBinding(tube, "opacity", { min: 0, max: 1, step: 0.01 });
+
+  const curveBlade = tubeFolder.addBlade({
+    view: "cubicbezier",
+    value: tube.curve,
+    expanded: false,
+    label: "taper",
+    picker: "inline",
+  }) as CubicBezierApi;
+
+  curveBlade.on("change", (event) => {
+    tube.curve = event.value.toObject() as unknown as CubicBezierCurve;
+  });
+}
 
 function buildModifierControls(folder: FolderApi, modifier: LineModifier): void {
   // `enabled` is driven by the layer's eye toggle, so only params + envelope here.
@@ -271,6 +302,7 @@ function buildLineLayers(): void {
       folder.addBinding(line, "debugT", { min: 0, max: 1, step: 0.01 });
       folder.addBinding(line, "debugPointVisible");
       folder.addBinding(line, "debugLinePointsVisible");
+      addLineTubeControls(folder, line);
       buildModifierLayers(folder, line);
     },
   };
@@ -300,7 +332,76 @@ function buildLineLayers(): void {
   });
 }
 
+function jointGroup(childLineId: string): "branch" | "root" | null {
+  if (childLineId.startsWith("branch")) {
+    return "branch";
+  }
+  if (childLineId.startsWith("root")) {
+    return "root";
+  }
+  return null;
+}
+
+// Branching level encoded in the line id: `branch-0` / `root-0` = 1, `branch-0-1` = 2, …
+function jointLevel(childLineId: string): number {
+  return childLineId.split("-").length - 1;
+}
+
+// One slider per group + level that drives the lean clamp of every joint at that level. The
+// constraint reads `maxLeanAngle` live each frame, so edits reshape all those forks at once.
+function buildLeanAngleControls(): void {
+  const seen = new Map<string, { group: string; level: number; angle: number }>();
+
+  for (const { document, joint } of mainScene.graph.getJointEntries()) {
+    const group = jointGroup(document.childLineId);
+
+    if (!group) {
+      continue;
+    }
+
+    const level = jointLevel(document.childLineId);
+    const key = `${group}-${level}`;
+
+    if (!seen.has(key)) {
+      seen.set(key, { group, level, angle: joint.maxLeanAngle });
+    }
+  }
+
+  if (seen.size === 0) {
+    return;
+  }
+
+  const folder = jointsPage.addFolder({ title: "Lean angles", expanded: true });
+  const combos = [...seen.values()].sort(
+    (a, b) => a.group.localeCompare(b.group) || a.level - b.level,
+  );
+
+  for (const combo of combos) {
+    const state = { value: combo.angle };
+
+    folder
+      .addBinding(state, "value", {
+        label: `${combo.group} L${combo.level} (°)`,
+        min: 0,
+        max: 90,
+        step: 1,
+      })
+      .on("change", (event) => {
+        for (const { document, joint } of mainScene.graph.getJointEntries()) {
+          if (
+            jointGroup(document.childLineId) === combo.group &&
+            jointLevel(document.childLineId) === combo.level
+          ) {
+            joint.maxLeanAngle = event.value;
+          }
+        }
+      });
+  }
+}
+
 function buildJointsPage(): void {
+  buildLeanAngleControls();
+
   for (const { document, joint } of mainScene.graph.getJointEntries()) {
     // Collapsed by default; populate the bindings only the first time the folder is expanded,
     // so opening the Joints tab doesn't build controls for every joint at once.

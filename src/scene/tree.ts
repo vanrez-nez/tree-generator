@@ -1,3 +1,4 @@
+import * as THREE from "three";
 import type {
   GraphDocument,
   GraphLineDocument,
@@ -5,6 +6,7 @@ import type {
   ModifierDocument,
 } from "./graph/document";
 import type { ModifierEnvelope } from "./graph/modifiers/modifier";
+import type { CubicBezierCurve } from "./graph/curve";
 
 // Domain layer: assembles a tree (trunk, branches, roots) as a plain line graph using the
 // generic graph primitives + modifiers. The graph engine stays tree-agnostic; all tree
@@ -19,6 +21,12 @@ export type TreeOptions = {
   rootCount?: number;
   branchLevels?: number;
   rootLevels?: number;
+  trunkRadius?: number;
+  radiusScale?: number;
+  tipScale?: number;
+  levelDensity?: number[];
+  branchLeanAngles?: number[];
+  rootLeanAngles?: number[];
 };
 
 type TreeParams = Required<TreeOptions>;
@@ -29,7 +37,16 @@ const DEFAULT_OPTIONS: TreeParams = {
   rootCount: 3,
   branchLevels: 3,
   rootLevels: 3,
+  trunkRadius: 0.45, // master disc radius at the trunk (everything derives from this)
+  radiusScale: 0.6, // disc radius multiplier per branching level
+  tipScale: 0.12, // each line's radius tapers to this fraction toward its tip
+  levelDensity: [16, 10, 7, 5], // discs per unit length by level (index 0 = trunk, gets the most)
+  branchLeanAngles: [30, 60, 70], // joint lean clamp (°) by branch level L1..L3
+  rootLeanAngles: [90, 90, 90], // roots stay unconstrained so they descend freely
 };
+
+const TUBE_OPACITY = 0.35;
+const LINEAR_TAPER: CubicBezierCurve = [0.33, 0.33, 0.66, 0.66];
 
 const TRUNK_ID = "trunk";
 const TRUNK_COLOR = 0x8a6a4f; // brown
@@ -42,7 +59,7 @@ type LimbConfig = {
   levels: number; // deepest level to generate (1 = L1 only, 3 = up to L3)
   subCounts: number[]; // children per parent at depth 2, 3, … (indexed by depth - 2)
   verticalSign: number; // +1 limbs rise (branches), -1 limbs descend (roots)
-  maxLeanAngle: number; // joint lean clamp (90 = unconstrained)
+  leanAngles: number[]; // joint lean clamp (°) per level, indexed by level - 1
   directionPoints?: number;
   baseLength: number; // L1 limb length
   lengthScale: number; // length multiplier per deeper level
@@ -60,7 +77,11 @@ function makeLimb(
   azimuth: number,
   length: number,
   parentT: number,
+  level: number,
 ): { line: GraphLineDocument; joint: JointDocument } {
+  const leanAngle =
+    config.leanAngles[Math.min(level - 1, config.leanAngles.length - 1)] ?? 90;
+
   return {
     line: {
       id,
@@ -81,7 +102,7 @@ function makeLimb(
       parentT,
       childLineId: id,
       childPointIndex: 0,
-      maxLeanAngle: config.maxLeanAngle,
+      maxLeanAngle: leanAngle,
       directionPoints: config.directionPoints,
     },
   };
@@ -111,7 +132,7 @@ function addSubLimbs(
     const parentT = count > 1 ? 0.4 + (index / (count - 1)) * 0.45 : 0.6;
     const id = `${parentId}-${index}`;
 
-    const limb = makeLimb(config, id, parentId, azimuth, length, parentT);
+    const limb = makeLimb(config, id, parentId, azimuth, length, parentT, depth);
     lines.push(limb.line);
     joints.push(limb.joint);
 
@@ -163,7 +184,7 @@ function branchConfig(params: TreeParams): LimbConfig {
     levels: params.branchLevels,
     subCounts: [2, 1], // L2, L3 children per parent
     verticalSign: 1,
-    maxLeanAngle: 55,
+    leanAngles: params.branchLeanAngles,
     directionPoints: 2,
     baseLength: params.height * 0.45,
     lengthScale: 0.6,
@@ -180,7 +201,7 @@ function rootConfig(params: TreeParams): LimbConfig {
     levels: params.rootLevels,
     subCounts: [1, 1], // L2, L3 children per parent
     verticalSign: -1,
-    maxLeanAngle: 90, // unconstrained: roots must be free to descend
+    leanAngles: params.rootLeanAngles, // unconstrained by default: roots descend freely
     baseLength: params.height * 0.4,
     lengthScale: 0.6,
     modifiers: () => [
@@ -204,7 +225,7 @@ function buildBranches(
     const parentT = 0.35 + (index / Math.max(1, params.branchCount - 1)) * 0.55;
     const id = `branch-${index}`;
 
-    const limb = makeLimb(config, id, trunkId, azimuth, config.baseLength, parentT);
+    const limb = makeLimb(config, id, trunkId, azimuth, config.baseLength, parentT, 1);
     lines.push(limb.line);
     joints.push(limb.joint);
 
@@ -228,7 +249,7 @@ function buildRoots(
     const azimuth = (index / params.rootCount) * Math.PI * 2;
     const id = `root-${index}`;
 
-    const limb = makeLimb(config, id, trunkId, azimuth, config.baseLength, 0.03);
+    const limb = makeLimb(config, id, trunkId, azimuth, config.baseLength, 0.03, 1);
     lines.push(limb.line);
     joints.push(limb.joint);
 
@@ -238,6 +259,41 @@ function buildRoots(
   return { lines, joints };
 }
 
+// Branching level encoded in the line id: trunk = 0, `branch-0` / `root-0` = 1,
+// `branch-0-1` = 2, `branch-0-1-0` = 3, … (one segment per level).
+function levelOf(id: string): number {
+  if (id === TRUNK_ID) {
+    return 0;
+  }
+  return id.split("-").length - 1;
+}
+
+// A distinct, evenly-spread hue per line (golden-angle), so each branch's disc tube reads as
+// its own color.
+function distinctColor(index: number): number {
+  const hue = ((index * 137.508) % 360) / 360;
+  return new THREE.Color().setHSL(hue, 0.65, 0.55).getHex();
+}
+
+// Give every line a disc tube: max radius set by its branching level (trunk × scale^level),
+// tapering to its tip, with a distinct semitransparent color.
+function assignTubes(lines: GraphLineDocument[], params: TreeParams): void {
+  lines.forEach((line, index) => {
+    const level = levelOf(line.id);
+    const radius = params.trunkRadius * Math.pow(params.radiusScale, level);
+    const density =
+      params.levelDensity[Math.min(level, params.levelDensity.length - 1)] ?? 8;
+    line.tube = {
+      radius,
+      density,
+      tipScale: params.tipScale,
+      color: distinctColor(index),
+      opacity: TUBE_OPACITY,
+      curve: [...LINEAR_TAPER],
+    };
+  });
+}
+
 export function buildTreeDocument(options: TreeOptions = {}): GraphDocument {
   const params: TreeParams = { ...DEFAULT_OPTIONS, ...options };
 
@@ -245,8 +301,11 @@ export function buildTreeDocument(options: TreeOptions = {}): GraphDocument {
   const branches = buildBranches(trunk.id, params);
   const roots = buildRoots(trunk.id, params);
 
+  const lines = [trunk, ...branches.lines, ...roots.lines];
+  assignTubes(lines, params);
+
   return {
-    lines: [trunk, ...branches.lines, ...roots.lines],
+    lines,
     joints: [...branches.joints, ...roots.joints],
   };
 }

@@ -163,6 +163,7 @@ function createLineOptions(lineDocument: GraphLineDocument): GraphLineOptions {
     ),
     style: lineDocument.style,
     thickness: lineDocument.thickness,
+    tube: lineDocument.tube,
   };
 }
 
