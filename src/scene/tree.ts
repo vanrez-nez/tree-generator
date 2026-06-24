@@ -193,9 +193,12 @@ function buildTrunk(params: TreeParams): GraphLineDocument {
         envelope: footAnchorEnvelope(),
         params: { amount: 0.6, radius: 0.06, turns: 1 },
       },
-      // Last: guarantee the base stands vertical (perpendicular to the floor) regardless of the
+      // Guarantee the base stands vertical (perpendicular to the floor) regardless of the
       // lean / gnarl / twist above.
       { type: "footAlign", params: { height: 0.15, amount: 1 } },
+      // Final: keep the line mesh-ready (radius of curvature >= tube radius). `clearance`/`spacing`
+      // are injected from the tube by assignTubes.
+      { type: "discAlign", params: { safety: 1.1 } },
     ],
   };
 }
@@ -213,6 +216,7 @@ function branchConfig(params: TreeParams): LimbConfig {
     modifiers: () => [
       { type: "smooth", params: { mode: "laplacian", segments: 12 } },
       { type: "gnarl", params: { amount: 0.8, amplitude: 0.16, cycles: 1.4 } },
+      { type: "discAlign", params: { safety: 1.1 } },
     ],
   };
 }
@@ -337,6 +341,7 @@ function buildRoots(
       // descent isn't flattened away from the trunk.
       modifiers: [
         { type: "smooth", params: { mode: "laplacian", segments: 32, strength: 0.3 } },
+        { type: "discAlign", params: { safety: 1.1 } },
       ],
     });
 
@@ -419,6 +424,13 @@ function assignTubes(
       opacity: TUBE_OPACITY,
       curve: [...LINEAR_TAPER],
     };
+
+    // Feed the disc-align modifier the tube it must keep clear of: discs space ~1/density apart,
+    // and the curvature limit uses the (max) tube radius as the clearance.
+    const discAlign = line.modifiers?.find((modifier) => modifier.type === "discAlign");
+    if (discAlign) {
+      discAlign.params = { ...discAlign.params, clearance: radius, spacing: 1 / density };
+    }
   }
 }
 

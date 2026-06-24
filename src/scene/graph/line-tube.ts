@@ -5,6 +5,7 @@ import {
   surfaceCrossing,
   type ParentSurface,
 } from "./collar";
+import { rotationMinimizingFrames, type Frame } from "./modifiers/utils";
 
 // A per-line "tube": filled, semitransparent discs sampled along the line (density = discs per
 // unit length), each perpendicular to the local tangent, tapering from `radius` to
@@ -28,8 +29,6 @@ export type LineTubeOptions = {
 
 const LINEAR_CURVE: CubicBezierCurve = [0.33, 0.33, 0.66, 0.66];
 const FORWARD = new THREE.Vector3(0, 0, 1);
-const WORLD_UP = new THREE.Vector3(0, 1, 0);
-const WORLD_X = new THREE.Vector3(1, 0, 0);
 const MAX_DISCS = 256;
 
 export class LineTube {
@@ -114,17 +113,31 @@ export class LineTube {
       this.rebuildMesh(count);
     }
 
+    // Sample disc positions/tangents/radii, then build one rotation-minimizing frame across them
+    // so consecutive rings share the same roll (no twist) — required for meshing.
+    const positions: THREE.Vector3[] = [];
+    const tangents: THREE.Vector3[] = [];
+    const radii: number[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const t = index / (count - 1);
+      const { position, tangent } = sampleAtDistance(points, cumulative, total * t);
+      positions.push(position);
+      tangents.push(tangent);
+      radii.push(this.radiusAt(t));
+    }
+    const frames = rotationMinimizingFrames(positions, tangents);
+
     const surface = this.parentClip;
     const clip: number[] = [];
     let full = 0;
 
     for (let index = 0; index < count; index += 1) {
-      const t = index / (count - 1);
-      const { position, tangent } = sampleAtDistance(points, cumulative, total * t);
-      const radius = this.radiusAt(t);
+      const position = positions[index];
+      const frame = frames[index];
+      const radius = radii[index];
 
       if (!surface) {
-        this.setInstance(full, position, tangent, radius);
+        this.setInstance(full, position, frame, radius);
         full += 1;
         continue;
       }
@@ -133,14 +146,14 @@ export class LineTube {
 
       if (sd >= radius) {
         // Fully outside the parent: whole disc.
-        this.setInstance(full, position, tangent, radius);
+        this.setInstance(full, position, frame, radius);
         full += 1;
       } else if (sd <= -radius) {
         // Fully inside the parent: dropped.
         continue;
       } else {
         // Straddling: cut against the parent surface into the built geometry.
-        appendCutDisc(clip, position, tangent, radius, this.segments, surface);
+        appendCutDisc(clip, position, frame, radius, this.segments, surface);
       }
     }
 
@@ -160,12 +173,13 @@ export class LineTube {
   private setInstance(
     index: number,
     position: THREE.Vector3,
-    tangent: THREE.Vector3,
+    frame: Frame,
     radius: number,
   ): void {
-    _quaternion.setFromUnitVectors(FORWARD, tangent);
-    _scale.set(radius, radius, 1);
-    _matrix.compose(position, _quaternion, _scale);
+    // Orient the unit disc by the RMF: local +X→normal, +Y→binormal, +Z→tangent.
+    _matrix.makeBasis(frame.normal, frame.binormal, frame.tangent);
+    _matrix.scale(_scale.set(radius, radius, 1));
+    _matrix.setPosition(position);
     this.mesh.setMatrixAt(index, _matrix);
   }
 
@@ -194,14 +208,13 @@ export class LineTube {
 function appendCutDisc(
   out: number[],
   center: THREE.Vector3,
-  tangent: THREE.Vector3,
+  frame: Frame,
   radius: number,
   segments: number,
   surface: ParentSurface,
 ): void {
-  const reference = Math.abs(tangent.dot(WORLD_UP)) > 0.95 ? WORLD_X : WORLD_UP;
-  const u = reference.clone().cross(tangent).normalize();
-  const v = tangent.clone().cross(u).normalize();
+  const u = frame.normal;
+  const v = frame.binormal;
 
   const rim: THREE.Vector3[] = [];
   for (let k = 0; k < segments; k += 1) {
@@ -292,5 +305,4 @@ function sampleAtDistance(
 
 const EMPTY = new Float32Array(0);
 const _matrix = new THREE.Matrix4();
-const _quaternion = new THREE.Quaternion();
 const _scale = new THREE.Vector3();

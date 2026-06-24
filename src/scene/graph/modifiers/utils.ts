@@ -65,6 +65,71 @@ export function makePerpendicularBasis(axis: THREE.Vector3): [THREE.Vector3, THR
   return [sideA, sideB];
 }
 
+export type Frame = {
+  tangent: THREE.Vector3;
+  normal: THREE.Vector3;
+  binormal: THREE.Vector3;
+};
+
+// Rotation-minimizing frames along a polyline (double reflection, Wang et al. 2008). Propagates a
+// single coherent frame so consecutive cross-sections share the same roll — no twist between rings,
+// which is what mesh-ready discs need. `tangents` must be unit vectors aligned with `positions`.
+export function rotationMinimizingFrames(
+  positions: THREE.Vector3[],
+  tangents: THREE.Vector3[],
+): Frame[] {
+  const count = positions.length;
+
+  if (count === 0) {
+    return [];
+  }
+
+  const seedNormal = makePerpendicularBasis(tangents[0])[0];
+  const frames: Frame[] = [
+    {
+      tangent: tangents[0].clone(),
+      normal: seedNormal.clone(),
+      binormal: tangents[0].clone().cross(seedNormal).normalize(),
+    },
+  ];
+
+  for (let index = 0; index < count - 1; index += 1) {
+    const previous = frames[index];
+    const tangent = tangents[index + 1];
+
+    const v1 = positions[index + 1].clone().sub(positions[index]);
+    const c1 = v1.dot(v1);
+
+    // Reflect the previous normal + tangent across the plane bisecting the two points.
+    const reflectedNormal =
+      c1 < 1e-12
+        ? previous.normal.clone()
+        : previous.normal.clone().addScaledVector(v1, (-2 / c1) * v1.dot(previous.normal));
+    const reflectedTangent =
+      c1 < 1e-12
+        ? previous.tangent.clone()
+        : previous.tangent.clone().addScaledVector(v1, (-2 / c1) * v1.dot(previous.tangent));
+
+    // Second reflection aligns the reflected tangent with the next tangent.
+    const v2 = tangent.clone().sub(reflectedTangent);
+    const c2 = v2.dot(v2);
+    const normal =
+      c2 < 1e-12
+        ? reflectedNormal
+        : reflectedNormal.addScaledVector(v2, (-2 / c2) * v2.dot(reflectedNormal));
+
+    normal.addScaledVector(tangent, -tangent.dot(normal)).normalize();
+
+    frames.push({
+      tangent: tangent.clone(),
+      normal,
+      binormal: tangent.clone().cross(normal).normalize(),
+    });
+  }
+
+  return frames;
+}
+
 export function makeValueNoise(seed: number): (x: number) => number {
   return (x: number) => {
     const i = Math.floor(x);
