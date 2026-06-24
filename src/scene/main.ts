@@ -2,7 +2,6 @@ import * as THREE from "three";
 import { Graph } from "./graph/graph";
 import { DEFAULT_TREE_OPTIONS, buildTreeDocument, type TreeOptions } from "./tree";
 import { RootSystem } from "./root-system";
-import { LineMesher } from "./meshing/line-mesher";
 
 export class MainScene {
   readonly scene = new THREE.Scene();
