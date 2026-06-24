@@ -378,9 +378,14 @@ function buildRootControls(): void {
   });
 }
 
-// Global mesh resolution + the per-line tube mesh view.
 function buildMeshControls(): void {
-  const folder = pane.addFolder({ title: "Debug" });
+  buildMeshFolder();
+  buildDebugFolder();
+}
+
+// Mesh resolution + surface view: the actual geometry the mesher builds.
+function buildMeshFolder(): void {
+  const folder = pane.addFolder({ title: "Mesh" });
 
   const meshParams = { subdivisions: DEFAULT_TREE_OPTIONS.subdivisions };
   folder
@@ -405,17 +410,46 @@ function buildMeshControls(): void {
       mainScene.setMesherOptions({ smoothIterations: mesherParams.smoothIterations }),
     );
 
-  const view = { surface: true, wireframe: false, discs: false };
+  const view = { surface: true, wireframe: false };
   folder
     .addBinding(view, "surface", { label: "mesh surface" })
     .on("change", (event) => mainScene.mesher.setSurfaceVisible(event.value));
   folder
     .addBinding(view, "wireframe", { label: "wireframe" })
     .on("change", (event) => mainScene.mesher.setSurfaceWireframe(event.value));
-  folder
-    .addBinding(view, "discs", { label: "show discs" })
-    .on("change", (event) => mainScene.setDiscsVisible(event.value));
   folder.addButton({ title: "Rebuild mesh" }).on("click", () => mainScene.rebuildMesh());
+}
+
+// Debug instrumentation: overlay visibility + per-point markers, all editing aids.
+function buildDebugFolder(): void {
+  const folder = pane.addFolder({ title: "Debug" });
+
+  const debugView = {
+    graph: true,
+    helpers: true,
+    discs: false,
+    debugT: 0.5,
+    debugPoint: true,
+    linePoints: false,
+  };
+  folder
+    .addBinding(debugView, "graph", { label: "graph" })
+    .on("change", (event) => mainScene.setGraphVisible(event.value));
+  folder
+    .addBinding(debugView, "helpers", { label: "helpers" })
+    .on("change", (event) => mainScene.setDebugHelpersVisible(event.value));
+  folder
+    .addBinding(debugView, "discs", { label: "show discs" })
+    .on("change", (event) => mainScene.setDiscsVisible(event.value));
+  folder
+    .addBinding(debugView, "debugT", { label: "debug T", min: 0, max: 1, step: 0.01 })
+    .on("change", (event) => mainScene.setDebugT(event.value));
+  folder
+    .addBinding(debugView, "debugPoint", { label: "debug point" })
+    .on("change", (event) => mainScene.setDebugPointVisible(event.value));
+  folder
+    .addBinding(debugView, "linePoints", { label: "line points" })
+    .on("change", (event) => mainScene.setDebugLinePointsVisible(event.value));
 }
 
 function buildLineLayers(): FolderApi {
@@ -434,9 +468,6 @@ function buildLineLayers(): FolderApi {
       const line = layer.state;
       folder.addBinding(line, "pointCount", { readonly: true });
       folder.addBinding(line, "thickness", { min: 1, max: 10, step: 1 });
-      folder.addBinding(line, "debugT", { min: 0, max: 1, step: 0.01 });
-      folder.addBinding(line, "debugPointVisible");
-      folder.addBinding(line, "debugLinePointsVisible");
       addLineTubeControls(folder, line);
       buildModifierLayers(folder, line);
     },

@@ -146,7 +146,14 @@ export class GraphLineVisual {
   });
   private readonly linePointDebugMarkers: THREE.Mesh[] = [];
   private readonly geometry = new LineGeometry();
-  private readonly material = new LineMaterial({ color: 0xffffff });
+  // Drawn as an always-visible overlay: depthTest off + a high renderOrder so the line
+  // skeleton shows through the surface mesh regardless of camera angle.
+  private readonly material = new LineMaterial({
+    color: 0xffffff,
+    depthTest: false,
+    depthWrite: false,
+    transparent: true,
+  });
   private readonly line = new Line2(this.geometry, this.material);
 
   constructor(private readonly lineState: GraphLine) {
@@ -157,6 +164,7 @@ export class GraphLineVisual {
       this.object.add(this.lineState.tube.object);
     }
 
+    this.line.renderOrder = 9;
     this.debugPoint.renderOrder = 10;
     this.updateDrawing();
   }

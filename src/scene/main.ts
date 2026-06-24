@@ -21,6 +21,12 @@ export class MainScene {
   private rootSystem: RootSystem | undefined;
   private mesherOptions: MesherOptions = { ...DEFAULT_MESHER_OPTIONS };
   private discsVisible = false;
+  private debugHelpers: THREE.Group | undefined;
+  // Global debug-point config, persisted here so it survives graph rebuilds (loadTree creates
+  // fresh lines). Defaults mirror GraphLine's own defaults.
+  private debugPointVisible = true;
+  private debugLinePointsVisible = false;
+  private debugT = 0.5;
   private meshDirty = true;
 
   constructor() {
@@ -64,6 +70,40 @@ export class MainScene {
 
     debug.add(plane, grid, axes);
     this.scene.add(debug);
+    this.debugHelpers = debug;
+  }
+
+  // Toggle the whole line skeleton (drawn as an always-visible overlay).
+  setGraphVisible(visible: boolean): void {
+    this.graph.group.visible = visible;
+  }
+
+  // Toggle the spatial-reference helpers (ground plane, grid, axes).
+  setDebugHelpersVisible(visible: boolean): void {
+    if (this.debugHelpers) this.debugHelpers.visible = visible;
+  }
+
+  setDebugPointVisible(visible: boolean): void {
+    this.debugPointVisible = visible;
+    this.applyDebugConfig();
+  }
+
+  setDebugLinePointsVisible(visible: boolean): void {
+    this.debugLinePointsVisible = visible;
+    this.applyDebugConfig();
+  }
+
+  setDebugT(t: number): void {
+    this.debugT = t;
+    this.applyDebugConfig();
+  }
+
+  private applyDebugConfig(): void {
+    for (const { line } of this.graph.getLineEntries()) {
+      line.debugPointVisible = this.debugPointVisible;
+      line.debugLinePointsVisible = this.debugLinePointsVisible;
+      line.debugT = this.debugT;
+    }
   }
 
   // Merge new tree options and rebuild the graph from scratch (count/topology may change).
@@ -87,6 +127,7 @@ export class MainScene {
     // Reapply the persisted disc-overlay visibility: loadTree creates fresh tubes (visible by
     // default), so without this a rebuild from any control would silently re-show the discs.
     this.applyDiscsVisibility();
+    this.applyDebugConfig();
     this.meshDirty = true;
   }
 
