@@ -4,7 +4,7 @@ import type { CubicBezierApi } from "@tweakpane/plugin-essentials";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { FolderApi, Pane } from "tweakpane";
-import { MainScene } from "./scene/main";
+import { DEFAULT_MESHER_OPTIONS, MainScene } from "./scene/main";
 import { DEFAULT_TREE_OPTIONS } from "./scene/tree";
 import { GraphLine } from "./scene/graph/line";
 import type { CubicBezierCurve } from "./scene/graph/curve";
@@ -390,7 +390,22 @@ function buildMeshControls(): void {
       rebuildScenePanels();
     });
 
-  const view = { surface: true, wireframe: false, discs: true };
+  const mesherParams = {
+    radialResolution: DEFAULT_MESHER_OPTIONS.radialResolution,
+    smoothIterations: DEFAULT_MESHER_OPTIONS.smoothIterations,
+  };
+  folder
+    .addBinding(mesherParams, "radialResolution", { label: "radial res", min: 3, max: 64, step: 1 })
+    .on("change", () =>
+      mainScene.setMesherOptions({ radialResolution: mesherParams.radialResolution }),
+    );
+  folder
+    .addBinding(mesherParams, "smoothIterations", { label: "smooth", min: 0, max: 12, step: 1 })
+    .on("change", () =>
+      mainScene.setMesherOptions({ smoothIterations: mesherParams.smoothIterations }),
+    );
+
+  const view = { surface: true, wireframe: false, discs: false };
   folder
     .addBinding(view, "surface", { label: "mesh surface" })
     .on("change", (event) => mainScene.mesher.setSurfaceVisible(event.value));
@@ -399,16 +414,8 @@ function buildMeshControls(): void {
     .on("change", (event) => mainScene.mesher.setSurfaceWireframe(event.value));
   folder
     .addBinding(view, "discs", { label: "show discs" })
-    .on("change", (event) => setDiscsVisible(event.value));
+    .on("change", (event) => mainScene.setDiscsVisible(event.value));
   folder.addButton({ title: "Rebuild mesh" }).on("click", () => mainScene.rebuildMesh());
-}
-
-function setDiscsVisible(visible: boolean): void {
-  for (const { line } of mainScene.graph.getLineEntries()) {
-    if (line.tube) {
-      line.tube.visible = visible;
-    }
-  }
 }
 
 function buildLineLayers(): FolderApi {

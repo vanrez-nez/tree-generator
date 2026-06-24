@@ -2,16 +2,25 @@ import * as THREE from "three";
 import { Graph } from "./graph/graph";
 import { DEFAULT_TREE_OPTIONS, buildTreeDocument, type TreeOptions } from "./tree";
 import { RootSystem } from "./root-system";
+import { TreeMesher } from "./mesher/tree-mesher";
+import type { MesherOptions } from "./mesher/welding-mesher";
+
+export const DEFAULT_MESHER_OPTIONS: MesherOptions = {
+  radialResolution: 32,
+  smoothIterations: 4,
+};
 
 export class MainScene {
   readonly scene = new THREE.Scene();
   readonly graph = new Graph();
-  readonly mesher = new LineMesher();
+  readonly mesher = new TreeMesher();
 
   selectedLineId = "trunk";
 
   private treeOptions: TreeOptions = {};
   private rootSystem: RootSystem | undefined;
+  private mesherOptions: MesherOptions = { ...DEFAULT_MESHER_OPTIONS };
+  private discsVisible = false;
   private meshDirty = true;
 
   constructor() {
@@ -75,10 +84,32 @@ export class MainScene {
       .filter(({ id }) => /^root-\d+$/.test(id))
       .map(({ line }) => line);
     this.rootSystem = new RootSystem(trunk, rootLines, params);
+    // Reapply the persisted disc-overlay visibility: loadTree creates fresh tubes (visible by
+    // default), so without this a rebuild from any control would silently re-show the discs.
+    this.applyDiscsVisibility();
     this.meshDirty = true;
   }
 
-  // Rebuild the line meshes on the next update, once the graph geometry has settled.
+  // The disc overlay (per-line cross-section rings) is an editing aid, owned here so its
+  // visibility survives graph rebuilds. Off by default.
+  setDiscsVisible(visible: boolean): void {
+    this.discsVisible = visible;
+    this.applyDiscsVisibility();
+  }
+
+  private applyDiscsVisibility(): void {
+    for (const { line } of this.graph.getLineEntries()) {
+      if (line.tube) line.tube.visible = this.discsVisible;
+    }
+  }
+
+  // Merge new mesher options and rebuild the surface on the next update.
+  setMesherOptions(options: Partial<MesherOptions>): void {
+    this.mesherOptions = { ...this.mesherOptions, ...options };
+    this.meshDirty = true;
+  }
+
+  // Rebuild the surface mesh on the next update, once the graph geometry has settled.
   rebuildMesh(): void {
     this.meshDirty = true;
   }
@@ -87,7 +118,7 @@ export class MainScene {
     this.graph.update(camera, viewportSize, () => this.rootSystem?.update());
 
     if (this.meshDirty) {
-      this.mesher.build(this.graph);
+      this.mesher.build(this.graph, this.mesherOptions);
       this.meshDirty = false;
     }
   }
