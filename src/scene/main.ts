@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { Graph } from "./graph/graph";
-import { buildTreeDocument, type TreeOptions } from "./tree";
+import { DEFAULT_TREE_OPTIONS, buildTreeDocument, type TreeOptions } from "./tree";
+import { RootSystem } from "./root-system";
 
 export class MainScene {
   readonly scene = new THREE.Scene();
@@ -9,6 +10,7 @@ export class MainScene {
   selectedLineId = "trunk";
 
   private treeOptions: TreeOptions = {};
+  private rootSystem: RootSystem | undefined;
 
   constructor() {
     this.scene.background = new THREE.Color(0x111111);
@@ -62,9 +64,17 @@ export class MainScene {
     const document = buildTreeDocument(this.treeOptions);
     this.graph.loadDocument(document);
     this.selectedLineId = document.lines[0]?.id ?? "trunk";
+
+    const params = { ...DEFAULT_TREE_OPTIONS, ...this.treeOptions };
+    const trunk = this.graph.getLineById("trunk");
+    const rootLines = this.graph
+      .getLineEntries()
+      .filter(({ id }) => /^root-\d+$/.test(id))
+      .map(({ line }) => line);
+    this.rootSystem = new RootSystem(trunk, rootLines, params);
   }
 
   update(_deltaTime: number, camera: THREE.Camera, viewportSize?: THREE.Vector2): void {
-    this.graph.update(camera, viewportSize);
+    this.graph.update(camera, viewportSize, () => this.rootSystem?.update());
   }
 }

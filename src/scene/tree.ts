@@ -30,9 +30,11 @@ export type TreeOptions = {
   // Roots (point-based, main roots only).
   rootHeight?: number; // trunk parameter (0..0.5) where roots attach
   rootLength?: number; // root polyline length
-  rootDownAngle?: number; // initial tilt below horizontal (degrees)
-  rootDownCurve?: number; // extra downward bend accumulated over the length (degrees)
+  rootDownAngle?: number; // initial tilt below horizontal (degrees), outer flare only
+  rootDownCurve?: number; // extra downward bend accumulated over the length (degrees), outer flare
   maxRoots?: number; // cap on root count (actual = min(maxRoots, how many fit around the base))
+  rootSeparation?: number; // inner descent radial offset, relative to trunk radius (0 = centerline)
+  rootLSmooth?: number; // how rounded the base corner is (0 = sharp L, 1 = smooth)
 };
 
 type TreeParams = Required<TreeOptions>;
@@ -52,6 +54,8 @@ const DEFAULT_OPTIONS: TreeParams = {
   rootDownAngle: 30,
   rootDownCurve: 45,
   maxRoots: 8,
+  rootSeparation: 0.6,
+  rootLSmooth: 0.5,
 };
 
 // Resolved defaults, exported so the UI can initialize its controls.
@@ -221,22 +225,23 @@ function trunkRadiusAt(params: TreeParams, t: number): number {
   );
 }
 
-// Authored root polyline: heads outward (azimuth) tilted `downAngle` below horizontal, then
-// curves further down to `downAngle + downCurve` across the length. Pure points — no modifiers.
-function rootPoints(
+// The outer root flare as offsets from its start: heads outward (azimuth) tilted `downAngle`
+// below horizontal, then curves further down to `downAngle + downCurve` across the length. Pure
+// points — no modifiers. offsets[0] is (0,0,0); RootSystem anchors these at the base corner.
+export function rootFlareOffsets(
   azimuth: number,
   length: number,
   downAngleDeg: number,
   downCurveDeg: number,
   steps: number,
-): GraphPointDocument[] {
+): THREE.Vector3[] {
   const downAngle = THREE.MathUtils.degToRad(downAngleDeg);
   const downCurve = THREE.MathUtils.degToRad(downCurveDeg);
   const outX = Math.cos(azimuth);
   const outZ = Math.sin(azimuth);
   const stepLength = length / steps;
 
-  const points: GraphPointDocument[] = [[0, 0, 0]];
+  const offsets = [new THREE.Vector3()];
   let x = 0;
   let y = 0;
   let z = 0;
@@ -247,10 +252,22 @@ function rootPoints(
     x += outX * horizontal;
     y -= Math.sin(tilt) * stepLength;
     z += outZ * horizontal;
-    points.push([x, y, z]);
+    offsets.push(new THREE.Vector3(x, y, z));
   }
 
-  return points;
+  return offsets;
+}
+
+function rootPoints(
+  azimuth: number,
+  length: number,
+  downAngleDeg: number,
+  downCurveDeg: number,
+  steps: number,
+): GraphPointDocument[] {
+  return rootFlareOffsets(azimuth, length, downAngleDeg, downCurveDeg, steps).map(
+    (v) => [v.x, v.y, v.z],
+  );
 }
 
 // L1 branches fork off the trunk at spread heights and recurse into L2/L3.
@@ -313,7 +330,11 @@ function buildRoots(
         params.rootDownCurve,
         ROOT_STEPS,
       ),
-      modifiers: [{ type: "smooth", params: { mode: "laplacian", segments: 16 } }],
+      // Segments high enough to keep the runtime trunk-following detail; light strength so the
+      // descent isn't flattened away from the trunk.
+      modifiers: [
+        { type: "smooth", params: { mode: "laplacian", segments: 32, strength: 0.3 } },
+      ],
     });
 
     joints.push({

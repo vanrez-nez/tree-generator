@@ -134,10 +134,18 @@ export class Graph {
     return this.lineEntries.get(id);
   }
 
-  update(camera: THREE.Camera, viewportSize?: THREE.Vector2): void {
+  // `onPositioned` runs after joints have placed everything but before junctions/draw, so a
+  // caller can reshape lines against the settled geometry (e.g. roots tracing the trunk).
+  update(
+    camera: THREE.Camera,
+    viewportSize?: THREE.Vector2,
+    onPositioned?: () => void,
+  ): void {
     for (const { joint } of this.jointEntries) {
       joint.resolve();
     }
+
+    onPositioned?.();
 
     // Positions are settled: compute each junction (collar + parent-surface clip for the child
     // tube) before drawing so child discs render already cut against the parent.
