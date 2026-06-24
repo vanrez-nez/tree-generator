@@ -6,7 +6,8 @@ import type {
   ModifierDocument,
 } from "./graph/document";
 import type { ModifierEnvelope } from "./graph/modifiers/modifier";
-import type { CubicBezierCurve } from "./graph/curve";
+import { cubicBezierEasing, type CubicBezierCurve } from "./graph/curve";
+import type { LineTubeOptions } from "./graph/line-tube";
 
 // Domain layer: assembles a tree (trunk, branches, roots) as a plain line graph using the
 // generic graph primitives + modifiers. The graph engine stays tree-agnostic; all tree
@@ -47,6 +48,9 @@ const DEFAULT_OPTIONS: TreeParams = {
 
 const TUBE_OPACITY = 0.35;
 const LINEAR_TAPER: CubicBezierCurve = [0.33, 0.33, 0.66, 0.66];
+// A limb's start radius is capped to this fraction of the parent's radius at the branch point,
+// so children are always visibly thinner than the disc they emerge from.
+const BRANCH_RADIUS_RATIO = 0.75;
 
 const TRUNK_ID = "trunk";
 const TRUNK_COLOR = 0x8a6a4f; // brown
@@ -275,23 +279,56 @@ function distinctColor(index: number): number {
   return new THREE.Color().setHSL(hue, 0.65, 0.55).getHex();
 }
 
-// Give every line a disc tube: max radius set by its branching level (trunk × scale^level),
-// tapering to its tip, with a distinct semitransparent color.
-function assignTubes(lines: GraphLineDocument[], params: TreeParams): void {
-  lines.forEach((line, index) => {
+// The parent tube's radius where a child attaches (parentT along the parent), following the
+// parent's taper. Used to cap the child's start radius so a limb is never fatter than the
+// parent disc it sprouts from.
+function parentRadiusAtBranch(parent: LineTubeOptions, parentT: number): number {
+  const tipScale = parent.tipScale ?? 0.12;
+  const curve = parent.curve ?? LINEAR_TAPER;
+  const eased = cubicBezierEasing(THREE.MathUtils.clamp(parentT, 0, 1), curve);
+  return THREE.MathUtils.lerp(parent.radius, parent.radius * tipScale, eased);
+}
+
+// Give every line a disc tube: max radius from its branching level (trunk × scale^level), but
+// capped at the parent's radius at the branch point so limbs never start fatter than the disc
+// they emerge from. Lines are sized parent-first (ascending level) so the cap chains down
+// levels. Each tube tapers to its tip with a distinct semitransparent color.
+function assignTubes(
+  lines: GraphLineDocument[],
+  joints: JointDocument[],
+  params: TreeParams,
+): void {
+  const byId = new Map(lines.map((line) => [line.id, line]));
+  const jointByChild = new Map(joints.map((joint) => [joint.childLineId, joint]));
+  const colorIndex = new Map(lines.map((line, index) => [line.id, index]));
+
+  const ordered = [...lines].sort((a, b) => levelOf(a.id) - levelOf(b.id));
+
+  for (const line of ordered) {
     const level = levelOf(line.id);
-    const radius = params.trunkRadius * Math.pow(params.radiusScale, level);
+    const levelRadius = params.trunkRadius * Math.pow(params.radiusScale, level);
+    let radius = levelRadius;
+
+    const joint = jointByChild.get(line.id);
+    const parent = joint ? byId.get(joint.parentLineId)?.tube : undefined;
+
+    if (joint && parent) {
+      const cap = parentRadiusAtBranch(parent, joint.parentT) * BRANCH_RADIUS_RATIO;
+      radius = Math.min(levelRadius, cap);
+    }
+
     const density =
       params.levelDensity[Math.min(level, params.levelDensity.length - 1)] ?? 8;
+
     line.tube = {
       radius,
       density,
       tipScale: params.tipScale,
-      color: distinctColor(index),
+      color: distinctColor(colorIndex.get(line.id) ?? 0),
       opacity: TUBE_OPACITY,
       curve: [...LINEAR_TAPER],
     };
-  });
+  }
 }
 
 export function buildTreeDocument(options: TreeOptions = {}): GraphDocument {
@@ -302,10 +339,11 @@ export function buildTreeDocument(options: TreeOptions = {}): GraphDocument {
   const roots = buildRoots(trunk.id, params);
 
   const lines = [trunk, ...branches.lines, ...roots.lines];
-  assignTubes(lines, params);
+  const joints = [...branches.joints, ...roots.joints];
+  assignTubes(lines, joints, params);
 
   return {
     lines,
-    joints: [...branches.joints, ...roots.joints],
+    joints,
   };
 }
