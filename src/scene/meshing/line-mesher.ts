@@ -2,7 +2,6 @@ import * as THREE from "three";
 import type { Graph } from "../graph/graph";
 import type { GraphLine } from "../graph/line";
 import { rotationMinimizingFrames } from "../graph/modifiers/utils";
-import type { TubeDeformer } from "./tube-deformer";
 
 // Per-line tube mesher. Every line (trunk, branches, roots) already carries a tube and therefore a
 // system of discs (cross-section rings). We loft each line's discs into its own closed surface mesh
@@ -21,7 +20,6 @@ type Disk = {
   normal: THREE.Vector3;
   binormal: THREE.Vector3;
   radius: number;
-  t: number;
 };
 
 export class LineMesher {
@@ -57,7 +55,7 @@ export class LineMesher {
       if (disks.length < 2) continue;
       const n = Math.max(3, Math.floor(tube.segments));
 
-      const geometry = buildTubeGeometry(disks, n, tube.deformer);
+      const geometry = buildTubeGeometry(disks, n);
       const mesh = this.meshFor(id, tube.color);
       mesh.geometry.dispose();
       mesh.geometry = geometry;
@@ -97,11 +95,7 @@ export class LineMesher {
 
 // Lofts a closed tube surface from a line's discs: n ring vertices per disc, quad strips between
 // consecutive discs, and a triangle-fan cap on each end.
-function buildTubeGeometry(
-  disks: Disk[],
-  n: number,
-  deformer?: TubeDeformer,
-): THREE.BufferGeometry {
+function buildTubeGeometry(disks: Disk[], n: number): THREE.BufferGeometry {
   const positions: number[] = [];
   const faces: number[] = [];
 
@@ -113,24 +107,11 @@ function buildTubeGeometry(
       const angle = (k / n) * Math.PI * 2;
       const cos = Math.cos(angle);
       const sin = Math.sin(angle);
-      const rimDirection = _rimDirection
-        .set(0, 0, 0)
-        .addScaledVector(disk.normal, cos)
-        .addScaledVector(disk.binormal, sin)
-        .normalize();
-      _rimPoint.copy(disk.center).addScaledVector(rimDirection, disk.radius);
-      if (deformer) {
-        _rimPoint.add(
-          deformer({
-            point: _rimPoint,
-            ringCenter: disk.center,
-            rimDirection,
-            radius: disk.radius,
-            t: disk.t,
-          }),
-        );
-      }
-      positions.push(_rimPoint.x, _rimPoint.y, _rimPoint.z);
+      positions.push(
+        disk.center.x + (disk.normal.x * cos + disk.binormal.x * sin) * disk.radius,
+        disk.center.y + (disk.normal.y * cos + disk.binormal.y * sin) * disk.radius,
+        disk.center.z + (disk.normal.z * cos + disk.binormal.z * sin) * disk.radius,
+      );
     }
   }
 
@@ -201,7 +182,6 @@ function lineDisks(line: GraphLine): Disk[] {
     normal: frames[i].normal,
     binormal: frames[i].binormal,
     radius: radii[i],
-    t: i / (centers.length - 1),
   }));
 }
 
@@ -222,6 +202,3 @@ function sampleAt(
     tangent: tangent.lengthSq() <= 1e-12 ? new THREE.Vector3(0, 1, 0) : tangent.normalize(),
   };
 }
-
-const _rimDirection = new THREE.Vector3();
-const _rimPoint = new THREE.Vector3();

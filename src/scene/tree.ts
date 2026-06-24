@@ -37,7 +37,6 @@ export type TreeOptions = {
   maxRoots?: number; // cap on root count (actual = min(maxRoots, how many fit around the base))
   rootSeparation?: number; // inner descent radial offset, relative to trunk radius (0 = centerline)
   rootLSmooth?: number; // how rounded the base corner is (0 = sharp L, 1 = smooth)
-  rootInfluence?: number; // how strongly inner roots push the trunk tube outward
 };
 
 type TreeParams = Required<TreeOptions>;
@@ -63,7 +62,6 @@ const DEFAULT_OPTIONS: TreeParams = {
   maxRoots: 8,
   rootSeparation: 0.6,
   rootLSmooth: 0.5,
-  rootInfluence: 0.4,
 };
 
 // Resolved defaults, exported so the UI can initialize its controls.
