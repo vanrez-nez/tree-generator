@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
+import { FNV_OFFSET, hashFloat } from "./hash";
 import { applyEnvelope, type LineModifier } from "./modifiers/modifier";
 import { SmoothModifier } from "./modifiers/smooth";
 import { LineTube, type LineTubeOptions } from "./line-tube";
@@ -196,6 +197,7 @@ export class GraphLineVisual {
     this.updateLinePointDebugMarkers(drawPoints, camera);
     this.setGeometryPoints(drawPoints);
     this.lineState.tube?.update(drawPoints);
+    this.lineState.geometryHash = computeGeometryHash(drawPoints, this.lineState.tube);
 
     if (this.lineState.style === "dashed") {
       this.line.computeLineDistances();
@@ -334,6 +336,10 @@ export class GraphLine {
   style: GraphLineStyle;
   thickness: number;
 
+  // Content hash of this line's last-drawn geometry (positions + mesh-relevant tube params),
+  // refreshed every `updateDrawing`. Read by `Graph.getGeometrySignature` to detect graph changes.
+  geometryHash = 0;
+
   readonly object: THREE.Group;
   readonly virtual: VirtualLine;
   readonly tube?: LineTube;
@@ -432,6 +438,30 @@ export class GraphLine {
   dispose(): void {
     this.visual.dispose();
   }
+}
+
+// Hash everything about a line the mesher consumes: the drawn centerline plus the tube's radius
+// profile (radius/tipScale/curve) and sampling density. Visual-only fields (color, opacity,
+// segments, thickness) are excluded — they don't change the surface.
+function computeGeometryHash(points: THREE.Vector3[], tube?: LineTube): number {
+  let hash = FNV_OFFSET;
+
+  for (const point of points) {
+    hash = hashFloat(hash, point.x);
+    hash = hashFloat(hash, point.y);
+    hash = hashFloat(hash, point.z);
+  }
+
+  if (tube) {
+    hash = hashFloat(hash, tube.radius);
+    hash = hashFloat(hash, tube.tipScale);
+    hash = hashFloat(hash, tube.density);
+    for (const value of tube.curve) {
+      hash = hashFloat(hash, value);
+    }
+  }
+
+  return hash >>> 0;
 }
 
 function clamp01(value: number): number {

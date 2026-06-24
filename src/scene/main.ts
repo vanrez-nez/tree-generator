@@ -5,6 +5,9 @@ import { RootSystem } from "./root-system";
 import { TreeMesher } from "./mesher/tree-mesher";
 import type { MesherOptions } from "./mesher/welding-mesher";
 
+// How long graph edits must settle before the (expensive) surface mesh is rebuilt.
+const MESH_REBUILD_DEBOUNCE_MS = 200;
+
 export const DEFAULT_MESHER_OPTIONS: MesherOptions = {
   radialResolution: 32,
   smoothIterations: 4,
@@ -32,7 +35,12 @@ export class MainScene {
   private debugPointVisible = true;
   private debugLinePointsVisible = false;
   private debugT = 0.5;
-  private meshDirty = true;
+  private meshDirty = false;
+  private meshRebuildTimer: ReturnType<typeof setTimeout> | undefined;
+  // Last graph-geometry signature we reacted to. The graph is the source of truth: whenever its
+  // drawn geometry changes (from any source — UI, joints, root system, code), the signature
+  // changes and we schedule a rebuild. Undefined until the first frame so the initial mesh builds.
+  private lastSignature: number | undefined;
 
   constructor() {
     this.scene.background = new THREE.Color(0x111111);
@@ -133,7 +141,8 @@ export class MainScene {
     // default), so without this a rebuild from any control would silently re-show the discs.
     this.applyDiscsVisibility();
     this.applyDebugConfig();
-    this.meshDirty = true;
+    // No explicit rebuild trigger here: loadTree replaces the lines, so the graph signature
+    // changes and `update` schedules the rebuild on the next frame.
   }
 
   // The disc overlay (per-line cross-section rings) is an editing aid, owned here so its
@@ -149,19 +158,43 @@ export class MainScene {
     }
   }
 
-  // Merge new mesher options and rebuild the surface on the next update.
+  // Merge new mesher options and rebuild the surface (debounced).
   setMesherOptions(options: Partial<MesherOptions>): void {
     this.mesherOptions = { ...this.mesherOptions, ...options };
+    this.scheduleMeshRebuild();
+  }
+
+  // Rebuild the surface mesh immediately on the next update (the manual "Rebuild mesh" button).
+  rebuildMesh(): void {
+    if (this.meshRebuildTimer !== undefined) {
+      clearTimeout(this.meshRebuildTimer);
+      this.meshRebuildTimer = undefined;
+    }
     this.meshDirty = true;
   }
 
-  // Rebuild the surface mesh on the next update, once the graph geometry has settled.
-  rebuildMesh(): void {
-    this.meshDirty = true;
+  // Coalesce bursts of graph edits (slider drags, typing) into a single rebuild: each call resets
+  // the timer, so the surface is rebuilt once the user pauses. The build itself runs on the next
+  // frame in `update`, after `graph.update` has settled the geometry the mesher reads.
+  scheduleMeshRebuild(): void {
+    if (this.meshRebuildTimer !== undefined) {
+      clearTimeout(this.meshRebuildTimer);
+    }
+    this.meshRebuildTimer = setTimeout(() => {
+      this.meshRebuildTimer = undefined;
+      this.meshDirty = true;
+    }, MESH_REBUILD_DEBOUNCE_MS);
   }
 
   update(_deltaTime: number, camera: THREE.Camera, viewportSize?: THREE.Vector2): void {
     this.graph.update(camera, viewportSize, () => this.rootSystem?.update());
+
+    // The graph is the source of truth: react to changes in its drawn geometry, not to UI events.
+    const signature = this.graph.getGeometrySignature();
+    if (signature !== this.lastSignature) {
+      this.lastSignature = signature;
+      this.scheduleMeshRebuild();
+    }
 
     if (this.meshDirty) {
       this.mesher.build(this.graph, this.mesherOptions);

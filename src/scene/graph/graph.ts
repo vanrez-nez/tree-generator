@@ -5,6 +5,7 @@ import type {
   JointDocument,
   ModifierDocument,
 } from "./document";
+import { FNV_OFFSET, hashInt, hashString } from "./hash";
 import { Joint } from "./joint";
 import { GraphLine, type GraphLineOptions } from "./line";
 import type { LineModifier } from "./modifiers/modifier";
@@ -134,6 +135,28 @@ export class Graph {
 
   getLineById(id: string): GraphLine | undefined {
     return this.lineEntries.get(id);
+  }
+
+  // A content hash of everything the mesher reads: each meshed line's drawn geometry (its
+  // `geometryHash`, refreshed in `updateDrawing`) plus the joint wiring. Changes whenever the graph
+  // changes, regardless of what caused it — so the mesher can rebuild off the graph, not UI events.
+  // Iterates `getLineEntries()` (the id-keyed lines the mesher actually consumes).
+  getGeometrySignature(): number {
+    let hash = FNV_OFFSET;
+
+    for (const { id, line } of this.getLineEntries()) {
+      hash = hashString(hash, id);
+      hash = hashInt(hash, line.geometryHash);
+    }
+
+    for (const { document } of this.jointEntries) {
+      hash = hashString(hash, document.parentLineId);
+      hash = hashString(hash, document.childLineId);
+      hash = hashInt(hash, document.childPointIndex);
+      hash = hashInt(hash, Math.round(document.parentT * 1e4));
+    }
+
+    return hash >>> 0;
   }
 
   // `onPositioned` runs after joints have placed everything but before junctions/draw, so a
