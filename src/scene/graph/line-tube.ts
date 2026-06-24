@@ -6,6 +6,7 @@ import {
   type ParentSurface,
 } from "./collar";
 import { rotationMinimizingFrames, type Frame } from "./modifiers/utils";
+import type { TubeDeformer } from "../meshing/tube-deformer";
 
 // A per-line "tube": filled, semitransparent discs sampled along the line (density = discs per
 // unit length), each perpendicular to the local tangent, tapering from `radius` to
@@ -20,6 +21,7 @@ export type LineTubeOptions = {
   radius: number;
   density?: number;
   tipScale?: number;
+  taperStart?: number;
   color?: THREE.ColorRepresentation;
   opacity?: number;
   segments?: number;
@@ -35,11 +37,13 @@ export class LineTube {
   radius: number;
   density: number;
   tipScale: number;
+  taperStart: number;
   opacity: number;
   segments: number;
   curve: CubicBezierCurve;
   visible: boolean;
   parentClip: ParentSurface | null = null;
+  deformer: TubeDeformer | undefined;
 
   readonly object = new THREE.Group();
 
@@ -53,6 +57,7 @@ export class LineTube {
     radius,
     density = 8,
     tipScale = 0.12,
+    taperStart = 0,
     color = 0xffffff,
     opacity = 0.35,
     segments = 16,
@@ -62,6 +67,7 @@ export class LineTube {
     this.radius = radius;
     this.density = density;
     this.tipScale = tipScale;
+    this.taperStart = taperStart;
     this.opacity = opacity;
     this.segments = Math.max(3, Math.floor(segments));
     this.curve = curve;
@@ -94,7 +100,9 @@ export class LineTube {
   // Tube radius at arc fraction `t` (the taper). Exposed so a child's collar/clip can sample its
   // parent's surface profile.
   radiusAt(t: number): number {
-    const eased = cubicBezierEasing(THREE.MathUtils.clamp(t, 0, 1), this.curve);
+    const start = THREE.MathUtils.clamp(this.taperStart, 0, 0.999);
+    const normalized = THREE.MathUtils.clamp((t - start) / (1 - start), 0, 1);
+    const eased = cubicBezierEasing(normalized, this.curve);
     return THREE.MathUtils.lerp(this.radius, this.radius * this.tipScale, eased);
   }
 
@@ -133,6 +141,27 @@ export class LineTube {
 
     const surface = this.parentClip;
     const clip: number[] = [];
+
+    if (this.deformer) {
+      for (let index = 0; index < count; index += 1) {
+        appendDeformedDisc(
+          clip,
+          positions[index],
+          frames[index],
+          radii[index],
+          this.segments,
+          index / (count - 1),
+          this.deformer,
+          surface,
+        );
+      }
+
+      this.mesh.count = 0;
+      this.mesh.instanceMatrix.needsUpdate = true;
+      this.setClipPositions(clip.length > 0 ? new Float32Array(clip) : EMPTY);
+      return;
+    }
+
     let full = 0;
 
     for (let index = 0; index < count; index += 1) {
@@ -204,6 +233,51 @@ export class LineTube {
     const mesh = new THREE.InstancedMesh(this.discGeometry, this.material, Math.max(1, count));
     mesh.frustumCulled = false;
     return mesh;
+  }
+}
+
+function appendDeformedDisc(
+  out: number[],
+  center: THREE.Vector3,
+  frame: Frame,
+  radius: number,
+  segments: number,
+  t: number,
+  deformer: TubeDeformer,
+  surface: ParentSurface | null,
+): void {
+  const u = frame.normal;
+  const v = frame.binormal;
+
+  const rim: THREE.Vector3[] = [];
+  for (let k = 0; k < segments; k += 1) {
+    const angle = (k / segments) * Math.PI * 2;
+    const rimDirection = _rimDirection
+      .set(0, 0, 0)
+      .addScaledVector(u, Math.cos(angle))
+      .addScaledVector(v, Math.sin(angle))
+      .normalize();
+    const point = center.clone().addScaledVector(rimDirection, radius);
+    point.add(
+      deformer({
+        point,
+        ringCenter: center,
+        rimDirection,
+        radius,
+        t,
+      }),
+    );
+    rim.push(point);
+  }
+
+  for (let k = 0; k < segments; k += 1) {
+    if (surface) {
+      clipTriangleOutside(center, rim[k], rim[(k + 1) % segments], surface, out);
+    } else {
+      pushVec(out, center);
+      pushVec(out, rim[k]);
+      pushVec(out, rim[(k + 1) % segments]);
+    }
   }
 }
 
@@ -310,3 +384,4 @@ function sampleAtDistance(
 const EMPTY = new Float32Array(0);
 const _matrix = new THREE.Matrix4();
 const _scale = new THREE.Vector3();
+const _rimDirection = new THREE.Vector3();

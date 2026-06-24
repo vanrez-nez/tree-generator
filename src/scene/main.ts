@@ -3,6 +3,7 @@ import { Graph } from "./graph/graph";
 import { DEFAULT_TREE_OPTIONS, buildTreeDocument, type TreeOptions } from "./tree";
 import { RootSystem } from "./root-system";
 import { LineMesher } from "./meshing/line-mesher";
+import { createRootInfluenceDeformer } from "./meshing/tube-deformer";
 
 export class MainScene {
   readonly scene = new THREE.Scene();
@@ -85,11 +86,27 @@ export class MainScene {
   }
 
   update(_deltaTime: number, camera: THREE.Camera, viewportSize?: THREE.Vector2): void {
-    this.graph.update(camera, viewportSize, () => this.rootSystem?.update());
+    this.graph.update(camera, viewportSize, () => {
+      this.rootSystem?.update();
+      this.applyRootInfluenceDeformer();
+    });
 
     if (this.meshDirty) {
       this.mesher.build(this.graph);
       this.meshDirty = false;
+    }
+  }
+
+  private applyRootInfluenceDeformer(): void {
+    const params = { ...DEFAULT_TREE_OPTIONS, ...this.treeOptions };
+    const deformer = createRootInfluenceDeformer(
+      this.rootSystem?.getInnerInfluences() ?? [],
+      THREE.MathUtils.clamp(params.rootInfluence, 0, 1),
+    );
+
+    for (const { id, line } of this.graph.getLineEntries()) {
+      if (!line.tube) continue;
+      line.tube.deformer = id === "trunk" ? deformer : undefined;
     }
   }
 }

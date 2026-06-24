@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { GraphLine } from "./graph/line";
+import type { RootInfluenceSample } from "./meshing/tube-deformer";
 import { rootFlareOffsets } from "./tree";
 
 // Runtime root shaping (tree domain). Each frame, every root line is rewritten as two segments:
@@ -16,6 +17,7 @@ export type RootSystemParams = {
   rootDownCurve: number;
   rootSeparation: number;
   rootLSmooth: number;
+  rootInfluence: number;
 };
 
 const INNER_STEPS = 12; // samples down the trunk for the inner descent
@@ -26,6 +28,7 @@ type RootEntry = { line: GraphLine; azimuth: number };
 
 export class RootSystem {
   private readonly roots: RootEntry[];
+  private readonly innerInfluences: RootInfluenceSample[] = [];
 
   constructor(
     private readonly trunk: GraphLine | undefined,
@@ -43,7 +46,13 @@ export class RootSystem {
     this.params = params;
   }
 
+  getInnerInfluences(): RootInfluenceSample[] {
+    return this.innerInfluences;
+  }
+
   update(): void {
+    this.innerInfluences.length = 0;
+
     if (!this.trunk || this.roots.length === 0) {
       return;
     }
@@ -78,6 +87,12 @@ export class RootSystem {
         const t = rootHeight * (1 - u);
         const center = sampleByArc(trunkPoints, cumulative, total, t);
         const neck = smoothstep(Math.min(1, u / NECK_FRACTION));
+        this.innerInfluences.push({
+          t,
+          center: center.clone(),
+          direction: azDir.clone(),
+          weight: neck,
+        });
         inner.push(center.addScaledVector(azDir, p.rootSeparation * radiusAt(t) * neck));
       }
 
@@ -94,6 +109,9 @@ export class RootSystem {
 
       const points = [...inner, ...outer];
       line.points = roundCorner(points, inner.length - 1, p.rootLSmooth);
+      if (line.tube) {
+        line.tube.taperStart = innerArcFraction(line.points, inner.length - 1);
+      }
     }
   }
 }
@@ -109,6 +127,21 @@ function cumulativeLengths(points: THREE.Vector3[]): number[] {
     distances[index] = distances[index - 1] + points[index - 1].distanceTo(points[index]);
   }
   return distances;
+}
+
+function innerArcFraction(points: THREE.Vector3[], lastInnerIndex: number): number {
+  if (points.length < 2 || lastInnerIndex <= 0) {
+    return 0;
+  }
+
+  const cumulative = cumulativeLengths(points);
+  const total = cumulative[cumulative.length - 1] ?? 0;
+
+  if (total <= 1e-9) {
+    return 0;
+  }
+
+  return THREE.MathUtils.clamp(cumulative[Math.min(lastInnerIndex, cumulative.length - 1)] / total, 0, 1);
 }
 
 function sampleByArc(

@@ -356,6 +356,7 @@ function buildRootControls(): void {
     rootHeight: DEFAULT_TREE_OPTIONS.rootHeight,
     rootSeparation: DEFAULT_TREE_OPTIONS.rootSeparation,
     rootLSmooth: DEFAULT_TREE_OPTIONS.rootLSmooth,
+    rootInfluence: DEFAULT_TREE_OPTIONS.rootInfluence,
     rootLength: DEFAULT_TREE_OPTIONS.rootLength,
     rootDownAngle: DEFAULT_TREE_OPTIONS.rootDownAngle,
     rootDownCurve: DEFAULT_TREE_OPTIONS.rootDownCurve,
@@ -367,6 +368,7 @@ function buildRootControls(): void {
   folder.addBinding(rootParams, "rootHeight", { label: "height", min: 0, max: 0.5, step: 0.01 });
   folder.addBinding(rootParams, "rootSeparation", { label: "separation", min: 0, max: 2, step: 0.05 });
   folder.addBinding(rootParams, "rootLSmooth", { label: "L smooth", min: 0, max: 1, step: 0.05 });
+  folder.addBinding(rootParams, "rootInfluence", { label: "influence", min: 0, max: 1, step: 0.01 });
   folder.addBinding(rootParams, "rootLength", { label: "length", min: 0.2, max: 5, step: 0.05 });
   folder.addBinding(rootParams, "rootDownAngle", { label: "down angle (°)", min: 0, max: 90, step: 1 });
   folder.addBinding(rootParams, "rootDownCurve", { label: "down curve (°)", min: 0, max: 90, step: 1 });
