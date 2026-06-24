@@ -5,6 +5,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { FolderApi, Pane } from "tweakpane";
 import { MainScene } from "./scene/main";
+import { DEFAULT_TREE_OPTIONS } from "./scene/tree";
 import { GraphLine } from "./scene/graph/line";
 import type { CubicBezierCurve } from "./scene/graph/curve";
 import type { LineModifier } from "./scene/graph/modifiers/modifier";
@@ -61,8 +62,12 @@ const tab = pane.addTab({
 });
 const [linePage, jointsPage] = tab.pages;
 
-buildLineLayers();
-buildJointsPage();
+// The Lines + Joints panels are rebuilt whenever the tree is regenerated (their line/joint
+// instances change), so we track the folders they create to dispose them on rebuild.
+let scenePanelFolders: FolderApi[] = [];
+
+buildRootControls();
+buildScenePanels();
 
 const timer = new THREE.Timer();
 timer.connect(document);
@@ -283,7 +288,43 @@ function buildModifierLayers(folder: FolderApi, line: GraphLine): void {
   });
 }
 
-function buildLineLayers(): void {
+function buildScenePanels(): void {
+  scenePanelFolders = [buildLineLayers(), ...buildJointsPage()];
+}
+
+function rebuildScenePanels(): void {
+  for (const folder of scenePanelFolders) {
+    folder.dispose();
+  }
+  scenePanelFolders = [];
+  buildScenePanels();
+}
+
+// Live tree controls: editing a root param rebuilds the whole tree graph (count/topology may
+// change) and refreshes the dependent panels.
+function buildRootControls(): void {
+  const rootParams = {
+    rootHeight: DEFAULT_TREE_OPTIONS.rootHeight,
+    rootLength: DEFAULT_TREE_OPTIONS.rootLength,
+    rootDownAngle: DEFAULT_TREE_OPTIONS.rootDownAngle,
+    rootDownCurve: DEFAULT_TREE_OPTIONS.rootDownCurve,
+    maxRoots: DEFAULT_TREE_OPTIONS.maxRoots,
+  };
+
+  const folder = pane.addFolder({ title: "Roots" });
+  folder.addBinding(rootParams, "rootHeight", { label: "height", min: 0, max: 0.5, step: 0.01 });
+  folder.addBinding(rootParams, "rootLength", { label: "length", min: 0.2, max: 5, step: 0.05 });
+  folder.addBinding(rootParams, "rootDownAngle", { label: "down angle (°)", min: 0, max: 90, step: 1 });
+  folder.addBinding(rootParams, "rootDownCurve", { label: "down curve (°)", min: 0, max: 90, step: 1 });
+  folder.addBinding(rootParams, "maxRoots", { label: "max roots", min: 0, max: 24, step: 1 });
+
+  folder.on("change", () => {
+    mainScene.setTreeOptions({ ...rootParams });
+    rebuildScenePanels();
+  });
+}
+
+function buildLineLayers(): FolderApi {
   // Each graph line is a layer; selecting one reveals its properties + modifier layers.
   const lineType: LayerType<GraphLine> = {
     name: "Line",
@@ -307,7 +348,7 @@ function buildLineLayers(): void {
     },
   };
 
-  createLayers(linePage, {
+  return createLayers(linePage, {
     title: "Lines",
     addLabel: "Add Line",
     types: [lineType],
@@ -329,7 +370,7 @@ function buildLineLayers(): void {
     onRemove: (layer) => {
       mainScene.graph.removeLine(layer.state as GraphLine);
     },
-  });
+  }).folder;
 }
 
 function jointGroup(childLineId: string): "branch" | "root" | null {
@@ -349,7 +390,7 @@ function jointLevel(childLineId: string): number {
 
 // One slider per group + level that drives the lean clamp of every joint at that level. The
 // constraint reads `maxLeanAngle` live each frame, so edits reshape all those forks at once.
-function buildLeanAngleControls(): void {
+function buildLeanAngleControls(): FolderApi | null {
   const seen = new Map<string, { group: string; level: number; angle: number }>();
 
   for (const { document, joint } of mainScene.graph.getJointEntries()) {
@@ -368,7 +409,7 @@ function buildLeanAngleControls(): void {
   }
 
   if (seen.size === 0) {
-    return;
+    return null;
   }
 
   const folder = jointsPage.addFolder({ title: "Lean angles", expanded: true });
@@ -397,15 +438,23 @@ function buildLeanAngleControls(): void {
         }
       });
   }
+
+  return folder;
 }
 
-function buildJointsPage(): void {
-  buildLeanAngleControls();
+function buildJointsPage(): FolderApi[] {
+  const folders: FolderApi[] = [];
+  const leanFolder = buildLeanAngleControls();
+
+  if (leanFolder) {
+    folders.push(leanFolder);
+  }
 
   for (const { document, joint } of mainScene.graph.getJointEntries()) {
     // Collapsed by default; populate the bindings only the first time the folder is expanded,
     // so opening the Joints tab doesn't build controls for every joint at once.
     const folder = jointsPage.addFolder({ title: document.id, expanded: false });
+    folders.push(folder);
     let built = false;
 
     folder.on("fold", (event) => {
@@ -438,4 +487,6 @@ function buildJointsPage(): void {
       folder.addBinding(joint, "collarT", { label: "collar", readonly: true });
     });
   }
+
+  return folders;
 }

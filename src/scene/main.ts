@@ -1,19 +1,19 @@
 import * as THREE from "three";
 import { Graph } from "./graph/graph";
-import { buildTreeDocument } from "./tree";
-
-const TREE_GRAPH_DOCUMENT = buildTreeDocument();
+import { buildTreeDocument, type TreeOptions } from "./tree";
 
 export class MainScene {
   readonly scene = new THREE.Scene();
   readonly graph = new Graph();
 
-  selectedLineId = TREE_GRAPH_DOCUMENT.lines[0].id;
+  selectedLineId = "trunk";
+
+  private treeOptions: TreeOptions = {};
 
   constructor() {
     this.scene.background = new THREE.Color(0x111111);
     this.scene.add(this.graph.group);
-    this.graph.loadDocument(TREE_GRAPH_DOCUMENT);
+    this.loadTree();
 
     const light = new THREE.DirectionalLight(0xffffff, 3);
     light.position.set(2, 2, 3);
@@ -50,6 +50,18 @@ export class MainScene {
 
     debug.add(plane, grid, axes);
     this.scene.add(debug);
+  }
+
+  // Merge new tree options and rebuild the graph from scratch (count/topology may change).
+  setTreeOptions(options: TreeOptions): void {
+    this.treeOptions = { ...this.treeOptions, ...options };
+    this.loadTree();
+  }
+
+  private loadTree(): void {
+    const document = buildTreeDocument(this.treeOptions);
+    this.graph.loadDocument(document);
+    this.selectedLineId = document.lines[0]?.id ?? "trunk";
   }
 
   update(_deltaTime: number, camera: THREE.Camera, viewportSize?: THREE.Vector2): void {

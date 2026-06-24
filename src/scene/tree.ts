@@ -2,6 +2,7 @@ import * as THREE from "three";
 import type {
   GraphDocument,
   GraphLineDocument,
+  GraphPointDocument,
   JointDocument,
   ModifierDocument,
 } from "./graph/document";
@@ -19,15 +20,19 @@ import type { LineTubeOptions } from "./graph/line-tube";
 export type TreeOptions = {
   height?: number;
   branchCount?: number;
-  rootCount?: number;
   branchLevels?: number;
-  rootLevels?: number;
   trunkRadius?: number;
   radiusScale?: number;
   tipScale?: number;
   levelDensity?: number[];
   branchLeanAngles?: number[];
   rootLeanAngles?: number[];
+  // Roots (point-based, main roots only).
+  rootHeight?: number; // trunk parameter (0..0.5) where roots attach
+  rootLength?: number; // root polyline length
+  rootDownAngle?: number; // initial tilt below horizontal (degrees)
+  rootDownCurve?: number; // extra downward bend accumulated over the length (degrees)
+  maxRoots?: number; // cap on root count (actual = min(maxRoots, how many fit around the base))
 };
 
 type TreeParams = Required<TreeOptions>;
@@ -35,16 +40,22 @@ type TreeParams = Required<TreeOptions>;
 const DEFAULT_OPTIONS: TreeParams = {
   height: 4,
   branchCount: 3,
-  rootCount: 3,
   branchLevels: 3,
-  rootLevels: 3,
   trunkRadius: 0.45, // master disc radius at the trunk (everything derives from this)
   radiusScale: 0.6, // disc radius multiplier per branching level
   tipScale: 0.12, // each line's radius tapers to this fraction toward its tip
   levelDensity: [16, 10, 7, 5], // discs per unit length by level (index 0 = trunk, gets the most)
   branchLeanAngles: [30, 60, 70], // joint lean clamp (°) by branch level L1..L3
   rootLeanAngles: [90, 90, 90], // roots stay unconstrained so they descend freely
+  rootHeight: 0.1,
+  rootLength: 1.6,
+  rootDownAngle: 30,
+  rootDownCurve: 45,
+  maxRoots: 8,
 };
+
+// Resolved defaults, exported so the UI can initialize its controls.
+export const DEFAULT_TREE_OPTIONS: TreeParams = DEFAULT_OPTIONS;
 
 const TUBE_OPACITY = 0.35;
 const LINEAR_TAPER: CubicBezierCurve = [0.33, 0.33, 0.66, 0.66];
@@ -199,20 +210,47 @@ function branchConfig(params: TreeParams): LimbConfig {
   };
 }
 
-function rootConfig(params: TreeParams): LimbConfig {
-  return {
-    color: ROOT_COLOR,
-    levels: params.rootLevels,
-    subCounts: [1, 1], // L2, L3 children per parent
-    verticalSign: -1,
-    leanAngles: params.rootLeanAngles, // unconstrained by default: roots descend freely
-    baseLength: params.height * 0.4,
-    lengthScale: 0.6,
-    modifiers: () => [
-      { type: "coil", params: { amount: 1, turns: 1.2, bias: 1.5 } },
-      { type: "gnarl", params: { amount: 0.6, amplitude: 0.14, cycles: 1.8 } },
-    ],
-  };
+// The trunk tube radius at fraction t (trunk is level 0). Matches the taper assignTubes uses,
+// so root packing/sizing stays consistent with how the trunk disc actually renders there.
+function trunkRadiusAt(params: TreeParams, t: number): number {
+  const eased = cubicBezierEasing(THREE.MathUtils.clamp(t, 0, 1), LINEAR_TAPER);
+  return THREE.MathUtils.lerp(
+    params.trunkRadius,
+    params.trunkRadius * params.tipScale,
+    eased,
+  );
+}
+
+// Authored root polyline: heads outward (azimuth) tilted `downAngle` below horizontal, then
+// curves further down to `downAngle + downCurve` across the length. Pure points — no modifiers.
+function rootPoints(
+  azimuth: number,
+  length: number,
+  downAngleDeg: number,
+  downCurveDeg: number,
+  steps: number,
+): GraphPointDocument[] {
+  const downAngle = THREE.MathUtils.degToRad(downAngleDeg);
+  const downCurve = THREE.MathUtils.degToRad(downCurveDeg);
+  const outX = Math.cos(azimuth);
+  const outZ = Math.sin(azimuth);
+  const stepLength = length / steps;
+
+  const points: GraphPointDocument[] = [[0, 0, 0]];
+  let x = 0;
+  let y = 0;
+  let z = 0;
+
+  for (let s = 1; s <= steps; s += 1) {
+    const tilt = downAngle + downCurve * ((s - 0.5) / steps);
+    const horizontal = Math.cos(tilt) * stepLength;
+    x += outX * horizontal;
+    y -= Math.sin(tilt) * stepLength;
+    z += outZ * horizontal;
+    points.push([x, y, z]);
+  }
+
+  return points;
 }
 
 // L1 branches fork off the trunk at spread heights and recurse into L2/L3.
@@ -239,25 +277,54 @@ function buildBranches(
   return { lines, joints };
 }
 
-// L1 roots fork off the trunk base (low parentT) and recurse into L2/L3. Their wrapping shape
-// comes from the coil modifier; the joint is unconstrained so they can descend.
+const ROOT_STEPS = 9; // authored polyline samples per root (before smooth)
+
+// Main roots attach low on the trunk and flare outward + down. Their shape is authored entirely
+// in the points (down angle + down curve); only `smooth` rounds/densifies it. Count is how many
+// fit around the trunk at the attach height, capped by `maxRoots`. The joint stays unconstrained
+// (rootLeanAngles[0] = 90) so the authored down direction is preserved.
 function buildRoots(
   trunkId: string,
   params: TreeParams,
 ): { lines: GraphLineDocument[]; joints: JointDocument[] } {
-  const config = rootConfig(params);
   const lines: GraphLineDocument[] = [];
   const joints: JointDocument[] = [];
 
-  for (let index = 0; index < params.rootCount; index += 1) {
-    const azimuth = (index / params.rootCount) * Math.PI * 2;
+  const rootHeight = THREE.MathUtils.clamp(params.rootHeight, 0, 0.5);
+  const trunkR = trunkRadiusAt(params, rootHeight);
+  const rootLevelRadius = params.trunkRadius * params.radiusScale;
+  const rootBaseRadius = Math.min(rootLevelRadius, BRANCH_RADIUS_RATIO * trunkR);
+  const discDiameter = Math.max(1e-4, rootBaseRadius * 2);
+
+  const fitCount = Math.floor((2 * Math.PI * trunkR) / discDiameter);
+  const count = Math.max(0, Math.min(Math.round(params.maxRoots), fitCount));
+
+  for (let index = 0; index < count; index += 1) {
+    const azimuth = (index / count) * Math.PI * 2;
     const id = `root-${index}`;
 
-    const limb = makeLimb(config, id, trunkId, azimuth, config.baseLength, 0.03, 1);
-    lines.push(limb.line);
-    joints.push(limb.joint);
+    lines.push({
+      id,
+      color: ROOT_COLOR,
+      points: rootPoints(
+        azimuth,
+        params.rootLength,
+        params.rootDownAngle,
+        params.rootDownCurve,
+        ROOT_STEPS,
+      ),
+      modifiers: [{ type: "smooth", params: { mode: "laplacian", segments: 16 } }],
+    });
 
-    addSubLimbs(config, id, azimuth, config.baseLength, 2, lines, joints);
+    joints.push({
+      id: `joint-${id}`,
+      parentLineId: trunkId,
+      parentT: rootHeight,
+      childLineId: id,
+      childPointIndex: 0,
+      maxLeanAngle: params.rootLeanAngles[0],
+      directionPoints: 1,
+    });
   }
 
   return { lines, joints };
