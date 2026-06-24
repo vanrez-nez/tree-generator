@@ -6,6 +6,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { FolderApi, Pane } from "tweakpane";
 import { DEFAULT_MESHER_OPTIONS, MainScene } from "./scene/main";
 import { DEFAULT_TREE_OPTIONS } from "./scene/tree";
+import type { GraphDocument } from "./scene/graph/document";
 import { GraphLine } from "./scene/graph/line";
 import type { CubicBezierCurve } from "./scene/graph/curve";
 import type { LineModifier } from "./scene/graph/modifiers/modifier";
@@ -77,6 +78,8 @@ treeInfo.addBinding(mainScene.meshStats, "triangles", {
   label: "tris",
   format: (value) => value.toFixed(0),
 });
+
+buildGenerationControls();
 
 const tab = pane.addTab({
   pages: [{ title: "Line" }, { title: "Joints" }],
@@ -368,6 +371,66 @@ function rebuildScenePanels(): void {
   }
   scenePanelFolders = [];
   buildScenePanels();
+}
+
+// Generation folder (pinned at the top): structural knobs (branch/root levels + fan-out) and the
+// seed. Any change regenerates the tree and rebuilds the dependent panels so the UX follows it.
+function buildGenerationControls(): void {
+  const folder = pane.addFolder({ title: "Generation", expanded: true });
+
+  const gen = {
+    seed: DEFAULT_TREE_OPTIONS.seed,
+    branchCount: DEFAULT_TREE_OPTIONS.branchCount,
+    branchLevels: DEFAULT_TREE_OPTIONS.branchLevels,
+    branchL2: DEFAULT_TREE_OPTIONS.branchSubCounts[0],
+    branchL3: DEFAULT_TREE_OPTIONS.branchSubCounts[1],
+    rootLevels: DEFAULT_TREE_OPTIONS.rootLevels,
+    rootL2: DEFAULT_TREE_OPTIONS.rootSubCounts[0],
+    rootL3: DEFAULT_TREE_OPTIONS.rootSubCounts[1],
+  };
+
+  const apply = (): void => {
+    mainScene.setTreeOptions({
+      seed: gen.seed,
+      branchCount: gen.branchCount,
+      branchLevels: gen.branchLevels,
+      branchSubCounts: [gen.branchL2, gen.branchL3],
+      rootLevels: gen.rootLevels,
+      rootSubCounts: [gen.rootL2, gen.rootL3],
+    });
+    rebuildScenePanels();
+  };
+
+  const seedBinding = folder.addBinding(gen, "seed", {
+    readonly: true,
+    format: (value) => value.toFixed(0),
+  });
+  folder.addButton({ title: "New Seed" }).on("click", () => {
+    gen.seed = Math.floor(Math.random() * 1_000_000_000);
+    seedBinding.refresh();
+    apply();
+  });
+
+  folder.addBinding(gen, "branchCount", { label: "branches", min: 0, max: 8, step: 1 }).on("change", apply);
+  folder.addBinding(gen, "branchLevels", { label: "branch levels", min: 1, max: 3, step: 1 }).on("change", apply);
+  folder.addBinding(gen, "branchL2", { label: "branch L2 fan", min: 0, max: 5, step: 1 }).on("change", apply);
+  folder.addBinding(gen, "branchL3", { label: "branch L3 fan", min: 0, max: 5, step: 1 }).on("change", apply);
+  folder.addBinding(gen, "rootLevels", { label: "root levels", min: 1, max: 3, step: 1 }).on("change", apply);
+  folder.addBinding(gen, "rootL2", { label: "root L2 fan", min: 0, max: 5, step: 1 }).on("change", apply);
+  folder.addBinding(gen, "rootL3", { label: "root L3 fan", min: 0, max: 5, step: 1 }).on("change", apply);
+
+  folder.addButton({ title: "Export JSON" }).on("click", () => downloadDocument(mainScene.getDocument()));
+}
+
+// Serialize the current graph document and trigger a browser download.
+function downloadDocument(doc: GraphDocument): void {
+  const blob = new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = "tree-document.json";
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
 
 // Live tree controls: editing a root param rebuilds the whole tree graph (count/topology may

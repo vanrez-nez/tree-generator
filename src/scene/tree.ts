@@ -18,9 +18,13 @@ import type { LineTubeOptions } from "./graph/line-tube";
 // an L3 off each L2 — every level connected by a (lean-constrained) joint.
 
 export type TreeOptions = {
+  seed?: number; // drives layout jitter + per-limb gnarl/twist variation
   height?: number;
   branchCount?: number;
   branchLevels?: number;
+  branchSubCounts?: number[]; // children per parent at branch depth 2, 3, … (fan-out)
+  rootLevels?: number; // deepest root level (1 = main roots only, 2/3 add sub-roots)
+  rootSubCounts?: number[]; // children per parent at root depth 2, 3, … (fan-out)
   trunkRadius?: number;
   radiusScale?: number;
   tipScale?: number;
@@ -42,9 +46,13 @@ export type TreeOptions = {
 type TreeParams = Required<TreeOptions>;
 
 const DEFAULT_OPTIONS: TreeParams = {
+  seed: 1,
   height: 4,
   branchCount: 3,
   branchLevels: 3,
+  branchSubCounts: [2, 1], // L2, L3 children per parent
+  rootLevels: 1, // main roots only by default; raise for sub-roots
+  rootSubCounts: [2, 1], // L2, L3 sub-roots per parent
   trunkRadius: 0.45, // master disc radius at the trunk (everything derives from this)
   radiusScale: 0.6, // disc radius multiplier per branching level
   tipScale: 0.12, // each line's radius tapers to this fraction toward its tip
@@ -96,6 +104,41 @@ type LimbConfig = {
 
 const SUB_FAN = 0.9; // half-angle (rad) sub-limbs fan around their parent's heading
 
+// Deterministic PRNG (mulberry32): one stream per generation, so a given seed reproduces the
+// exact same tree. Consumed in a fixed traversal order by the builders below.
+type Rng = () => number;
+
+function makeRng(seed: number): Rng {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Symmetric jitter in [base - amount, base + amount].
+function jitter(rng: Rng, base: number, amount: number): number {
+  return base + (rng() * 2 - 1) * amount;
+}
+
+function randInt(rng: Rng): number {
+  return Math.floor(rng() * 0x7fffffff);
+}
+
+// Give each displacement modifier its own seed, so every limb gnarls/twists differently.
+function seedModifiers(modifiers: ModifierDocument[] | undefined, rng: Rng): void {
+  if (!modifiers) {
+    return;
+  }
+  for (const modifier of modifiers) {
+    if (modifier.type === "gnarl" || modifier.type === "twist" || modifier.type === "coil") {
+      modifier.params = { ...modifier.params, seed: randInt(rng) };
+    }
+  }
+}
+
 // One limb: a short line authored locally from its own origin (the joint translates that
 // origin onto the parent) plus the joint that attaches + orients it.
 function makeLimb(
@@ -106,9 +149,13 @@ function makeLimb(
   length: number,
   parentT: number,
   level: number,
+  rng: Rng,
 ): { line: GraphLineDocument; joint: JointDocument } {
   const leanAngle =
     config.leanAngles[Math.min(level - 1, config.leanAngles.length - 1)] ?? 90;
+
+  const modifiers = config.modifiers();
+  seedModifiers(modifiers, rng);
 
   return {
     line: {
@@ -122,7 +169,7 @@ function makeLimb(
           Math.sin(azimuth) * length,
         ],
       ],
-      modifiers: config.modifiers(),
+      modifiers,
     },
     joint: {
       id: `joint-${id}`,
@@ -146,6 +193,7 @@ function addSubLimbs(
   depth: number,
   lines: GraphLineDocument[],
   joints: JointDocument[],
+  rng: Rng,
 ): void {
   if (depth > config.levels) {
     return;
@@ -156,15 +204,17 @@ function addSubLimbs(
 
   for (let index = 0; index < count; index += 1) {
     const fan = count > 1 ? ((index + 0.5) / count) * 2 - 1 : 0;
-    const azimuth = parentAzimuth + fan * SUB_FAN;
-    const parentT = count > 1 ? 0.4 + (index / (count - 1)) * 0.45 : 0.6;
+    const azimuth = jitter(rng, parentAzimuth + fan * SUB_FAN, 0.3);
+    const baseT = count > 1 ? 0.4 + (index / (count - 1)) * 0.45 : 0.6;
+    const parentT = THREE.MathUtils.clamp(jitter(rng, baseT, 0.05), 0.2, 0.95);
+    const length2 = length * jitter(rng, 1, 0.15);
     const id = `${parentId}-${index}`;
 
-    const limb = makeLimb(config, id, parentId, azimuth, length, parentT, depth);
+    const limb = makeLimb(config, id, parentId, azimuth, length2, parentT, depth, rng);
     lines.push(limb.line);
     joints.push(limb.joint);
 
-    addSubLimbs(config, id, azimuth, length, depth + 1, lines, joints);
+    addSubLimbs(config, id, azimuth, length2, depth + 1, lines, joints, rng);
   }
 }
 
@@ -182,15 +232,8 @@ function footAnchorEnvelope(): ModifierEnvelope {
 
 // The trunk: a single leader from the ground to the tip, gnarled and twisted. Its base point
 // stays anchored at the origin (smooth pins endpoints; gnarl/twist fade in from the foot).
-function buildTrunk(params: TreeParams): GraphLineDocument {
-  return {
-    id: TRUNK_ID,
-    color: TRUNK_COLOR,
-    points: [
-      [0, 0, 0],
-      [params.height * 0.12, params.height, 0],
-    ],
-    modifiers: [
+function buildTrunk(params: TreeParams, rng: Rng): GraphLineDocument {
+  const modifiers: ModifierDocument[] = [
       { type: "smooth", params: { mode: "laplacian", segments: 24 } },
       {
         type: "gnarl",
@@ -208,7 +251,17 @@ function buildTrunk(params: TreeParams): GraphLineDocument {
       // Final: keep the line mesh-ready (radius of curvature >= tube radius). `clearance`/`spacing`
       // are injected from the tube by assignTubes.
       { type: "discAlign", params: { safety: 1.1 } },
+  ];
+  seedModifiers(modifiers, rng);
+
+  return {
+    id: TRUNK_ID,
+    color: TRUNK_COLOR,
+    points: [
+      [0, 0, 0],
+      [params.height * 0.12, params.height, 0],
     ],
+    modifiers,
   };
 }
 
@@ -216,7 +269,7 @@ function branchConfig(params: TreeParams): LimbConfig {
   return {
     color: BRANCH_COLOR,
     levels: params.branchLevels,
-    subCounts: [2, 1], // L2, L3 children per parent
+    subCounts: params.branchSubCounts,
     verticalSign: 1,
     leanAngles: params.branchLeanAngles,
     directionPoints: 2,
@@ -286,25 +339,47 @@ function rootPoints(
   );
 }
 
+// Root sub-limbs (L2+) descend like branches but downward, forking off each main root.
+function rootConfig(params: TreeParams): LimbConfig {
+  return {
+    color: ROOT_COLOR,
+    levels: params.rootLevels,
+    subCounts: params.rootSubCounts,
+    verticalSign: -1,
+    leanAngles: params.rootLeanAngles,
+    directionPoints: 1,
+    baseLength: params.rootLength,
+    lengthScale: 0.6,
+    modifiers: () => [
+      { type: "smooth", params: { mode: "laplacian", segments: 12 } },
+      { type: "gnarl", params: { amount: 0.7, amplitude: 0.14, cycles: 1.4 } },
+      { type: "discAlign", params: { safety: 1.1 } },
+    ],
+  };
+}
+
 // L1 branches fork off the trunk at spread heights and recurse into L2/L3.
 function buildBranches(
   trunkId: string,
   params: TreeParams,
+  rng: Rng,
 ): { lines: GraphLineDocument[]; joints: JointDocument[] } {
   const config = branchConfig(params);
   const lines: GraphLineDocument[] = [];
   const joints: JointDocument[] = [];
 
   for (let index = 0; index < params.branchCount; index += 1) {
-    const azimuth = (index / params.branchCount) * Math.PI * 2 + 0.7;
-    const parentT = 0.35 + (index / Math.max(1, params.branchCount - 1)) * 0.55;
+    const azimuth = jitter(rng, (index / params.branchCount) * Math.PI * 2 + 0.7, 0.3);
+    const baseT = 0.35 + (index / Math.max(1, params.branchCount - 1)) * 0.55;
+    const parentT = THREE.MathUtils.clamp(jitter(rng, baseT, 0.05), 0.2, 0.95);
+    const length = config.baseLength * jitter(rng, 1, 0.15);
     const id = `branch-${index}`;
 
-    const limb = makeLimb(config, id, trunkId, azimuth, config.baseLength, parentT, 1);
+    const limb = makeLimb(config, id, trunkId, azimuth, length, parentT, 1, rng);
     lines.push(limb.line);
     joints.push(limb.joint);
 
-    addSubLimbs(config, id, azimuth, config.baseLength, 2, lines, joints);
+    addSubLimbs(config, id, azimuth, length, 2, lines, joints, rng);
   }
 
   return { lines, joints };
@@ -319,6 +394,7 @@ const ROOT_STEPS = 9; // authored polyline samples per root (before smooth)
 function buildRoots(
   trunkId: string,
   params: TreeParams,
+  rng: Rng,
 ): { lines: GraphLineDocument[]; joints: JointDocument[] } {
   const lines: GraphLineDocument[] = [];
   const joints: JointDocument[] = [];
@@ -330,10 +406,16 @@ function buildRoots(
 
   const fitCount = Math.floor((2 * Math.PI * trunkR) / discDiameter);
   const count = Math.max(0, Math.min(Math.round(params.maxRoots), fitCount));
+  const subConfig = rootConfig(params);
 
   for (let index = 0; index < count; index += 1) {
     const azimuth = (index / count) * Math.PI * 2;
     const id = `root-${index}`;
+
+    const modifiers: ModifierDocument[] = [
+      { type: "smooth", params: { mode: "laplacian", segments: 32, strength: 0.3 } },
+      { type: "discAlign", params: { safety: 1.1 } },
+    ];
 
     lines.push({
       id,
@@ -347,10 +429,7 @@ function buildRoots(
       ),
       // Segments high enough to keep the runtime trunk-following detail; light strength so the
       // descent isn't flattened away from the trunk.
-      modifiers: [
-        { type: "smooth", params: { mode: "laplacian", segments: 32, strength: 0.3 } },
-        { type: "discAlign", params: { safety: 1.1 } },
-      ],
+      modifiers,
     });
 
     joints.push({
@@ -362,6 +441,10 @@ function buildRoots(
       maxLeanAngle: params.rootLeanAngles[0],
       directionPoints: 1,
     });
+
+    // Sub-roots fork off this main root, descending like branches (RootSystem only rewrites the
+    // main `root-N` lines; these follow their parent through the joint).
+    addSubLimbs(subConfig, id, azimuth, params.rootLength, 2, lines, joints, rng);
   }
 
   return { lines, joints };
@@ -410,7 +493,7 @@ function assignTubes(
 
   for (const line of ordered) {
     const level = levelOf(line.id);
-    const isRoot = /^root-\d+$/.test(line.id);
+    const isRoot = line.id.startsWith("root");
     const levelRadius = isRoot
       ? params.rootRadius
       : params.trunkRadius * Math.pow(params.radiusScale, level);
@@ -452,10 +535,11 @@ function assignTubes(
 
 export function buildTreeDocument(options: TreeOptions = {}): GraphDocument {
   const params: TreeParams = { ...DEFAULT_OPTIONS, ...options };
+  const rng = makeRng(params.seed);
 
-  const trunk = buildTrunk(params);
-  const branches = buildBranches(trunk.id, params);
-  const roots = buildRoots(trunk.id, params);
+  const trunk = buildTrunk(params, rng);
+  const branches = buildBranches(trunk.id, params, rng);
+  const roots = buildRoots(trunk.id, params, rng);
 
   const lines = [trunk, ...branches.lines, ...roots.lines];
   const joints = [...branches.joints, ...roots.joints];

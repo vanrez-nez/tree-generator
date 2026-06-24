@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { Graph } from "./graph/graph";
+import type { GraphDocument } from "./graph/document";
 import { DEFAULT_TREE_OPTIONS, buildTreeDocument, type TreeOptions } from "./tree";
 import { RootSystem } from "./root-system";
 import { TreeMesher } from "./mesher/tree-mesher";
@@ -29,6 +30,7 @@ export class MainScene {
   readonly meshStats = { generationMs: 0, vertices: 0, triangles: 0 };
 
   private treeOptions: TreeOptions = {};
+  private currentDocument: GraphDocument = { lines: [], joints: [] };
   private rootSystem: RootSystem | undefined;
   private mesherOptions: MesherOptions = { ...DEFAULT_MESHER_OPTIONS };
   private discsVisible = false;
@@ -128,8 +130,14 @@ export class MainScene {
     this.loadTree();
   }
 
+  // The most recent generated document, exposed for export.
+  getDocument(): GraphDocument {
+    return this.currentDocument;
+  }
+
   private loadTree(): void {
     const document = buildTreeDocument(this.treeOptions);
+    this.currentDocument = document;
     this.graph.loadDocument(document);
     this.selectedLineId = document.lines[0]?.id ?? "trunk";
 
