@@ -1,7 +1,15 @@
 import { Vector2, Vector3 } from "three";
 import { WeldMesh } from "./weld-mesh";
 import { smoothMesh } from "./smoothing";
-import { isLeaf, lerp, projectedOnPlane, type NodeChild, type Stem, type TreeNode } from "./tree-node";
+import {
+  isLeaf,
+  lerp,
+  projectedOnPlane,
+  type CapGroup,
+  type NodeChild,
+  type Stem,
+  type TreeNode,
+} from "./tree-node";
 
 // The welding mesher (a TS port of m_tree's ManifoldMesher). A branch is a stack of circular
 // cross-section rings bridged by quads. At a junction (a node with >= 2 children) it:
@@ -31,6 +39,42 @@ function getSmoothAmount(radius: number, nodeLength: number): number {
   return Math.min(1, radius / nodeLength);
 }
 
+/**
+ * Emit one ring of `radialN` vertices in the plane spanned by `right`/`up` around `center`.
+ * A ring stores `radialN` positions but `radialN + 1` UVs (the seam doesn't wrap back to x=0).
+ */
+function emitRing(
+  center: Vector3,
+  right: Vector3,
+  up: Vector3,
+  direction: Vector3,
+  radialN: number,
+  radius: number,
+  smoothAmount: number,
+  mesh: WeldMesh,
+  uvY: number,
+): CircleDesignator {
+  const vertexIndex = mesh.vertices.length;
+  const uvIndex = mesh.uvs.length;
+
+  for (let i = 0; i < radialN; i++) {
+    const angle = (i / radialN) * TAU;
+    const point = right
+      .clone()
+      .multiplyScalar(Math.cos(angle))
+      .addScaledVector(up, Math.sin(angle))
+      .multiplyScalar(radius)
+      .add(center);
+    const index = mesh.addVertex(point);
+    mesh.smoothAmount[index] = smoothAmount;
+    mesh.radius[index] = radius;
+    mesh.directionA[index] = direction.clone();
+    mesh.uvs.push(new Vector2(i / radialN, uvY));
+  }
+  mesh.uvs.push(new Vector2(1, uvY));
+  return { vertexIndex, uvIndex, radialN };
+}
+
 /** Emit one ring of `radialNPoints` vertices around `node` at parametric `factor`. */
 function addCircle(
   nodePosition: Vector3,
@@ -41,8 +85,6 @@ function addCircle(
   uvY: number,
 ): CircleDesignator {
   const right = node.tangent;
-  const vertexIndex = mesh.vertices.length;
-  const uvIndex = mesh.uvs.length;
   const up = node.tangent.clone().cross(node.direction);
   const circlePosition = nodePosition
     .clone()
@@ -52,22 +94,17 @@ function addCircle(
     : lerp(node.radius, node.children[0].node.radius, factor);
   const smoothAmount = getSmoothAmount(radius, node.length);
 
-  for (let i = 0; i < radialNPoints; i++) {
-    const angle = (i / radialNPoints) * TAU;
-    const point = right
-      .clone()
-      .multiplyScalar(Math.cos(angle))
-      .addScaledVector(up, Math.sin(angle))
-      .multiplyScalar(radius)
-      .add(circlePosition);
-    const index = mesh.addVertex(point);
-    mesh.smoothAmount[index] = smoothAmount;
-    mesh.radius[index] = radius;
-    mesh.directionA[index] = node.direction.clone();
-    mesh.uvs.push(new Vector2(i / radialNPoints, uvY));
-  }
-  mesh.uvs.push(new Vector2(1, uvY));
-  return { vertexIndex, uvIndex, radialN: radialNPoints };
+  return emitRing(
+    circlePosition,
+    right,
+    up,
+    node.direction,
+    radialNPoints,
+    radius,
+    smoothAmount,
+    mesh,
+    uvY,
+  );
 }
 
 function isIndexInBranchMask(
@@ -351,21 +388,110 @@ function getPositionInNode(nodePosition: Vector3, node: TreeNode): Vector3 {
   return nodePosition.clone().addScaledVector(node.direction, node.length);
 }
 
+export interface CapParams {
+  /** axial extent of the cap, in multiples of the tip radius (0 = flat) */
+  length: number;
+  /** 0 = straight cone (sharp), 1 = quarter-circle dome (rounded) */
+  roundness: number;
+}
+
+const CAP_EPSILON = 1e-6;
+const CAP_MAX_BANDS = 4;
+
+/**
+ * Close an open leaf tip (`endCircle`) with a cap. The profile is a stack of shrinking rings
+ * from the terminal ring to a single apex vertex; `length` sets how far it extends (× tip radius)
+ * and `roundness` blends a straight cone into a quarter-circle dome.
+ */
+function addCap(
+  node: TreeNode,
+  nodePosition: Vector3,
+  endCircle: CircleDesignator,
+  cap: CapParams,
+  mesh: WeldMesh,
+  uvY: number,
+): void {
+  const radialN = endCircle.radialN;
+  const tipRadius = node.radius;
+  const axialMax = cap.length * tipRadius;
+
+  const right = node.tangent;
+  const up = node.tangent.clone().cross(node.direction);
+  const baseCenter = nodePosition.clone().addScaledVector(node.direction, node.length);
+
+  // A cone is exact with a single band (direct fan); a dome needs a few bands to stay smooth.
+  const bands =
+    axialMax <= CAP_EPSILON ? 1 : Math.max(1, Math.round(1 + cap.roundness * (CAP_MAX_BANDS - 1)));
+
+  let previous = endCircle;
+
+  for (let k = 1; k < bands; k++) {
+    const s = k / bands;
+    const radiusScale = lerp(1 - s, Math.cos((s * Math.PI) / 2), cap.roundness);
+    const axialNorm = lerp(s, Math.sin((s * Math.PI) / 2), cap.roundness);
+    const ringRadius = tipRadius * radiusScale;
+    const center = baseCenter.clone().addScaledVector(node.direction, axialMax * axialNorm);
+    const ring = emitRing(
+      center,
+      right,
+      up,
+      node.direction,
+      radialN,
+      ringRadius,
+      getSmoothAmount(ringRadius, node.length),
+      mesh,
+      uvY + s,
+    );
+    bridgeCircles(previous, ring, radialN, mesh);
+    previous = ring;
+  }
+
+  // Apex: at s = 1 both profiles give radius 0 and axialNorm 1.
+  const apexPosition = baseCenter.clone().addScaledVector(node.direction, axialMax);
+  const apexIndex = mesh.addVertex(apexPosition);
+  mesh.smoothAmount[apexIndex] = 0;
+  mesh.radius[apexIndex] = 0;
+  mesh.directionA[apexIndex] = node.direction.clone();
+  const apexUvIndex = mesh.uvs.length;
+  mesh.uvs.push(new Vector2(0.5, uvY + 1));
+
+  // Fan the last ring to the apex. The duplicated apex corner collapses each quad to a single
+  // triangle, with the same winding bridgeCircles uses (outward after to-buffer's reversal).
+  for (let i = 0; i < radialN; i++) {
+    const p = mesh.addPolygon();
+    mesh.polygons[p] = [
+      previous.vertexIndex + i,
+      previous.vertexIndex + ((i + 1) % radialN),
+      apexIndex,
+      apexIndex,
+    ];
+    mesh.uvLoops[p] = [
+      previous.uvIndex + i,
+      previous.uvIndex + (i + 1),
+      apexUvIndex,
+      apexUvIndex,
+    ];
+  }
+}
+
 function meshNodeRec(
   node: TreeNode,
   nodePosition: Vector3,
   base: CircleDesignator,
   mesh: WeldMesh,
   uvY: number,
+  opts: MesherOptions,
 ): void {
   const uvGrowth = node.length / (node.radius + 0.001) / TAU;
 
   if (node.children.length < 2) {
     const childCircle = addCircle(nodePosition, node, 1, base.radialN, mesh, uvY + uvGrowth);
     bridgeCircles(base, childCircle, base.radialN, mesh);
-    if (!isLeaf(node)) {
+    if (isLeaf(node)) {
+      addCap(node, nodePosition, childCircle, opts.caps[node.capGroup], mesh, uvY + uvGrowth);
+    } else {
       const childPos = getPositionInNode(nodePosition, node);
-      meshNodeRec(node.children[0].node, childPos, childCircle, mesh, uvY + uvGrowth);
+      meshNodeRec(node.children[0].node, childPos, childCircle, mesh, uvY + uvGrowth, opts);
     }
     return;
   }
@@ -377,7 +503,7 @@ function meshNodeRec(
   for (let i = 0; i < node.children.length; i++) {
     if (i === 0) {
       const childPos = getPositionInNode(nodePosition, node);
-      meshNodeRec(node.children[0].node, childPos, endCircle, mesh, uvY + uvGrowth);
+      meshNodeRec(node.children[0].node, childPos, endCircle, mesh, uvY + uvGrowth, opts);
     } else {
       const child = node.children[i];
       const childPos = getSideChildPosition(node, child, nodePosition);
@@ -390,7 +516,7 @@ function meshNodeRec(
         uvY,
         mesh,
       );
-      meshNodeRec(child.node, childPos, childBase, mesh, uvY + uvGrowth);
+      meshNodeRec(child.node, childPos, childBase, mesh, uvY + uvGrowth, opts);
     }
   }
 }
@@ -398,6 +524,8 @@ function meshNodeRec(
 export interface MesherOptions {
   radialResolution: number;
   smoothIterations: number;
+  /** Per-group tip-cap shape, keyed by node `capGroup`. */
+  caps: Record<CapGroup, CapParams>;
 }
 
 /** Mesh a single stem (trunk + welded branches/roots) into one watertight WeldMesh. */
@@ -411,7 +539,7 @@ export function meshTree(stem: Stem, opts: MesherOptions): WeldMesh {
     radialN: opts.radialResolution,
   };
   addCircle(stem.position, stem.node, 0, opts.radialResolution, mesh, 0);
-  meshNodeRec(stem.node, stem.position, startCircle, mesh, 0);
+  meshNodeRec(stem.node, stem.position, startCircle, mesh, 0, opts);
 
   if (opts.smoothIterations > 0) {
     smoothMesh(mesh, opts.smoothIterations, 1, mesh.smoothAmount);

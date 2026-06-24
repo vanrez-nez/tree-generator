@@ -56,6 +56,14 @@ export function smoothstep(value: number): number {
   return value * value * (3 - 2 * value);
 }
 
+// Eases a per-point displacement in from the line's anchor (t = 0), so a base-pinned line has no
+// kink at the joint: 0 at the anchor, ramping smoothly to full over the first `ANCHOR_RAMP` of the
+// line. Displacement modifiers that offset points off the centerline (gnarl, twist) scale by this.
+const ANCHOR_RAMP = 0.2;
+export function anchorRampWeight(t: number): number {
+  return smoothstep(Math.min(1, Math.max(0, t) / ANCHOR_RAMP));
+}
+
 export function makePerpendicularBasis(axis: THREE.Vector3): [THREE.Vector3, THREE.Vector3] {
   const fallback =
     Math.abs(axis.dot(_worldUp)) > 0.95 ? _worldRight : _worldUp;

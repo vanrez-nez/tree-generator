@@ -8,6 +8,11 @@ import type { MesherOptions } from "./mesher/welding-mesher";
 export const DEFAULT_MESHER_OPTIONS: MesherOptions = {
   radialResolution: 32,
   smoothIterations: 4,
+  caps: {
+    trunk: { length: 1, roundness: 1 },
+    branch: { length: 1, roundness: 1 },
+    root: { length: 1.5, roundness: 0.3 },
+  },
 };
 
 export class MainScene {

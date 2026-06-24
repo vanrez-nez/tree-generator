@@ -174,6 +174,9 @@ function buildModifierControls(folder: FolderApi, modifier: LineModifier): void 
       max: 8,
       step: 0.1,
     });
+    folder.addBinding(modifier.params, "lockX", { label: "lock X" });
+    folder.addBinding(modifier.params, "lockY", { label: "lock Y" });
+    folder.addBinding(modifier.params, "lockZ", { label: "lock Z" });
   }
 
   if (modifier instanceof TwistModifier) {
@@ -417,7 +420,26 @@ function buildMeshFolder(): void {
   folder
     .addBinding(view, "wireframe", { label: "wireframe" })
     .on("change", (event) => mainScene.mesher.setSurfaceWireframe(event.value));
+
+  buildCapControls(folder);
+
   folder.addButton({ title: "Rebuild mesh" }).on("click", () => mainScene.rebuildMesh());
+}
+
+// Per-group tip-cap shape: length (× tip radius, 0 = flat) and roundness (0 = sharp cone,
+// 1 = rounded dome). The full caps object is owned here and re-sent on every edit.
+function buildCapControls(parent: FolderApi): void {
+  const caps = structuredClone(DEFAULT_MESHER_OPTIONS.caps);
+  const capsFolder = parent.addFolder({ title: "Caps", expanded: false });
+
+  for (const group of ["trunk", "branch", "root"] as const) {
+    capsFolder
+      .addBinding(caps[group], "length", { label: `${group} length`, min: 0, max: 4, step: 0.05 })
+      .on("change", () => mainScene.setMesherOptions({ caps }));
+    capsFolder
+      .addBinding(caps[group], "roundness", { label: `${group} round`, min: 0, max: 1, step: 0.01 })
+      .on("change", () => mainScene.setMesherOptions({ caps }));
+  }
 }
 
 // Debug instrumentation: overlay visibility + per-point markers, all editing aids.

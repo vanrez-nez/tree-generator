@@ -7,8 +7,8 @@ import type { WeldMesh } from "./weld-mesh";
 // winding is clockwise w.r.t. the growth direction, so each triangle is reversed
 // ([a,b,c,d] -> [a,c,b] + [a,d,c]) to make face normals point outward.
 //
-// Ends are NOT capped: the mesher relies on the radius tapering to a tiny end radius so terminal
-// rings collapse to a near-point (a closed-looking cone tip) rather than a visible hole.
+// Leaf tips are closed by the mesher (see addCap): each terminal ring is fanned to an apex with a
+// per-group cap profile, so ends are watertight rather than open holes.
 //
 // UVs are assigned per-vertex from the loop UVs (last write wins) — approximate at the seam but
 // fine for bark. `radius` is exposed as an extra `aRadius` attribute.

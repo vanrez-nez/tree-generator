@@ -9,6 +9,9 @@ import { Vector3 } from "three";
 // `Stem` pairs the root node with its world-space base position. The mesher walks the
 // hierarchy from the stem and welds every segment into one watertight surface.
 
+/** Which limb system a node belongs to — selects the tip-cap profile in the mesher. */
+export type CapGroup = "trunk" | "branch" | "root";
+
 export interface TreeNode {
   children: NodeChild[];
   /** unit growth direction of this segment */
@@ -21,6 +24,8 @@ export interface TreeNode {
   radius: number;
   /** authoring/source id; the graph adapter uses 0 for every generated segment */
   creatorId: number;
+  /** trunk/branch/root, so leaf tips pick the matching cap shape */
+  capGroup: CapGroup;
 }
 
 export interface NodeChild {
@@ -41,6 +46,7 @@ export function createNode(
   parentTangent: Vector3,
   length: number,
   radius: number,
+  capGroup: CapGroup = "branch",
   creatorId = 0,
 ): TreeNode {
   const tangent = projectedOnPlane(parentTangent, direction).normalize();
@@ -51,6 +57,7 @@ export function createNode(
     length,
     radius,
     creatorId,
+    capGroup,
   };
 }
 

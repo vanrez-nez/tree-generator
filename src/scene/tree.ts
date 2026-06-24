@@ -54,11 +54,11 @@ const DEFAULT_OPTIONS: TreeParams = {
   //   so the finer spacing keeps enough alive disks contiguous for the walk to stay connected.
   branchLeanAngles: [30, 60, 70], // joint lean clamp (°) by branch level L1..L3
   rootLeanAngles: [90, 90, 90], // roots stay unconstrained so they descend freely
-  rootRadius: 0.27, // = trunkRadius * radiusScale at the defaults (preserves the prior root size)
-  rootHeight: 0.1,
+  rootRadius: 0.53,
+  rootHeight: 0.03,
   rootLength: 1.6,
-  rootDownAngle: 30,
-  rootDownCurve: 45,
+  rootDownAngle: 0,
+  rootDownCurve: 0,
   maxRoots: 8,
   rootSeparation: 0.6,
   rootLSmooth: 0.5,

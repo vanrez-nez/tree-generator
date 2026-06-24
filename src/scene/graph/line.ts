@@ -121,6 +121,13 @@ export class VirtualLine {
       }
     }
 
+    // Structural invariant: a line's anchor (index 0) is the vertex its joint connects to
+    // (childPointIndex is always 0). No modifier may move it, or the segment detaches from its
+    // parent. Enforced centrally here so every current and future modifier is covered.
+    if (transformedPoints.length > 0 && this.points.length > 0) {
+      transformedPoints[0] = this.points[0].clone();
+    }
+
     return transformedPoints;
   }
 

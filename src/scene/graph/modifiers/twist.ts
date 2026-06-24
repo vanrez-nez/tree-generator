@@ -6,6 +6,7 @@ import {
   type SeededModifierParams,
 } from "./modifier";
 import {
+  anchorRampWeight,
   makePerpendicularBasis,
   seededRandom,
 } from "./utils";
@@ -69,7 +70,8 @@ export class TwistModifier implements LineModifier<TwistModifierParams> {
     return points.map((point, index) => {
       const t = index / (points.length - 1);
       const angle = phase + sign * turns * t * Math.PI * 2;
-      const magnitude = radius;
+      // Ramp the helix radius in from the anchor so the base-pinned point 0 doesn't kink.
+      const magnitude = radius * anchorRampWeight(t);
 
       return point
         .clone()

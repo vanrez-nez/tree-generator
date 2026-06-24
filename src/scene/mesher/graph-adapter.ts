@@ -1,7 +1,13 @@
 import * as THREE from "three";
 import type { Graph } from "../graph/graph";
 import type { GraphLine } from "../graph/line";
-import { createNode, getOrthogonalVector, type Stem, type TreeNode } from "./tree-node";
+import {
+  createNode,
+  getOrthogonalVector,
+  type CapGroup,
+  type Stem,
+  type TreeNode,
+} from "./tree-node";
 
 // Adapts the app's runtime Graph (independent lines connected by joints) into the welding mesher's
 // `Stem` hierarchy. Each line's deformed centerline becomes a chain of single-segment TreeNodes
@@ -25,8 +31,8 @@ type LineChain = {
 export function buildStemFromGraph(graph: Graph): Stem | undefined {
   const chains = new Map<GraphLine, LineChain>();
 
-  for (const { line } of graph.getLineEntries()) {
-    const chain = buildLineChain(line);
+  for (const { id, line } of graph.getLineEntries()) {
+    const chain = buildLineChain(line, lineGroup(id));
     if (chain) chains.set(line, chain);
   }
 
@@ -73,7 +79,13 @@ export function buildStemFromGraph(graph: Graph): Stem | undefined {
 // Sample a line's deformed centerline by arc length into a chain of single-segment nodes. Sample
 // density matches the line's tube (discs per unit length) so the meshed surface follows the same
 // resolution the editing overlay shows.
-function buildLineChain(line: GraphLine): LineChain | undefined {
+function lineGroup(id: string): CapGroup {
+  if (id === "trunk") return "trunk";
+  if (id.startsWith("root")) return "root";
+  return "branch";
+}
+
+function buildLineChain(line: GraphLine, group: CapGroup): LineChain | undefined {
   const tube = line.tube;
   if (!tube) return undefined;
 
@@ -109,7 +121,7 @@ function buildLineChain(line: GraphLine): LineChain | undefined {
     const radius = tube.radiusAt(baseT);
 
     const seed = parentTangent ?? getOrthogonalVector(direction);
-    const node = createNode(direction, seed, length, radius);
+    const node = createNode(direction, seed, length, radius, group);
     parentTangent = node.tangent;
 
     const previous = nodes[nodes.length - 1];

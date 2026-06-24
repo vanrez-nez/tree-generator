@@ -6,6 +6,7 @@ import {
   type SeededModifierParams,
 } from "./modifier";
 import {
+  anchorRampWeight,
   makePerpendicularBasis,
   makeValueNoise,
   seededRandom,
@@ -15,6 +16,10 @@ export type GnarlModifierParams = SeededModifierParams & {
   amplitude: number;
   amount: number;
   cycles: number;
+  // World-axis locks: a locked axis is frozen, so the deform only operates in the unlocked ones.
+  lockX: boolean;
+  lockY: boolean;
+  lockZ: boolean;
 };
 
 export type GnarlModifierOptions = Partial<GnarlModifierParams> & {
@@ -34,6 +39,9 @@ export class GnarlModifier implements LineModifier<GnarlModifierParams> {
     cycles = 1.6,
     enabled = true,
     envelope = createDefaultEnvelope(),
+    lockX = false,
+    lockY = false,
+    lockZ = false,
     seed = 73192,
   }: GnarlModifierOptions = {}) {
     this.enabled = enabled;
@@ -42,6 +50,9 @@ export class GnarlModifier implements LineModifier<GnarlModifierParams> {
       amplitude,
       amount,
       cycles,
+      lockX,
+      lockY,
+      lockZ,
       seed,
     };
   }
@@ -71,12 +82,18 @@ export class GnarlModifier implements LineModifier<GnarlModifierParams> {
       const angleNoise = noise(t * this.params.cycles + phase);
       const radiusNoise = 0.65 + 0.35 * noise(t * this.params.cycles * 1.37 + phase + 17.23);
       const angle = angleNoise * Math.PI * 2;
-      const magnitude = amplitude * radiusNoise;
+      // Ramp displacement in from the anchor so the base-pinned point 0 doesn't kink.
+      const magnitude = amplitude * radiusNoise * anchorRampWeight(t);
 
-      return point
-        .clone()
+      const delta = new THREE.Vector3()
         .addScaledVector(sideA, Math.cos(angle) * magnitude)
         .addScaledVector(sideB, Math.sin(angle) * magnitude);
+
+      if (this.params.lockX) delta.x = 0;
+      if (this.params.lockY) delta.y = 0;
+      if (this.params.lockZ) delta.z = 0;
+
+      return point.clone().add(delta);
     });
   }
 }
