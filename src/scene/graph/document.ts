@@ -2,6 +2,7 @@ import type { GraphLineStyle } from "./line";
 import type { LineTubeOptions } from "./line-tube";
 import type { ModifierEnvelope } from "./modifiers/modifier";
 import type { CoilModifierParams } from "./modifiers/coil";
+import type { FootAlignModifierParams } from "./modifiers/foot-align";
 import type { GnarlModifierParams } from "./modifiers/gnarl";
 import type { SmoothModifierParams } from "./modifiers/smooth";
 import type { TwistModifierParams } from "./modifiers/twist";
@@ -36,11 +37,19 @@ export type CoilModifierDocument = {
   params?: Partial<CoilModifierParams>;
 };
 
+export type FootAlignModifierDocument = {
+  type: "footAlign";
+  enabled?: boolean;
+  envelope?: ModifierEnvelope;
+  params?: Partial<FootAlignModifierParams>;
+};
+
 export type ModifierDocument =
   | SmoothModifierDocument
   | GnarlModifierDocument
   | TwistModifierDocument
-  | CoilModifierDocument;
+  | CoilModifierDocument
+  | FootAlignModifierDocument;
 
 export type GraphLineDocument = {
   id: string;

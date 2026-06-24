@@ -193,6 +193,9 @@ function buildTrunk(params: TreeParams): GraphLineDocument {
         envelope: footAnchorEnvelope(),
         params: { amount: 0.6, radius: 0.06, turns: 1 },
       },
+      // Last: guarantee the base stands vertical (perpendicular to the floor) regardless of the
+      // lean / gnarl / twist above.
+      { type: "footAlign", params: { height: 0.15, amount: 1 } },
     ],
   };
 }

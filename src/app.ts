@@ -10,6 +10,7 @@ import { GraphLine } from "./scene/graph/line";
 import type { CubicBezierCurve } from "./scene/graph/curve";
 import type { LineModifier } from "./scene/graph/modifiers/modifier";
 import { CoilModifier } from "./scene/graph/modifiers/coil";
+import { FootAlignModifier } from "./scene/graph/modifiers/foot-align";
 import { GnarlModifier } from "./scene/graph/modifiers/gnarl";
 import { SmoothModifier } from "./scene/graph/modifiers/smooth";
 import { TwistModifier } from "./scene/graph/modifiers/twist";
@@ -219,6 +220,19 @@ function buildModifierControls(folder: FolderApi, modifier: LineModifier): void 
     });
   }
 
+  if (modifier instanceof FootAlignModifier) {
+    folder.addBinding(modifier.params, "height", {
+      min: 0,
+      max: 0.5,
+      step: 0.01,
+    });
+    folder.addBinding(modifier.params, "amount", {
+      min: 0,
+      max: 1,
+      step: 0.01,
+    });
+  }
+
   addModifierEnvelopeControls(folder, modifier);
 }
 
@@ -231,6 +245,9 @@ function modifierTypeName(modifier: LineModifier): string {
   }
   if (modifier instanceof CoilModifier) {
     return "Coil";
+  }
+  if (modifier instanceof FootAlignModifier) {
+    return "Foot Align";
   }
   return "Smooth";
 }
@@ -257,6 +274,11 @@ function buildModifierLayers(folder: FolderApi, line: GraphLine): void {
     {
       name: "Coil",
       createState: () => new CoilModifier(),
+      build: (modFolder, layer) => buildModifierControls(modFolder, layer.state),
+    },
+    {
+      name: "Foot Align",
+      createState: () => new FootAlignModifier(),
       build: (modFolder, layer) => buildModifierControls(modFolder, layer.state),
     },
   ];

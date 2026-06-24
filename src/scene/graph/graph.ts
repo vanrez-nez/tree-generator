@@ -9,6 +9,7 @@ import { Joint } from "./joint";
 import { GraphLine, type GraphLineOptions } from "./line";
 import type { LineModifier } from "./modifiers/modifier";
 import { CoilModifier } from "./modifiers/coil";
+import { FootAlignModifier } from "./modifiers/foot-align";
 import { GnarlModifier } from "./modifiers/gnarl";
 import { SmoothModifier } from "./modifiers/smooth";
 import { TwistModifier } from "./modifiers/twist";
@@ -206,7 +207,15 @@ function createModifier(modifierDocument: ModifierDocument): LineModifier {
     });
   }
 
-  return new CoilModifier({
+  if (modifierDocument.type === "coil") {
+    return new CoilModifier({
+      ...modifierDocument.params,
+      enabled: modifierDocument.enabled,
+      envelope: modifierDocument.envelope,
+    });
+  }
+
+  return new FootAlignModifier({
     ...modifierDocument.params,
     enabled: modifierDocument.enabled,
     envelope: modifierDocument.envelope,
