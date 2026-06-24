@@ -24,7 +24,8 @@ export type TreeOptions = {
   trunkRadius?: number;
   radiusScale?: number;
   tipScale?: number;
-  levelDensity?: number[];
+  subdivisions?: number; // global mesh resolution: disc vertex count + density scale
+  levelDensity?: number[]; // relative disc-density weights per level (scaled by subdivisions)
   branchLeanAngles?: number[];
   rootLeanAngles?: number[];
   // Roots (point-based, main roots only).
@@ -46,7 +47,8 @@ const DEFAULT_OPTIONS: TreeParams = {
   trunkRadius: 0.45, // master disc radius at the trunk (everything derives from this)
   radiusScale: 0.6, // disc radius multiplier per branching level
   tipScale: 0.12, // each line's radius tapers to this fraction toward its tip
-  levelDensity: [16, 10, 7, 5], // discs per unit length by level (index 0 = trunk, gets the most)
+  subdivisions: 16, // = SUBDIVISION_REF: reproduces the current density/segments
+  levelDensity: [16, 10, 7, 5], // relative density per level at subdivisions = SUBDIVISION_REF
   branchLeanAngles: [30, 60, 70], // joint lean clamp (°) by branch level L1..L3
   rootLeanAngles: [90, 90, 90], // roots stay unconstrained so they descend freely
   rootHeight: 0.1,
@@ -63,6 +65,9 @@ export const DEFAULT_TREE_OPTIONS: TreeParams = DEFAULT_OPTIONS;
 
 const TUBE_OPACITY = 0.35;
 const LINEAR_TAPER: CubicBezierCurve = [0.33, 0.33, 0.66, 0.66];
+// Subdivisions value at which the per-level densities apply as-is (and discs are 16-gons).
+const SUBDIVISION_REF = 16;
+const MIN_SUBDIVISIONS = 3;
 // A limb's start radius is capped to this fraction of the parent's radius at the branch point,
 // so children are always visibly thinner than the disc they emerge from.
 const BRANCH_RADIUS_RATIO = 0.75;
@@ -413,12 +418,17 @@ function assignTubes(
       radius = Math.min(levelRadius, cap);
     }
 
-    const density =
+    // Global subdivisions drives both axes of mesh resolution: the per-level density (scaled) and
+    // the disc vertex count.
+    const subdivisions = Math.max(MIN_SUBDIVISIONS, Math.round(params.subdivisions));
+    const levelWeight =
       params.levelDensity[Math.min(level, params.levelDensity.length - 1)] ?? 8;
+    const density = levelWeight * (subdivisions / SUBDIVISION_REF);
 
     line.tube = {
       radius,
       density,
+      segments: subdivisions,
       tipScale: params.tipScale,
       color: distinctColor(colorIndex.get(line.id) ?? 0),
       opacity: TUBE_OPACITY,

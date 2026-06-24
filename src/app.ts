@@ -68,6 +68,7 @@ const [linePage, jointsPage] = tab.pages;
 // instances change), so we track the folders they create to dispose them on rebuild.
 let scenePanelFolders: FolderApi[] = [];
 
+buildMeshControls();
 buildRootControls();
 buildScenePanels();
 
@@ -109,7 +110,7 @@ function addLineTubeControls(folder: FolderApi, line: GraphLine): void {
   const tubeFolder = folder.addFolder({ title: "Tube", expanded: false });
   tubeFolder.addBinding(tube, "visible");
   tubeFolder.addBinding(tube, "radius", { min: 0, max: 1, step: 0.005 });
-  tubeFolder.addBinding(tube, "density", { min: 1, max: 48, step: 1 });
+  // Density is driven globally by Mesh → subdivisions, not per line.
   tubeFolder.addBinding(tube, "tipScale", { label: "tip", min: 0, max: 1, step: 0.01 });
   tubeFolder.addBinding(tube, "opacity", { min: 0, max: 1, step: 0.01 });
 
@@ -371,6 +372,19 @@ function buildRootControls(): void {
 
   folder.on("change", () => {
     mainScene.setTreeOptions({ ...rootParams });
+    rebuildScenePanels();
+  });
+}
+
+// Global mesh resolution: one knob drives disc density + disc vertex count across the whole tree.
+function buildMeshControls(): void {
+  const meshParams = { subdivisions: DEFAULT_TREE_OPTIONS.subdivisions };
+
+  const folder = pane.addFolder({ title: "Mesh" });
+  folder.addBinding(meshParams, "subdivisions", { min: 3, max: 48, step: 1 });
+
+  folder.on("change", () => {
+    mainScene.setTreeOptions({ subdivisions: meshParams.subdivisions });
     rebuildScenePanels();
   });
 }
