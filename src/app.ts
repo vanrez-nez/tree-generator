@@ -59,6 +59,25 @@ pane.registerPlugin(LayersPluginBundle);
 const stats = pane.addBlade({ view: "stats" }) as StatsBladeApi;
 stats.setRenderer(renderer.capabilities.isWebGL2 ? "WebGL2" : "WebGL");
 
+// Tree generation readout, pinned at the top under the FPS blade. Read-only bindings are monitors
+// that poll `meshStats`, so they refresh on their own after each (debounced) rebuild.
+const treeInfo = pane.addFolder({ title: "Tree", expanded: true });
+treeInfo.addBinding(mainScene.meshStats, "generationMs", {
+  readonly: true,
+  label: "gen (ms)",
+  format: (value) => value.toFixed(1),
+});
+treeInfo.addBinding(mainScene.meshStats, "vertices", {
+  readonly: true,
+  label: "verts",
+  format: (value) => value.toFixed(0),
+});
+treeInfo.addBinding(mainScene.meshStats, "triangles", {
+  readonly: true,
+  label: "tris",
+  format: (value) => value.toFixed(0),
+});
+
 const tab = pane.addTab({
   pages: [{ title: "Line" }, { title: "Joints" }],
 });

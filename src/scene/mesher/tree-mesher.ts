@@ -49,6 +49,16 @@ export class TreeMesher {
     this.wireMesh.geometry = geometry;
   }
 
+  // Vertex/triangle counts of the current surface geometry, for the stats readout.
+  getStats(): { vertices: number; triangles: number } {
+    const geometry = this.solidMesh.geometry;
+    const position = geometry.getAttribute("position");
+    const vertices = position ? position.count : 0;
+    const index = geometry.getIndex();
+    const triangles = index ? index.count / 3 : Math.floor(vertices / 3);
+    return { vertices, triangles };
+  }
+
   setSurfaceVisible(visible: boolean): void {
     this.solidMesh.visible = visible;
   }

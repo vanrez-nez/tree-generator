@@ -25,6 +25,9 @@ export class MainScene {
 
   selectedLineId = "trunk";
 
+  // Last surface generation: build time + geometry size, surfaced in the pane's stats readout.
+  readonly meshStats = { generationMs: 0, vertices: 0, triangles: 0 };
+
   private treeOptions: TreeOptions = {};
   private rootSystem: RootSystem | undefined;
   private mesherOptions: MesherOptions = { ...DEFAULT_MESHER_OPTIONS };
@@ -197,7 +200,12 @@ export class MainScene {
     }
 
     if (this.meshDirty) {
+      const start = performance.now();
       this.mesher.build(this.graph, this.mesherOptions);
+      this.meshStats.generationMs = performance.now() - start;
+      const { vertices, triangles } = this.mesher.getStats();
+      this.meshStats.vertices = vertices;
+      this.meshStats.triangles = triangles;
       this.meshDirty = false;
     }
   }
