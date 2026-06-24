@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { GraphLine } from "./line";
+import { computeCollar, makeParentSurface } from "./collar";
 
 const TANGENT_EPSILON = 1e-3;
 const DIRECTION_EPSILON = 1e-6;
@@ -23,6 +24,11 @@ export class Joint {
   parentT: number;
   maxLeanAngle: number;
   directionPoints: number;
+
+  // The collar: where the child centerline exits the parent tube surface — the structural
+  // junction where the limb emerges. Recomputed each frame by `resolveJunction`.
+  collarT = 0;
+  readonly collarPoint = new THREE.Vector3();
 
   // The child's authored (rest) geometry. `resolve` is a pure function of this
   // snapshot, so the lean clamp is non-destructive: relaxing `maxLeanAngle`
@@ -68,6 +74,36 @@ export class Joint {
     const delta = parentPoint.sub(childPoint);
 
     this.childLine.points = placed.map((point) => point.add(delta));
+  }
+
+  // Compute the collar (child centerline crossing the parent tube surface) and hand the child
+  // tube a parent-surface clip so its discs are booleaned against the parent. Run after all
+  // joints have resolved, so it sees final geometry.
+  resolveJunction(): void {
+    const childTube = this.childLine.tube;
+
+    if (!childTube) {
+      return;
+    }
+
+    const parentTube = this.parentLine.tube;
+
+    if (this.parentLine === this.childLine || !parentTube) {
+      childTube.parentClip = null;
+      this.collarT = 0;
+      this.collarPoint.copy(this.childLine.getDrawnPointForIndex(this.childPointIndex));
+      return;
+    }
+
+    const surface = makeParentSurface(
+      this.parentLine.virtual.getDrawPoints(),
+      (t) => parentTube.radiusAt(t),
+    );
+    childTube.parentClip = surface;
+
+    const collar = computeCollar(this.childLine.virtual.getDrawPoints(), surface);
+    this.collarT = collar.t;
+    this.collarPoint.copy(collar.point);
   }
 
   private clampRestPoints(): THREE.Vector3[] {

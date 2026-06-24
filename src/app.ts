@@ -435,6 +435,7 @@ function buildJointsPage(): void {
         max: 16,
         step: 1,
       });
+      folder.addBinding(joint, "collarT", { label: "collar", readonly: true });
     });
   }
 }

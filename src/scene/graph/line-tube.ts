@@ -1,10 +1,19 @@
 import * as THREE from "three";
 import { cubicBezierEasing, type CubicBezierCurve } from "./curve";
+import {
+  signedDistance,
+  surfaceCrossing,
+  type ParentSurface,
+} from "./collar";
 
-// A per-line "tube": a stack of filled, semitransparent discs placed at each drawn point and
-// oriented perpendicular to the local tangent. The radius starts at `radius` (the line's max,
-// set by its branching level) and tapers toward the tip by `tipScale`, eased along the line by
-// a cubic-Bézier `curve`. Rendered as a single InstancedMesh (one draw call per line).
+// A per-line "tube": filled, semitransparent discs sampled along the line (density = discs per
+// unit length), each perpendicular to the local tangent, tapering from `radius` to
+// `radius*tipScale` along a cubic-Bézier `curve`.
+//
+// When `parentClip` is set, each disc is booleaned against the parent tube volume: discs fully
+// outside stay whole (fast InstancedMesh path), fully inside are dropped, and straddling discs
+// are CUT along the parent surface (built into a small BufferGeometry) so the cut edge lands on
+// the parent surface — the shared boundary future welds need.
 
 export type LineTubeOptions = {
   radius: number;
@@ -19,6 +28,8 @@ export type LineTubeOptions = {
 
 const LINEAR_CURVE: CubicBezierCurve = [0.33, 0.33, 0.66, 0.66];
 const FORWARD = new THREE.Vector3(0, 0, 1);
+const WORLD_UP = new THREE.Vector3(0, 1, 0);
+const WORLD_X = new THREE.Vector3(1, 0, 0);
 const MAX_DISCS = 256;
 
 export class LineTube {
@@ -29,12 +40,15 @@ export class LineTube {
   segments: number;
   curve: CubicBezierCurve;
   visible: boolean;
+  parentClip: ParentSurface | null = null;
 
   readonly object = new THREE.Group();
 
   private readonly material: THREE.MeshBasicMaterial;
-  private geometry: THREE.CircleGeometry;
+  private discGeometry: THREE.CircleGeometry;
   private mesh: THREE.InstancedMesh;
+  private readonly clipGeometry = new THREE.BufferGeometry();
+  private readonly clipMesh: THREE.Mesh;
 
   constructor({
     radius,
@@ -61,13 +75,24 @@ export class LineTube {
       side: THREE.DoubleSide,
       depthWrite: false,
     });
-    this.geometry = new THREE.CircleGeometry(1, this.segments);
+    this.discGeometry = new THREE.CircleGeometry(1, this.segments);
     this.mesh = this.createMesh(1);
+    this.clipMesh = new THREE.Mesh(this.clipGeometry, this.material);
+    this.clipMesh.frustumCulled = false;
+
     this.object.add(this.mesh);
+    this.object.add(this.clipMesh);
   }
 
   setColor(color: THREE.ColorRepresentation): void {
     this.material.color.set(color);
+  }
+
+  // Tube radius at arc fraction `t` (the taper). Exposed so a child's collar/clip can sample its
+  // parent's surface profile.
+  radiusAt(t: number): number {
+    const eased = cubicBezierEasing(THREE.MathUtils.clamp(t, 0, 1), this.curve);
+    return THREE.MathUtils.lerp(this.radius, this.radius * this.tipScale, eased);
   }
 
   update(points: THREE.Vector3[]): void {
@@ -79,37 +104,75 @@ export class LineTube {
 
     if (!this.visible || points.length < 2 || total <= 1e-6) {
       this.mesh.count = 0;
+      this.setClipPositions(EMPTY);
       return;
     }
 
-    // Disc count from density (discs per unit length), at least 2 (start + tip).
     const count = THREE.MathUtils.clamp(Math.round(this.density * total), 2, MAX_DISCS);
 
     if (this.mesh.instanceMatrix.count !== count) {
       this.rebuildMesh(count);
     }
 
+    const surface = this.parentClip;
+    const clip: number[] = [];
+    let full = 0;
+
     for (let index = 0; index < count; index += 1) {
       const t = index / (count - 1);
-      const sample = sampleAtDistance(points, cumulative, total * t);
-      _quaternion.setFromUnitVectors(FORWARD, sample.tangent);
+      const { position, tangent } = sampleAtDistance(points, cumulative, total * t);
+      const radius = this.radiusAt(t);
 
-      const eased = cubicBezierEasing(t, this.curve);
-      const radius = THREE.MathUtils.lerp(this.radius, this.radius * this.tipScale, eased);
-      _scale.set(radius, radius, 1);
+      if (!surface) {
+        this.setInstance(full, position, tangent, radius);
+        full += 1;
+        continue;
+      }
 
-      _matrix.compose(sample.position, _quaternion, _scale);
-      this.mesh.setMatrixAt(index, _matrix);
+      const sd = signedDistance(surface, position);
+
+      if (sd >= radius) {
+        // Fully outside the parent: whole disc.
+        this.setInstance(full, position, tangent, radius);
+        full += 1;
+      } else if (sd <= -radius) {
+        // Fully inside the parent: dropped.
+        continue;
+      } else {
+        // Straddling: cut against the parent surface into the built geometry.
+        appendCutDisc(clip, position, tangent, radius, this.segments, surface);
+      }
     }
 
-    this.mesh.count = count;
+    this.mesh.count = full;
     this.mesh.instanceMatrix.needsUpdate = true;
+    this.setClipPositions(clip.length > 0 ? new Float32Array(clip) : EMPTY);
   }
 
   dispose(): void {
     this.object.remove(this.mesh);
-    this.geometry.dispose();
+    this.object.remove(this.clipMesh);
+    this.discGeometry.dispose();
+    this.clipGeometry.dispose();
     this.material.dispose();
+  }
+
+  private setInstance(
+    index: number,
+    position: THREE.Vector3,
+    tangent: THREE.Vector3,
+    radius: number,
+  ): void {
+    _quaternion.setFromUnitVectors(FORWARD, tangent);
+    _scale.set(radius, radius, 1);
+    _matrix.compose(position, _quaternion, _scale);
+    this.mesh.setMatrixAt(index, _matrix);
+  }
+
+  private setClipPositions(positions: Float32Array): void {
+    this.clipMesh.visible = this.visible && positions.length > 0;
+    this.clipGeometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    this.clipGeometry.setDrawRange(0, positions.length / 3);
   }
 
   private rebuildMesh(count: number): void {
@@ -120,10 +183,77 @@ export class LineTube {
   }
 
   private createMesh(count: number): THREE.InstancedMesh {
-    const mesh = new THREE.InstancedMesh(this.geometry, this.material, Math.max(1, count));
+    const mesh = new THREE.InstancedMesh(this.discGeometry, this.material, Math.max(1, count));
     mesh.frustumCulled = false;
     return mesh;
   }
+}
+
+// Build a disc as a triangle fan (center + rim), clip each triangle to the part outside the
+// parent surface, and append the kept triangles (world positions) to `out`.
+function appendCutDisc(
+  out: number[],
+  center: THREE.Vector3,
+  tangent: THREE.Vector3,
+  radius: number,
+  segments: number,
+  surface: ParentSurface,
+): void {
+  const reference = Math.abs(tangent.dot(WORLD_UP)) > 0.95 ? WORLD_X : WORLD_UP;
+  const u = reference.clone().cross(tangent).normalize();
+  const v = tangent.clone().cross(u).normalize();
+
+  const rim: THREE.Vector3[] = [];
+  for (let k = 0; k < segments; k += 1) {
+    const angle = (k / segments) * Math.PI * 2;
+    rim.push(
+      center
+        .clone()
+        .addScaledVector(u, Math.cos(angle) * radius)
+        .addScaledVector(v, Math.sin(angle) * radius),
+    );
+  }
+
+  for (let k = 0; k < segments; k += 1) {
+    clipTriangleOutside(center, rim[k], rim[(k + 1) % segments], surface, out);
+  }
+}
+
+// Sutherland–Hodgman clip of one triangle against the "outside the parent" region, with edge
+// crossings placed on the parent surface (bisection). Kept polygon is fan-triangulated into `out`.
+function clipTriangleOutside(
+  a: THREE.Vector3,
+  b: THREE.Vector3,
+  c: THREE.Vector3,
+  surface: ParentSurface,
+  out: number[],
+): void {
+  const input = [a, b, c];
+  const poly: THREE.Vector3[] = [];
+
+  for (let i = 0; i < input.length; i += 1) {
+    const cur = input[i];
+    const next = input[(i + 1) % input.length];
+    const curOutside = signedDistance(surface, cur) >= 0;
+    const nextOutside = signedDistance(surface, next) >= 0;
+
+    if (curOutside) {
+      poly.push(cur);
+    }
+    if (curOutside !== nextOutside) {
+      poly.push(surfaceCrossing(cur, next, surface));
+    }
+  }
+
+  for (let k = 1; k + 1 < poly.length; k += 1) {
+    pushVec(out, poly[0]);
+    pushVec(out, poly[k]);
+    pushVec(out, poly[k + 1]);
+  }
+}
+
+function pushVec(out: number[], v: THREE.Vector3): void {
+  out.push(v.x, v.y, v.z);
 }
 
 function cumulativeLengths(points: THREE.Vector3[]): number[] {
@@ -160,6 +290,7 @@ function sampleAtDistance(
   };
 }
 
+const EMPTY = new Float32Array(0);
 const _matrix = new THREE.Matrix4();
 const _quaternion = new THREE.Quaternion();
 const _scale = new THREE.Vector3();

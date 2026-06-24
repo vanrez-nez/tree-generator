@@ -139,6 +139,12 @@ export class Graph {
       joint.resolve();
     }
 
+    // Positions are settled: compute each junction (collar + parent-surface clip for the child
+    // tube) before drawing so child discs render already cut against the parent.
+    for (const { joint } of this.jointEntries) {
+      joint.resolveJunction();
+    }
+
     for (const line of this.lines) {
       line.updateDrawing(camera, viewportSize);
     }
