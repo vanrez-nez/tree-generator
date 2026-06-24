@@ -87,6 +87,10 @@ export class LineTube {
     this.material.color.set(color);
   }
 
+  get color(): number {
+    return this.material.color.getHex();
+  }
+
   // Tube radius at arc fraction `t` (the taper). Exposed so a child's collar/clip can sample its
   // parent's surface profile.
   radiusAt(t: number): number {

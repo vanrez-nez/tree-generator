@@ -352,6 +352,7 @@ function rebuildScenePanels(): void {
 // change) and refreshes the dependent panels.
 function buildRootControls(): void {
   const rootParams = {
+    rootRadius: DEFAULT_TREE_OPTIONS.rootRadius,
     rootHeight: DEFAULT_TREE_OPTIONS.rootHeight,
     rootSeparation: DEFAULT_TREE_OPTIONS.rootSeparation,
     rootLSmooth: DEFAULT_TREE_OPTIONS.rootLSmooth,
@@ -362,6 +363,7 @@ function buildRootControls(): void {
   };
 
   const folder = pane.addFolder({ title: "Roots" });
+  folder.addBinding(rootParams, "rootRadius", { label: "radius", min: 0.02, max: 1, step: 0.01 });
   folder.addBinding(rootParams, "rootHeight", { label: "height", min: 0, max: 0.5, step: 0.01 });
   folder.addBinding(rootParams, "rootSeparation", { label: "separation", min: 0, max: 2, step: 0.05 });
   folder.addBinding(rootParams, "rootLSmooth", { label: "L smooth", min: 0, max: 1, step: 0.05 });
@@ -376,7 +378,7 @@ function buildRootControls(): void {
   });
 }
 
-// Global mesh resolution + the step-1 edge-walker view.
+// Global mesh resolution + the per-line tube mesh view.
 function buildMeshControls(): void {
   const folder = pane.addFolder({ title: "Debug" });
 
@@ -388,20 +390,17 @@ function buildMeshControls(): void {
       rebuildScenePanels();
     });
 
-  const view = { surface: true, wireframe: false, edges: true, discs: true };
+  const view = { surface: true, wireframe: false, discs: true };
   folder
     .addBinding(view, "surface", { label: "mesh surface" })
-    .on("change", (event) => mainScene.edgeWalker.setSurfaceVisible(event.value));
+    .on("change", (event) => mainScene.mesher.setSurfaceVisible(event.value));
   folder
     .addBinding(view, "wireframe", { label: "wireframe" })
-    .on("change", (event) => mainScene.edgeWalker.setSurfaceWireframe(event.value));
-  folder
-    .addBinding(view, "edges", { label: "edge walker" })
-    .on("change", (event) => mainScene.edgeWalker.setEdgesVisible(event.value));
+    .on("change", (event) => mainScene.mesher.setSurfaceWireframe(event.value));
   folder
     .addBinding(view, "discs", { label: "show discs" })
     .on("change", (event) => setDiscsVisible(event.value));
-  folder.addButton({ title: "Rebuild edges" }).on("click", () => mainScene.rebuildEdges());
+  folder.addButton({ title: "Rebuild mesh" }).on("click", () => mainScene.rebuildMesh());
 }
 
 function setDiscsVisible(visible: boolean): void {

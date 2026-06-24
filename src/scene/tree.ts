@@ -29,6 +29,7 @@ export type TreeOptions = {
   branchLeanAngles?: number[];
   rootLeanAngles?: number[];
   // Roots (point-based, main roots only).
+  rootRadius?: number; // max disc radius at the root base (decoupled from the branch radiusScale)
   rootHeight?: number; // trunk parameter (0..0.5) where roots attach
   rootLength?: number; // root polyline length
   rootDownAngle?: number; // initial tilt below horizontal (degrees), outer flare only
@@ -53,6 +54,7 @@ const DEFAULT_OPTIONS: TreeParams = {
   //   so the finer spacing keeps enough alive disks contiguous for the walk to stay connected.
   branchLeanAngles: [30, 60, 70], // joint lean clamp (°) by branch level L1..L3
   rootLeanAngles: [90, 90, 90], // roots stay unconstrained so they descend freely
+  rootRadius: 0.27, // = trunkRadius * radiusScale at the defaults (preserves the prior root size)
   rootHeight: 0.1,
   rootLength: 1.6,
   rootDownAngle: 30,
@@ -323,8 +325,7 @@ function buildRoots(
 
   const rootHeight = THREE.MathUtils.clamp(params.rootHeight, 0, 0.5);
   const trunkR = trunkRadiusAt(params, rootHeight);
-  const rootLevelRadius = params.trunkRadius * params.radiusScale;
-  const rootBaseRadius = Math.min(rootLevelRadius, BRANCH_RADIUS_RATIO * trunkR);
+  const rootBaseRadius = Math.min(params.rootRadius, BRANCH_RADIUS_RATIO * trunkR);
   const discDiameter = Math.max(1e-4, rootBaseRadius * 2);
 
   const fitCount = Math.floor((2 * Math.PI * trunkR) / discDiameter);
@@ -409,7 +410,10 @@ function assignTubes(
 
   for (const line of ordered) {
     const level = levelOf(line.id);
-    const levelRadius = params.trunkRadius * Math.pow(params.radiusScale, level);
+    const isRoot = /^root-\d+$/.test(line.id);
+    const levelRadius = isRoot
+      ? params.rootRadius
+      : params.trunkRadius * Math.pow(params.radiusScale, level);
     let radius = levelRadius;
 
     const joint = jointByChild.get(line.id);
