@@ -53,6 +53,13 @@ export class EdgeWalker {
   });
   private readonly walkMaterial = new THREE.LineBasicMaterial({ color: 0x5fd0ff });
   private readonly weldMaterial = new THREE.LineBasicMaterial({ color: 0xffaa33 });
+  private readonly surfaceMaterial = new THREE.MeshStandardMaterial({
+    color: 0xc8a06a,
+    roughness: 0.85,
+    metalness: 0,
+    side: THREE.DoubleSide,
+    flatShading: false,
+  });
   private readonly ringSegments = new THREE.LineSegments(
     new THREE.BufferGeometry(),
     this.ringMaterial,
@@ -65,11 +72,14 @@ export class EdgeWalker {
     new THREE.BufferGeometry(),
     this.weldMaterial,
   );
+  private readonly surfaceMesh = new THREE.Mesh(new THREE.BufferGeometry(), this.surfaceMaterial);
 
   constructor() {
     this.ringSegments.frustumCulled = false;
     this.walkSegments.frustumCulled = false;
     this.weldSegments.frustumCulled = false;
+    this.surfaceMesh.frustumCulled = false;
+    this.object.add(this.surfaceMesh);
     this.object.add(this.ringSegments);
     this.object.add(this.walkSegments);
     this.object.add(this.weldSegments);
@@ -77,6 +87,20 @@ export class EdgeWalker {
 
   setVisible(visible: boolean): void {
     this.object.visible = visible;
+  }
+
+  setSurfaceVisible(visible: boolean): void {
+    this.surfaceMesh.visible = visible;
+  }
+
+  setSurfaceWireframe(wireframe: boolean): void {
+    this.surfaceMaterial.wireframe = wireframe;
+  }
+
+  setEdgesVisible(visible: boolean): void {
+    this.ringSegments.visible = visible;
+    this.walkSegments.visible = visible;
+    this.weldSegments.visible = visible;
   }
 
   build(graph: Graph): void {
@@ -93,6 +117,7 @@ export class EdgeWalker {
     const lineIndex = new Map<GraphLine, number>(entries.map(({ line }, i) => [line, i]));
     const lineAncestorSurfaces: ParentSurface[][] = []; // each line's ancestor surfaces (project targets)
     const lineAncestorLines: Set<number>[] = []; // each line's ancestor line indices (snap targets)
+    const lineGrids: { starts: number[]; n: number }[] = []; // per-line disc grid, for lofting faces
 
     for (const { line } of entries) {
       lineAncestorSurfaces.push(ancestorSurfaces(line, parentOf));
@@ -136,6 +161,8 @@ export class EdgeWalker {
           walkIndices.push(a + k, b + k);
         }
       }
+
+      lineGrids.push({ starts: diskStarts, n });
     }
 
     // CLEANUP PASS — discard every vertex inside any ancestor's geometry, then drop any edge that
@@ -153,10 +180,70 @@ export class EdgeWalker {
       lineAncestorLines,
     });
 
+    // SURFACE — marching-squares per disc-grid quad. Fully-alive quads loft as the tube surface;
+    // boundary quads (some corners culled) close down to the projected points on the parent surface,
+    // so the junction holes seal. Indexes into the welded buffer (disc verts + projected points).
+    const faces = closeSurface(lineGrids, alive, weld.weldTarget);
+
     setEdges(this.ringSegments, new Float32Array(positions), ring);
     setEdges(this.walkSegments, new Float32Array(positions), walk);
     setEdges(this.weldSegments, new Float32Array(weld.positions), weld.edges);
+    setSurface(this.surfaceMesh, new Float32Array(weld.positions), faces);
   }
+}
+
+// Skins each tube's disc grid with marching-squares. For every quad (disk d, disk d+1) × (k, k+1) we
+// walk its four edges: alive corners are kept, and at every alive↔culled crossing we insert the alive
+// corner's weld target — its landing on the parent surface. The resulting polygon is the closed alive
+// region (interior loft AND boundary closure in one), fan-triangulated. Crossings are shared between
+// adjacent quads (one weld target per vertex), so the boundary seals continuously — including the
+// diagonal steps a per-edge skirt would miss. The ring wraps with (k+1) % n, closing each tube.
+function closeSurface(
+  grids: { starts: number[]; n: number }[],
+  alive: boolean[],
+  weldTarget: Map<number, number>,
+): number[] {
+  const faces: number[] = [];
+  const corners = [0, 0, 0, 0];
+  for (const { starts, n } of grids) {
+    for (let d = 0; d < starts.length - 1; d += 1) {
+      const a = starts[d];
+      const b = starts[d + 1];
+      for (let k = 0; k < n; k += 1) {
+        const k1 = (k + 1) % n;
+        corners[0] = a + k;
+        corners[1] = a + k1;
+        corners[2] = b + k1;
+        corners[3] = b + k;
+
+        const poly: number[] = [];
+        for (let i = 0; i < 4; i += 1) {
+          const cur = corners[i];
+          const next = corners[(i + 1) % 4];
+          const curAlive = alive[cur];
+          if (curAlive) poly.push(cur);
+          if (curAlive !== alive[next]) {
+            const cross = curAlive ? weldTarget.get(cur) : weldTarget.get(next);
+            if (cross !== undefined) poly.push(cross);
+          }
+        }
+
+        for (let j = 1; j + 1 < poly.length; j += 1) {
+          faces.push(poly[0], poly[j], poly[j + 1]);
+        }
+      }
+    }
+  }
+  return faces;
+}
+
+function setSurface(mesh: THREE.Mesh, positions: Float32Array, faces: number[]): void {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setIndex(faces);
+  geometry.computeVertexNormals();
+  mesh.geometry.dispose();
+  mesh.geometry = geometry;
 }
 
 // Maps each child line to its parent line via the joints, so the cull can walk the ancestor chain.
@@ -219,7 +306,7 @@ function weldOpenBoundaries(
   ringIndices: number[],
   alive: boolean[],
   ctx: WeldContext,
-): { positions: number[]; edges: number[] } {
+): { positions: number[]; edges: number[]; weldTarget: Map<number, number> } {
   const count = positions.length / 3;
   // Accumulate, per open vertex, the inward direction and a representative local disk spacing.
   const inward = new Map<number, { dir: THREE.Vector3; span: number; n: number }>();
@@ -262,6 +349,9 @@ function weldOpenBoundaries(
 
   const weldPositions = positions.slice();
   const edges: number[] = [];
+  // Each welded open vertex → the index of the point it landed on (a projected point or a snapped
+  // ancestor vertex). Used to bridge the open boundary to the parent surface with skirt faces.
+  const weldTarget = new Map<number, number>();
   const a = new THREE.Vector3();
   const probe = new THREE.Vector3();
   let snapped = 0;
@@ -298,6 +388,7 @@ function weldOpenBoundaries(
         const w = weldPositions.length / 3;
         weldPositions.push(hit.x, hit.y, hit.z);
         edges.push(vertex, w);
+        weldTarget.set(vertex, w);
         projected += 1;
         continue;
       }
@@ -324,6 +415,7 @@ function weldOpenBoundaries(
     }
     if (best >= 0) {
       edges.push(vertex, best);
+      weldTarget.set(vertex, best);
       snapped += 1;
       continue;
     }
@@ -335,7 +427,7 @@ function weldOpenBoundaries(
   // eslint-disable-next-line no-console
   console.log(`[edge-walker] weld: open=${inward.size} projected=${projected} snapped=${snapped} left=${left}`);
 
-  return { positions: weldPositions, edges };
+  return { positions: weldPositions, edges, weldTarget };
 }
 
 // Marks each vertex alive unless it lies inside any ancestor's tube (signedDistance < 0).

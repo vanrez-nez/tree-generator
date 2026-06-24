@@ -40,24 +40,8 @@ export function signedDistance(surface: ParentSurface, p: THREE.Vector3): number
     return p.distanceTo(points[0] ?? p) - surface.radiusAt(0);
   }
 
-  // Flat base cap: the tube starts at the base — it does not continue below it. If `p` projects
-  // below the start of the first segment, measure to the flat base disc (not a rounded hemisphere),
-  // so nothing under the base reads as "inside". Without this, a child diving past the base (e.g. a
-  // root descending below ground) would be clipped against trunk volume that never exists there.
-  const base = points[0];
-  _ab.subVectors(points[1], base);
-  const seg0Len = _ab.length();
-  if (seg0Len > 1e-9) {
-    _ap.subVectors(p, base);
-    const axial = _ap.dot(_ab) / seg0Len; // signed length along the first segment, from the base
-    if (axial < 0) {
-      const r0 = surface.radiusAt(0);
-      const radial = Math.sqrt(Math.max(0, _ap.lengthSq() - axial * axial));
-      const below = -axial;
-      return radial <= r0 ? below : Math.hypot(below, radial - r0);
-    }
-  }
-
+  // Rounded tube (capsule): distance to the nearest clamped point on the spine, minus the radius
+  // there. Clamping rounds the interior joints (good), but also rounds the two end caps (artifact).
   let bestDist = Infinity;
   let bestArc = 0;
 
@@ -76,7 +60,25 @@ export function signedDistance(surface: ParentSurface, p: THREE.Vector3): number
     }
   }
 
-  return bestDist - surface.radiusAt(bestArc);
+  let d = bestDist - surface.radiusAt(bestArc);
+
+  // The tube is solid only between its first and last disc. Intersect the rounded tube with the two
+  // half-spaces bounded by the end disc planes (plane normal = the end segment direction): anything
+  // past an end disc reads as outside. The cap is the disc plane itself — derived from where the
+  // discs actually are, not a hand-placed surface — so both ends are flat and symmetric.
+  const last = points.length - 1;
+  _ab.subVectors(points[1], points[0]);
+  if (_ab.lengthSq() > 1e-12) {
+    _ab.normalize();
+    d = Math.max(d, -_ap.subVectors(p, points[0]).dot(_ab)); // before the base disc → outside
+  }
+  _ab.subVectors(points[last], points[last - 1]);
+  if (_ab.lengthSq() > 1e-12) {
+    _ab.normalize();
+    d = Math.max(d, _ap.subVectors(p, points[last]).dot(_ab)); // beyond the tip disc → outside
+  }
+
+  return d;
 }
 
 // Bisection for the surface crossing (signedDistance = 0) between inside point `a` and outside

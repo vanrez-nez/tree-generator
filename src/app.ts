@@ -378,7 +378,7 @@ function buildRootControls(): void {
 
 // Global mesh resolution + the step-1 edge-walker view.
 function buildMeshControls(): void {
-  const folder = pane.addFolder({ title: "Mesh" });
+  const folder = pane.addFolder({ title: "Debug" });
 
   const meshParams = { subdivisions: DEFAULT_TREE_OPTIONS.subdivisions };
   folder
@@ -388,10 +388,16 @@ function buildMeshControls(): void {
       rebuildScenePanels();
     });
 
-  const view = { edges: true, discs: true };
+  const view = { surface: true, wireframe: false, edges: true, discs: true };
+  folder
+    .addBinding(view, "surface", { label: "mesh surface" })
+    .on("change", (event) => mainScene.edgeWalker.setSurfaceVisible(event.value));
+  folder
+    .addBinding(view, "wireframe", { label: "wireframe" })
+    .on("change", (event) => mainScene.edgeWalker.setSurfaceWireframe(event.value));
   folder
     .addBinding(view, "edges", { label: "edge walker" })
-    .on("change", (event) => mainScene.edgeWalker.setVisible(event.value));
+    .on("change", (event) => mainScene.edgeWalker.setEdgesVisible(event.value));
   folder
     .addBinding(view, "discs", { label: "show discs" })
     .on("change", (event) => setDiscsVisible(event.value));
