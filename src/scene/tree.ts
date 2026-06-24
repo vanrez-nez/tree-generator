@@ -48,7 +48,9 @@ const DEFAULT_OPTIONS: TreeParams = {
   radiusScale: 0.6, // disc radius multiplier per branching level
   tipScale: 0.12, // each line's radius tapers to this fraction toward its tip
   subdivisions: 16, // = SUBDIVISION_REF: reproduces the current density/segments
-  levelDensity: [16, 10, 7, 5], // relative density per level at subdivisions = SUBDIVISION_REF
+  levelDensity: [16, 16, 16, 16], // relative density per level at subdivisions = SUBDIVISION_REF
+  // ^ L2 (index 2) is denser than L1: short L2 limbs lose several disks to the inside-parent cull,
+  //   so the finer spacing keeps enough alive disks contiguous for the walk to stay connected.
   branchLeanAngles: [30, 60, 70], // joint lean clamp (°) by branch level L1..L3
   rootLeanAngles: [90, 90, 90], // roots stay unconstrained so they descend freely
   rootHeight: 0.1,

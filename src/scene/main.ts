@@ -2,19 +2,23 @@ import * as THREE from "three";
 import { Graph } from "./graph/graph";
 import { DEFAULT_TREE_OPTIONS, buildTreeDocument, type TreeOptions } from "./tree";
 import { RootSystem } from "./root-system";
+import { EdgeWalker } from "./meshing/edge-walker";
 
 export class MainScene {
   readonly scene = new THREE.Scene();
   readonly graph = new Graph();
+  readonly edgeWalker = new EdgeWalker();
 
   selectedLineId = "trunk";
 
   private treeOptions: TreeOptions = {};
   private rootSystem: RootSystem | undefined;
+  private edgesDirty = true;
 
   constructor() {
     this.scene.background = new THREE.Color(0x111111);
     this.scene.add(this.graph.group);
+    this.scene.add(this.edgeWalker.object);
     this.loadTree();
 
     const light = new THREE.DirectionalLight(0xffffff, 3);
@@ -72,9 +76,20 @@ export class MainScene {
       .filter(({ id }) => /^root-\d+$/.test(id))
       .map(({ line }) => line);
     this.rootSystem = new RootSystem(trunk, rootLines, params);
+    this.edgesDirty = true;
+  }
+
+  // Rebuild the edge walker on the next update, once the graph geometry has settled.
+  rebuildEdges(): void {
+    this.edgesDirty = true;
   }
 
   update(_deltaTime: number, camera: THREE.Camera, viewportSize?: THREE.Vector2): void {
     this.graph.update(camera, viewportSize, () => this.rootSystem?.update());
+
+    if (this.edgesDirty) {
+      this.edgeWalker.build(this.graph);
+      this.edgesDirty = false;
+    }
   }
 }

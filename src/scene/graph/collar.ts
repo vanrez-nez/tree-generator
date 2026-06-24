@@ -40,6 +40,24 @@ export function signedDistance(surface: ParentSurface, p: THREE.Vector3): number
     return p.distanceTo(points[0] ?? p) - surface.radiusAt(0);
   }
 
+  // Flat base cap: the tube starts at the base — it does not continue below it. If `p` projects
+  // below the start of the first segment, measure to the flat base disc (not a rounded hemisphere),
+  // so nothing under the base reads as "inside". Without this, a child diving past the base (e.g. a
+  // root descending below ground) would be clipped against trunk volume that never exists there.
+  const base = points[0];
+  _ab.subVectors(points[1], base);
+  const seg0Len = _ab.length();
+  if (seg0Len > 1e-9) {
+    _ap.subVectors(p, base);
+    const axial = _ap.dot(_ab) / seg0Len; // signed length along the first segment, from the base
+    if (axial < 0) {
+      const r0 = surface.radiusAt(0);
+      const radial = Math.sqrt(Math.max(0, _ap.lengthSq() - axial * axial));
+      const below = -axial;
+      return radial <= r0 ? below : Math.hypot(below, radial - r0);
+    }
+  }
+
   let bestDist = Infinity;
   let bestArc = 0;
 

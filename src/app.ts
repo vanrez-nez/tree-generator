@@ -376,17 +376,34 @@ function buildRootControls(): void {
   });
 }
 
-// Global mesh resolution: one knob drives disc density + disc vertex count across the whole tree.
+// Global mesh resolution + the step-1 edge-walker view.
 function buildMeshControls(): void {
-  const meshParams = { subdivisions: DEFAULT_TREE_OPTIONS.subdivisions };
-
   const folder = pane.addFolder({ title: "Mesh" });
-  folder.addBinding(meshParams, "subdivisions", { min: 3, max: 48, step: 1 });
 
-  folder.on("change", () => {
-    mainScene.setTreeOptions({ subdivisions: meshParams.subdivisions });
-    rebuildScenePanels();
-  });
+  const meshParams = { subdivisions: DEFAULT_TREE_OPTIONS.subdivisions };
+  folder
+    .addBinding(meshParams, "subdivisions", { min: 3, max: 48, step: 1 })
+    .on("change", () => {
+      mainScene.setTreeOptions({ subdivisions: meshParams.subdivisions });
+      rebuildScenePanels();
+    });
+
+  const view = { edges: true, discs: true };
+  folder
+    .addBinding(view, "edges", { label: "edge walker" })
+    .on("change", (event) => mainScene.edgeWalker.setVisible(event.value));
+  folder
+    .addBinding(view, "discs", { label: "show discs" })
+    .on("change", (event) => setDiscsVisible(event.value));
+  folder.addButton({ title: "Rebuild edges" }).on("click", () => mainScene.rebuildEdges());
+}
+
+function setDiscsVisible(visible: boolean): void {
+  for (const { line } of mainScene.graph.getLineEntries()) {
+    if (line.tube) {
+      line.tube.visible = visible;
+    }
+  }
 }
 
 function buildLineLayers(): FolderApi {
