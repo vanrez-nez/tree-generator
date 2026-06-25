@@ -38,6 +38,21 @@ export function createFloatTarget(width: number, height: number): THREE.WebGLRen
   });
 }
 
+// RGBA8 / Nearest / no color conversion — used as a readback target for PNG export so raw channel
+// bytes round-trip straight to the file (sRGB basecolor stays sRGB; linear data stays linear).
+export function createByteTarget(width: number, height: number): THREE.WebGLRenderTarget {
+  return new THREE.WebGLRenderTarget(width, height, {
+    depthBuffer: false,
+    stencilBuffer: false,
+    format: THREE.RGBAFormat,
+    type: THREE.UnsignedByteType,
+    colorSpace: THREE.NoColorSpace,
+    magFilter: THREE.NearestFilter,
+    minFilter: THREE.NearestFilter,
+    generateMipmaps: false,
+  });
+}
+
 export function createDataTarget(width: number, height: number): THREE.WebGLRenderTarget {
   return new THREE.WebGLRenderTarget(width, height, {
     depthBuffer: false,

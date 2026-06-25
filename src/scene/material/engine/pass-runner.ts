@@ -20,6 +20,11 @@ export class PassRunner {
     this.renderer.setRenderTarget(previous);
   }
 
+  // Read a render target's pixels back to CPU (for PNG export).
+  readback(target: THREE.WebGLRenderTarget, buffer: Uint8Array, width: number, height: number): void {
+    this.renderer.readRenderTargetPixels(target, 0, 0, width, height, buffer);
+  }
+
   dispose(): void {
     this.fsq.dispose();
   }

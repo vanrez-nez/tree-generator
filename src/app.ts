@@ -474,6 +474,13 @@ function buildTextureLayers(): void {
   roughFolder.addBinding(graph.roughness.params, "min", { min: 0, max: 1, step: 0.01 });
   roughFolder.addBinding(graph.roughness.params, "max", { min: 0, max: 1, step: 0.01 });
   roughFolder.addBinding(graph.roughness.params, "invert");
+
+  const exportFolder = texturePage.addFolder({ title: "Export PNG", expanded: false });
+  for (const channel of ["basecolor", "normal", "ao", "roughness"] as const) {
+    exportFolder
+      .addButton({ title: `Export ${channel}` })
+      .on("click", () => mainScene.materialGraph.exportChannel(channel));
+  }
 }
 
 // Generation folder (pinned at the top): the reversible tree code plus the structural knobs that

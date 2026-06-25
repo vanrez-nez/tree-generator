@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { BakeContext } from "./engine/node";
 import { PassRunner } from "./engine/pass-runner";
+import { downloadChannelPng } from "./engine/export";
 import { HeightNode } from "./nodes/height";
 import { WarpNode } from "./nodes/warp";
 import { SlopeBlurNode } from "./nodes/slope-blur";
@@ -68,6 +69,12 @@ export class MaterialGraph {
       ao: this.ao.resolve(ctx),
       roughness: this.roughness.resolve(ctx),
     };
+  }
+
+  // Bake then download one channel as a PNG (for use in other tools/engines).
+  exportChannel(name: keyof MaterialChannels): void {
+    const channels = this.bake();
+    downloadChannelPng(this.runner, channels[name], this.width, this.height_, `bark-${name}.png`);
   }
 
   dispose(): void {
