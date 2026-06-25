@@ -5,6 +5,7 @@ import {
   isLeaf,
   lerp,
   projectedOnPlane,
+  UV_WORLD_PER_TILE,
   type CapGroup,
   type NodeChild,
   type Stem,
@@ -53,6 +54,7 @@ function emitRing(
   smoothAmount: number,
   mesh: WeldMesh,
   uvY: number,
+  uRepeat: number,
 ): CircleDesignator {
   const vertexIndex = mesh.vertices.length;
   const uvIndex = mesh.uvs.length;
@@ -69,9 +71,11 @@ function emitRing(
     mesh.smoothAmount[index] = smoothAmount;
     mesh.radius[index] = radius;
     mesh.directionA[index] = direction.clone();
-    mesh.uvs.push(new Vector2(i / radialN, uvY));
+    // u repeats the texture `uRepeat` times around (integer ⇒ seamless wrap; ∝ radius ⇒ consistent
+    // world texel size). Seam vertex carries u = uRepeat (the wrap value), not 1.
+    mesh.uvs.push(new Vector2((i / radialN) * uRepeat, uvY));
   }
-  mesh.uvs.push(new Vector2(1, uvY));
+  mesh.uvs.push(new Vector2(uRepeat, uvY));
   return { vertexIndex, uvIndex, radialN };
 }
 
@@ -104,6 +108,7 @@ function addCircle(
     smoothAmount,
     mesh,
     uvY,
+    node.uRepeat,
   );
 }
 
@@ -305,24 +310,26 @@ function getChildTwist(child: TreeNode, parent: TreeNode): number {
 // Returns the child-base ring index (the rim ring sits one band-height below it).
 function addChildBaseUvs(
   parentUvY: number,
-  parent: TreeNode,
   childRadialN: number,
+  childURepeat: number,
+  bandHeight: number,
   mesh: WeldMesh,
 ): number {
-  const uvGrowth = parent.length / (parent.radius + 0.001) / TAU;
+  const bandV = parentUvY - bandHeight; // thin collar band, in v (tile) units
 
-  // Rim ring (parent-rim corners of the skirt), one band-height below the child base ring.
+  // Rim ring (parent-rim corners of the skirt), one band-height below the child base ring. Uses the
+  // child's u-repeat so it's continuous with the child tube above.
   for (let i = 0; i < childRadialN; i++) {
-    mesh.uvs.push(new Vector2(i / childRadialN, parentUvY - uvGrowth));
+    mesh.uvs.push(new Vector2((i / childRadialN) * childURepeat, bandV));
   }
-  mesh.uvs.push(new Vector2(1, parentUvY - uvGrowth));
+  mesh.uvs.push(new Vector2(childURepeat, bandV));
 
   // Child base ring, continuous with the child tube's first bridge above (at parentUvY).
   const ringUvStartIndex = mesh.uvs.length;
   for (let i = 0; i < childRadialN; i++) {
-    mesh.uvs.push(new Vector2(i / childRadialN, parentUvY));
+    mesh.uvs.push(new Vector2((i / childRadialN) * childURepeat, parentUvY));
   }
-  mesh.uvs.push(new Vector2(1, parentUvY));
+  mesh.uvs.push(new Vector2(childURepeat, parentUvY));
 
   return ringUvStartIndex;
 }
@@ -361,7 +368,9 @@ function addChildCircle(
     uvIndex: mesh.uvs.length,
     radialN: childRadialN,
   };
-  childBase.uvIndex = addChildBaseUvs(uvY, parent, childRadialN, mesh);
+  // Collar band ~ parent radius tall, expressed in v (tile) units.
+  const bandHeight = parent.radius / UV_WORLD_PER_TILE;
+  childBase.uvIndex = addChildBaseUvs(uvY, childRadialN, child.node.uRepeat, bandHeight, mesh);
   addChildBaseGeometry(
     childBaseIndices,
     childBase,
@@ -444,6 +453,7 @@ function addCap(
       getSmoothAmount(ringRadius, node.length),
       mesh,
       uvY + s,
+      node.uRepeat,
     );
     bridgeCircles(previous, ring, radialN, mesh);
     previous = ring;
@@ -456,7 +466,7 @@ function addCap(
   mesh.radius[apexIndex] = 0;
   mesh.directionA[apexIndex] = node.direction.clone();
   const apexUvIndex = mesh.uvs.length;
-  mesh.uvs.push(new Vector2(0.5, uvY + 1));
+  mesh.uvs.push(new Vector2(0.5 * node.uRepeat, uvY + 1));
 
   // Fan the last ring to the apex. The duplicated apex corner collapses each quad to a single
   // triangle, with the same winding bridgeCircles uses (outward after to-buffer's reversal).
@@ -487,7 +497,7 @@ function addBaseCap(stem: Stem, startCircle: CircleDesignator, mesh: WeldMesh): 
   mesh.radius[apexIndex] = 0;
   mesh.directionA[apexIndex] = stem.node.direction.clone().negate();
   const apexUvIndex = mesh.uvs.length;
-  mesh.uvs.push(new Vector2(0.5, 0));
+  mesh.uvs.push(new Vector2(0.5 * stem.node.uRepeat, 0));
 
   const radialN = startCircle.radialN;
   for (let i = 0; i < radialN; i++) {
@@ -515,7 +525,8 @@ function meshNodeRec(
   uvY: number,
   opts: MesherOptions,
 ): void {
-  const uvGrowth = node.length / (node.radius + 0.001) / TAU;
+  // v advances by world arc-length / tile size — consistent axial texel density regardless of radius.
+  const uvGrowth = node.length / UV_WORLD_PER_TILE;
 
   if (node.children.length < 2) {
     const childCircle = addCircle(nodePosition, node, 1, base.radialN, mesh, uvY + uvGrowth);

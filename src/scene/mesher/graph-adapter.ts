@@ -4,6 +4,7 @@ import type { GraphLine } from "../graph/line";
 import {
   createNode,
   getOrthogonalVector,
+  UV_WORLD_PER_TILE,
   type CapGroup,
   type Stem,
   type TreeNode,
@@ -130,6 +131,15 @@ function buildLineChain(line: GraphLine, group: CapGroup): LineChain | undefined
   }
 
   if (nodes.length === 0) return undefined;
+
+  // World-consistent UV scale: repeat the texture an integer number of times around the tube,
+  // proportional to circumference (from the base = widest radius), so a fat trunk and a thin branch
+  // get the same texel size. Constant per tube (not per ring) so the repeat count never jumps along
+  // a taper, which would seam.
+  const baseRadius = nodes[0].radius;
+  const uRepeat = Math.max(1, Math.round((2 * Math.PI * baseRadius) / UV_WORLD_PER_TILE));
+  for (const node of nodes) node.uRepeat = uRepeat;
+
   return { nodes };
 }
 

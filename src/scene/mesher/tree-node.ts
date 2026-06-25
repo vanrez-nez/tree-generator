@@ -12,6 +12,12 @@ import { Vector3 } from "three";
 /** Which limb system a node belongs to — selects the tip-cap profile in the mesher. */
 export type CapGroup = "trunk" | "branch" | "root";
 
+// World size (in scene units) of one texture tile. UVs are scaled so one tile spans roughly this
+// much surface in BOTH axes regardless of tube radius, so bark features read at a consistent scale
+// on the fat trunk and the thin branches/roots (instead of u always mapping [0,1] per ring, which
+// made trunk features larger). Smaller = finer/denser texture.
+export const UV_WORLD_PER_TILE = 1.2;
+
 export interface TreeNode {
   children: NodeChild[];
   /** unit growth direction of this segment */
@@ -22,6 +28,11 @@ export interface TreeNode {
   length: number;
   /** cross-section radius at the node base */
   radius: number;
+  /**
+   * Texture tiles around the circumference (integer, ≥1). Chosen per tube ∝ circumference so the
+   * texel density is world-consistent and the wrap stays seamless (integer repeats). Default 1.
+   */
+  uRepeat: number;
   /** authoring/source id; the graph adapter uses 0 for every generated segment */
   creatorId: number;
   /** trunk/branch/root, so leaf tips pick the matching cap shape */
@@ -56,6 +67,7 @@ export function createNode(
     tangent,
     length,
     radius,
+    uRepeat: 1,
     creatorId,
     capGroup,
   };
