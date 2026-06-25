@@ -276,12 +276,16 @@ function addChildBaseGeometry(
       childBase.vertexIndex + ((i + 1) % childBase.radialN),
       childBase.vertexIndex + i,
     ];
-    const uvStart = childBase.uvIndex - childBase.radialN * 2;
+    // Skirt UVs: a uniform ring band in the child chart. Both rim and child-base corners are keyed
+    // by the loop index `i` (NOT the rotated parent-rim `index`), so the band has uniform x = i/N and
+    // matches the child tube above — no fan/compression. Each ring has N+1 UVs (raw i/i+1 = seam).
+    const ringStart = childBase.uvIndex;
+    const rimStart = ringStart - (childBase.radialN + 1);
     mesh.uvLoops[p] = [
-      uvStart + index,
-      uvStart + ((index + 1) % childBase.radialN),
-      uvStart + childBase.radialN + ((index + 1) % childBase.radialN),
-      uvStart + childBase.radialN + index,
+      rimStart + i,
+      rimStart + (i + 1),
+      ringStart + (i + 1),
+      ringStart + i,
     ];
   }
 }
@@ -295,49 +299,32 @@ function getChildTwist(child: TreeNode, parent: TreeNode): number {
   return ((Math.atan2(sinAngle, cosAngle) % TAU) + TAU) % TAU;
 }
 
+// UVs for the junction skirt + child base ring. Both rings are in the CHILD's chart (x = around the
+// child, N+1 entries for the wrap seam), so the skirt is a uniform ring band — bark grain runs
+// axially and at the same density as the child tube, with no fan/compression or rotated island.
+// Returns the child-base ring index (the rim ring sits one band-height below it).
 function addChildBaseUvs(
   parentUvY: number,
   parent: TreeNode,
-  childRange: IndexRange,
   childRadialN: number,
-  parentRadialN: number,
   mesh: WeldMesh,
 ): number {
   const uvGrowth = parent.length / (parent.radius + 0.001) / TAU;
-  const half = Math.floor(childRadialN / 2);
-  for (let i = 0; i < 2; i++) {
-    // Recreate the outer UVs (continuous, no looping back to x=0).
-    const uvY = parentUvY + i * uvGrowth;
-    const xStart = childRange.minIndex + i * (childRadialN / 2 - 1);
-    const step = i === 0 ? 1 : -1;
-    for (let j = 0; j < half; j++) {
-      const uvX = (xStart + j * step) / parentRadialN;
-      mesh.uvs.push(new Vector2(uvX, uvY));
-    }
-  }
 
-  const uvCircleCenter = new Vector2(
-    (childRange.minIndex + (childRadialN / 4 - 0.5)) / parentRadialN,
-    parentUvY + uvGrowth / 2,
-  );
-  const uvCircleRadius =
-    Math.min(childRadialN / parentRadialN, uvGrowth / 2) * 0.6;
+  // Rim ring (parent-rim corners of the skirt), one band-height below the child base ring.
   for (let i = 0; i < childRadialN; i++) {
-    // Inner UVs.
-    const angle = (i / (childRadialN - 1)) * TAU + Math.PI;
-    const uvPosition = new Vector2(Math.cos(angle), Math.sin(angle))
-      .multiplyScalar(uvCircleRadius)
-      .add(uvCircleCenter);
-    mesh.uvs.push(uvPosition);
+    mesh.uvs.push(new Vector2(i / childRadialN, parentUvY - uvGrowth));
   }
-  const circleUvStartIndex = mesh.uvs.length;
+  mesh.uvs.push(new Vector2(1, parentUvY - uvGrowth));
 
+  // Child base ring, continuous with the child tube's first bridge above (at parentUvY).
+  const ringUvStartIndex = mesh.uvs.length;
   for (let i = 0; i < childRadialN; i++) {
     mesh.uvs.push(new Vector2(i / childRadialN, parentUvY));
   }
   mesh.uvs.push(new Vector2(1, parentUvY));
 
-  return circleUvStartIndex;
+  return ringUvStartIndex;
 }
 
 function addChildCircle(
@@ -374,14 +361,7 @@ function addChildCircle(
     uvIndex: mesh.uvs.length,
     radialN: childRadialN,
   };
-  childBase.uvIndex = addChildBaseUvs(
-    uvY,
-    parent,
-    childRange,
-    childRadialN,
-    parentBase.radialN,
-    mesh,
-  );
+  childBase.uvIndex = addChildBaseUvs(uvY, parent, childRadialN, mesh);
   addChildBaseGeometry(
     childBaseIndices,
     childBase,
