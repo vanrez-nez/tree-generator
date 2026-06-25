@@ -38,6 +38,8 @@ import {
   TexturePreviewBladeApi,
   TexturePreviewPluginBundle,
 } from "./tweak-pane/texture-preview-blade";
+import { NodeEditorPanel } from "./node-editor";
+import { buildMaterialEditorConfig } from "./scene/material/editor-config";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -161,6 +163,9 @@ buildRootControls();
 buildScenePanels();
 // Built once: the mixer persists across tree regeneration and is topology-independent, so its panel
 // must NOT be part of the scenePanelFolders rebuild cycle.
+// Dockable material node editor (src/node-editor/). Opened from the Texture tab; it pads #app so the
+// 3D canvas reflows (resize is the onLayoutChange hook) and hides the Tweakpane while docked.
+const materialEditor = new NodeEditorPanel({ appElement: app });
 buildTextureLayers();
 
 const timer = new THREE.Timer();
@@ -186,7 +191,11 @@ function animate(timestamp?: number): void {
   requestAnimationFrame(animate);
 }
 
-window.addEventListener("resize", resize);
+// Drive the renderer size off the canvas's own box (a ResizeObserver) rather than the window
+// 'resize' event, so it also reacts when the node editor docks/undocks and pads #app (which shrinks
+// the canvas) — not just on window resizes.
+const sceneResizeObserver = new ResizeObserver(() => resize());
+sceneResizeObserver.observe(sceneCanvas);
 resize();
 animate();
 
@@ -490,44 +499,11 @@ function buildTextureLayers(): void {
     .addBinding(triplanarState, "sharpness", { label: "blend sharp", min: 1, max: 16, step: 0.5 })
     .on("change", (event) => mainScene.mesher.setTriplanarSharpness(event.value));
 
-  const heightFolder = texturePage.addFolder({ title: "Height — FBM", expanded: true });
-  heightFolder.addBinding(graph.height.params, "seed", { min: 0, max: 9999, step: 1 });
-  heightFolder.addBinding(graph.height.params, "tiles", { min: 1, max: 16, step: 1 });
-  heightFolder.addBinding(graph.height.params, "octaves", { min: 1, max: 8, step: 1 });
-  heightFolder.addBinding(graph.height.params, "gain", { min: 0, max: 1, step: 0.01 });
-
-  const warpFolder = texturePage.addFolder({ title: "Warp (weathering)", expanded: true });
-  warpFolder.addBinding(graph.warp.params, "intensity", { min: 0, max: 0.5, step: 0.01 });
-  warpFolder.addBinding(graph.warp.params, "tiles", { min: 1, max: 12, step: 1 });
-  warpFolder.addBinding(graph.warp.params, "octaves", { min: 1, max: 8, step: 1 });
-
-  const slopeFolder = texturePage.addFolder({ title: "Slope Blur (erosion)", expanded: true });
-  slopeFolder.addBinding(graph.slopeBlur.params, "iterations", { min: 0, max: 16, step: 1 });
-  slopeFolder.addBinding(graph.slopeBlur.params, "intensity", { min: 1, max: 8, step: 0.5 });
-
-  const cellsFolder = texturePage.addFolder({ title: "Cells (JFA plates)", expanded: true });
-  cellsFolder.addBinding(graph.cells.params, "cells", { min: 2, max: 32, step: 1 });
-  cellsFolder.addBinding(graph.cells.params, "jitter", { min: 0, max: 1, step: 0.01 });
-  cellsFolder.addBinding(graph.cells.params, "seed", { min: 0, max: 9999, step: 1 });
-  cellsFolder.addBinding(graph.cells.params, "crackDepth", { label: "crack depth", min: 0, max: 0.5, step: 0.01 });
-  cellsFolder.addBinding(graph.cells.params, "crackWidth", { label: "crack width", min: 1, max: 6, step: 1 });
-  cellsFolder.addBinding(graph.cells.params, "plateAmount", { label: "plate var", min: 0, max: 0.5, step: 0.01 });
-
-  const colorFolder = texturePage.addFolder({ title: "Basecolor — Gradient Map", expanded: true });
-  colorFolder.addBinding(graph.basecolor.params, "colorA", { view: "color", label: "color A" });
-  colorFolder.addBinding(graph.basecolor.params, "colorB", { view: "color", label: "color B" });
-
-  const normalFolder = texturePage.addFolder({ title: "Normal", expanded: true });
-  normalFolder.addBinding(graph.normal.params, "strength", { min: 0, max: 40, step: 0.5 });
-
-  const aoFolder = texturePage.addFolder({ title: "Ambient Occlusion", expanded: true });
-  aoFolder.addBinding(graph.ao.params, "radius", { min: 1, max: 32, step: 1 });
-  aoFolder.addBinding(graph.ao.params, "strength", { min: 0, max: 12, step: 0.1 });
-
-  const roughFolder = texturePage.addFolder({ title: "Roughness", expanded: true });
-  roughFolder.addBinding(graph.roughness.params, "min", { min: 0, max: 1, step: 0.01 });
-  roughFolder.addBinding(graph.roughness.params, "max", { min: 0, max: 1, step: 0.01 });
-  roughFolder.addBinding(graph.roughness.params, "invert");
+  // The per-node parameter controls now live inside the dockable node editor (src/node-editor/),
+  // where the pipeline wiring is visible. This button opens it (defaults to a right-side dock).
+  texturePage
+    .addButton({ title: "Open Node Editor" })
+    .on("click", () => materialEditor.open(buildMaterialEditorConfig(graph), "right"));
 
   const exportFolder = texturePage.addFolder({ title: "Export PNG", expanded: false });
   for (const channel of ["basecolor", "normal", "ao", "roughness"] as const) {

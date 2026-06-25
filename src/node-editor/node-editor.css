@@ -1,0 +1,253 @@
+/* Dock panel chrome for the node editor. The node bodies themselves are styled inside their Lit
+   shadow roots (see rete-elements.ts); this file owns the fixed dock container, its header toolbar,
+   and the Rete area background. Colors approximate Tweakpane's dark theme. */
+
+.ne-panel {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  /* see [hidden] override below */
+  background: #202227;
+  color: #d6d9df;
+  border: 1px solid #3a3d44;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  box-sizing: border-box;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+}
+
+/* `display: flex` above would otherwise override the `hidden` attribute's display:none. */
+.ne-panel[hidden] {
+  display: none;
+}
+
+/* Dock placements — the docked extent (width/height) is set inline by node-editor-panel.ts (default
+   50% of the viewport, draggable), so only edge anchoring lives here. */
+.ne-panel--left {
+  top: 0;
+  left: 0;
+  bottom: 0;
+}
+.ne-panel--right {
+  top: 0;
+  right: 0;
+  bottom: 0;
+}
+.ne-panel--top {
+  top: 0;
+  left: 0;
+  right: 0;
+}
+.ne-panel--bottom {
+  bottom: 0;
+  left: 0;
+  right: 0;
+}
+.ne-panel--fullscreen {
+  inset: 0;
+  width: auto !important;
+  height: auto !important;
+}
+
+/* Resize handle on the panel's inner edge. */
+.ne-resize {
+  position: absolute;
+  z-index: 3;
+  background: transparent;
+  transition: background 0.1s ease;
+}
+.ne-resize:hover,
+body.ne-resizing .ne-resize {
+  background: #5b8fd6;
+}
+.ne-resize--right {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 6px;
+  cursor: ew-resize;
+}
+.ne-resize--left {
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 6px;
+  cursor: ew-resize;
+}
+.ne-resize--top {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 6px;
+  cursor: ns-resize;
+}
+.ne-resize--bottom {
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 6px;
+  cursor: ns-resize;
+}
+
+/* While dragging the handle, keep the cursor steady and stop the Rete area from grabbing pointer moves. */
+body.ne-resizing {
+  user-select: none;
+}
+body.ne-resizing .ne-canvas {
+  pointer-events: none;
+}
+
+.ne-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: #2a2c31;
+  border-bottom: 1px solid #3a3d44;
+  flex: none;
+}
+
+.ne-header__title {
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  flex: 1;
+}
+
+.ne-dock,
+.ne-zoom {
+  display: flex;
+  gap: 2px;
+}
+
+/* Separate the zoom group from the dock group. */
+.ne-zoom {
+  margin-right: 8px;
+}
+
+.ne-dock__btn,
+.ne-header__close {
+  background: #34373e;
+  border: 1px solid #3a3d44;
+  border-radius: 4px;
+  color: #c8ccd4;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  height: 22px;
+  min-width: 24px;
+  padding: 0 4px;
+}
+
+.ne-dock__btn:hover,
+.ne-header__close:hover {
+  background: #3f434b;
+}
+
+.ne-dock__btn.is-active {
+  background: #5b8fd6;
+  border-color: #5b8fd6;
+  color: #fff;
+}
+
+.ne-canvas {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  /* Subtle dot grid so the empty area reads as a canvas. */
+  background-color: #1b1d21;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+/* Rete injects its root into .ne-canvas; make it fill. */
+.ne-canvas > * {
+  width: 100%;
+  height: 100%;
+}
+
+/* Node chrome (rendered in light DOM — see rete-elements.ts — so the embedded Tweakpane gets its
+   global styles). */
+ne-node {
+  display: block;
+  width: 230px;
+  background: #2a2c31;
+  border: 1px solid #3a3d44;
+  border-radius: 8px;
+  color: #d6d9df;
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  user-select: none;
+  box-sizing: border-box;
+}
+ne-node.selected {
+  border-color: #5b8fd6;
+}
+ne-node.disabled {
+  opacity: 0.55;
+}
+ne-node .title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background: #34373e;
+  border-radius: 7px 7px 0 0;
+  border-bottom: 1px solid #3a3d44;
+}
+ne-node .title-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+ne-node .eye {
+  display: inline-flex;
+  align-items: center;
+  background: none;
+  border: none;
+  padding: 2px;
+  cursor: pointer;
+  color: #d6d9df;
+  fill: currentColor;
+}
+ne-node .eye.off {
+  opacity: 0.4;
+}
+ne-node .output,
+ne-node .input {
+  display: flex;
+  align-items: center;
+  height: 22px;
+}
+ne-node .output {
+  justify-content: flex-end;
+  text-align: right;
+}
+ne-node .output-title,
+ne-node .input-title {
+  padding: 0 8px;
+  color: #9aa0ab;
+}
+ne-node .output-socket {
+  margin-right: -12px;
+}
+ne-node .input-socket {
+  margin-left: -12px;
+}
+ne-node .controls {
+  padding: 4px;
+}
+ne-node .controls .control {
+  display: block;
+}
+
+/* Embedded Tweakpane: drop its default floating/fixed-width root styling so it flows inside a node. */
+.ne-canvas .tp-dfwv {
+  position: static;
+  width: 100%;
+  min-width: 0;
+}

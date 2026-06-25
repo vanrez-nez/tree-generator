@@ -21,6 +21,12 @@ export type BakeContext = {
 export abstract class MaterialNode {
   abstract readonly kind: NodeKind;
 
+  // When false the node is bypassed: chain nodes (with inputs) pass their first input through
+  // unchanged; generators/outputs without inputs ignore this (a root can't be bypassed, and a
+  // disabled output channel is dropped by MaterialGraph, not here). Folded into `signature()` so
+  // toggling triggers a re-bake.
+  enabled = true;
+
   private target: THREE.WebGLRenderTarget | null = null;
   private lastSignature: string | null = null;
 
@@ -38,11 +44,16 @@ export abstract class MaterialNode {
     const inputs = this.inputs()
       .map((node) => node.signature())
       .join(",");
-    return `${this.paramSignature()}[${inputs}]`;
+    return `${this.enabled ? "e1" : "e0"}${this.paramSignature()}[${inputs}]`;
   }
 
   // Lazily (re)bake when the signature changed; returns the cached output texture.
   resolve(ctx: BakeContext): THREE.Texture {
+    // Bypassed chain node: pass the first input through unchanged (no own render/target needed).
+    const ins = this.inputs();
+    if (!this.enabled && ins.length > 0) {
+      return ins[0].resolve(ctx);
+    }
     const sig = this.signature();
     if (this.target && sig === this.lastSignature) {
       return this.target.texture;

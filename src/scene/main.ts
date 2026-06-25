@@ -67,13 +67,7 @@ export class MainScene {
     // (each node reuses its render target), so binding once is enough; `update` re-bakes in place
     // when the graph signature changes.
     this.materialGraph = new MaterialGraph(renderer);
-    const channels = this.materialGraph.bake();
-    this.mesher.setMaterialMaps({
-      map: channels.basecolor,
-      normalMap: channels.normal,
-      aoMap: channels.ao,
-      roughnessMap: channels.roughness,
-    });
+    this.mesher.setMaterialMaps(this.materialGraph.bakeMaps());
     this.lastMaterialSignature = this.materialGraph.signature();
 
     const light = new THREE.DirectionalLight(0xffffff, 3);
@@ -248,11 +242,13 @@ export class MainScene {
     }
 
     // Re-bake the material when any node's params change. Channel textures are persistent (nodes
-    // reuse their render targets), so the bound maps update in place — no re-binding needed.
+    // reuse their render targets), so most edits update the bound maps in place. Re-bind the maps
+    // each time too: toggling an output node on/off swaps a texture for null (or back), which is a
+    // reference change the surface must pick up.
     const materialSignature = this.materialGraph.signature();
     if (materialSignature !== this.lastMaterialSignature) {
       this.lastMaterialSignature = materialSignature;
-      this.materialGraph.bake();
+      this.mesher.setMaterialMaps(this.materialGraph.bakeMaps());
     }
   }
 }

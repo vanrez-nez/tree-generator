@@ -35,3 +35,19 @@ body {
   position: static !important;
   width: 100% !important;
 }
+
+/* While the node editor is docked, the canvas content box is inset via inline padding on #app set by
+   the panel; the canvas (width/height:100%) shrinks into the remaining area and `resize()` reacts. */
+#app {
+  transition: padding 0.15s ease;
+}
+
+/* Tweakpane is replaced by the node editor while it's open. */
+#app.editor-open .pane-host {
+  display: none;
+}
+
+/* Fullscreen ("client") mode: the panel covers the viewport, so hide the 3D preview entirely. */
+#app.editor-open--full .scene {
+  display: none;
+}

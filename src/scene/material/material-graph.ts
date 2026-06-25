@@ -71,6 +71,24 @@ export class MaterialGraph {
     };
   }
 
+  // The PBR maps to bind onto the surface. A disabled output node drops its channel (null), so the
+  // material falls back to its default (flat normal, no AO, uniform roughness, base color). Chain
+  // nodes (warp/slopeBlur/cells) instead pass through when disabled — handled in `MaterialNode`.
+  bakeMaps(): {
+    map: THREE.Texture | null;
+    normalMap: THREE.Texture | null;
+    aoMap: THREE.Texture | null;
+    roughnessMap: THREE.Texture | null;
+  } {
+    const channels = this.bake();
+    return {
+      map: this.basecolor.enabled ? channels.basecolor : null,
+      normalMap: this.normal.enabled ? channels.normal : null,
+      aoMap: this.ao.enabled ? channels.ao : null,
+      roughnessMap: this.roughness.enabled ? channels.roughness : null,
+    };
+  }
+
   // Bake then download one channel as a PNG (for use in other tools/engines).
   exportChannel(name: keyof MaterialChannels): void {
     const channels = this.bake();
