@@ -29,11 +29,6 @@
   left: 0;
   bottom: 0;
 }
-.ne-panel--right {
-  top: 0;
-  right: 0;
-  bottom: 0;
-}
 .ne-panel--top {
   top: 0;
   left: 0;
@@ -44,12 +39,6 @@
   left: 0;
   right: 0;
 }
-.ne-panel--fullscreen {
-  inset: 0;
-  width: auto !important;
-  height: auto !important;
-}
-
 /* Resize handle on the panel's inner edge. */
 .ne-resize {
   position: absolute;
@@ -60,13 +49,6 @@
 .ne-resize:hover,
 body.ne-resizing .ne-resize {
   background: #5b8fd6;
-}
-.ne-resize--right {
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 6px;
-  cursor: ew-resize;
 }
 .ne-resize--left {
   top: 0;

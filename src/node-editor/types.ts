@@ -3,8 +3,8 @@
 // plus a `mountControls` hook, and the editor renders it. The material side supplies this via an
 // adapter (src/scene/material/editor-config.ts), so src/node-editor/ stays reusable.
 
-/** Where the editor panel is anchored. `fullscreen` (the "client" mode) hides the 3D preview. */
-export type DockMode = 'left' | 'right' | 'top' | 'bottom' | 'fullscreen'
+/** Where the editor panel is anchored. */
+export type DockMode = 'left' | 'top' | 'bottom'
 
 export type EditorSocketConfig = {
   /** Unique-per-node key the connections reference. */

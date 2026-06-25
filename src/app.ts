@@ -206,7 +206,7 @@ buildScenePanels();
 // Built once: the mixer persists across tree regeneration and is topology-independent, so its panel
 // must NOT be part of the scenePanelFolders rebuild cycle.
 // Dockable material node editor (src/node-editor/). Opened from the Texture tab; it pads #app so the
-// 3D canvas reflows (resize is the onLayoutChange hook) and hides the Tweakpane while docked.
+// 3D canvas reflows (resize is the onLayoutChange hook) while the Tweakpane remains scrollable.
 const materialEditor = new NodeEditorPanel({ appElement: app });
 buildTextureLayers();
 
@@ -542,10 +542,10 @@ function buildTextureLayers(): void {
     .on("change", (event) => mainScene.mesher.setTriplanarSharpness(event.value));
 
   // The per-node parameter controls now live inside the dockable node editor (src/node-editor/),
-  // where the pipeline wiring is visible. This button opens it (defaults to a right-side dock).
+  // where the pipeline wiring is visible.
   texturePage
     .addButton({ title: "Open Node Editor" })
-    .on("click", () => materialEditor.open(buildMaterialEditorConfig(graph), "right"));
+    .on("click", () => materialEditor.open(buildMaterialEditorConfig(graph)));
 
   const exportFolder = texturePage.addFolder({ title: "Export PNG", expanded: false });
   for (const channel of ["basecolor", "normal", "ao", "roughness"] as const) {

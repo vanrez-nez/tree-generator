@@ -1,8 +1,8 @@
 // A dockable panel hosting a Rete v2 node editor. The graph is supplied as a plain `EditorGraphConfig`
 // (decoupled — see types.ts) and is treated as read-only topology: nodes/connections are placed
 // programmatically and user-initiated create/remove is vetoed, so the underlying fixed pipeline can't
-// be broken from the UI. Docking is done by padding `#app` on the docked edge so the (fullscreen)
-// 3D canvas shrinks into the remaining area and the existing resize handler picks it up.
+// be broken from the UI. Docking is done by padding `#app` on the docked edge so the 3D canvas
+// shrinks into the remaining area and the existing resize handler picks it up.
 import { NodeEditor, ClassicPreset, type GetSchemes } from 'rete'
 import { AreaPlugin, AreaExtensions } from 'rete-area-plugin'
 import { ConnectionPlugin, Presets as ConnectionPresets } from 'rete-connection-plugin'
@@ -19,10 +19,8 @@ import {
   ArrowRight,
   ArrowUp,
   createElement as createLucideElement,
-  Maximize,
   PanelBottom,
   PanelLeft,
-  PanelRight,
   PanelTop,
   Scan,
   X,
@@ -59,12 +57,13 @@ export type NodeEditorPanelOptions = {
   onLayoutChange?: () => void
 }
 
-const DOCK_MODES: DockMode[] = ['left', 'right', 'top', 'bottom', 'fullscreen']
+const DOCK_MODES: DockMode[] = ['left', 'top', 'bottom']
 const LAYOUT_ARRANGEMENTS: LayoutArrangement[] = ['down', 'right', 'up', 'left']
 // Minimum docked extent, and the room always left for the rest of the app on the opposite side.
 const MIN_SIDE = 260
 const MIN_STRIP = 180
 const EDGE_MARGIN = 120
+const MIN_CONTROL_VIEWPORT = 220
 const DEFAULT_FRACTION = 0.5 // docked panels default to 50% of the viewport
 
 // Zoom is via the header buttons or Shift + wheel. Clamped to this range; each step
@@ -72,6 +71,10 @@ const DEFAULT_FRACTION = 0.5 // docked panels default to 50% of the viewport
 const MIN_ZOOM = 0.1
 const MAX_ZOOM = 2.5
 const ZOOM_STEP = 1.2
+const WHEEL_LINE_DELTA_PX = 16
+const WHEEL_PAGE_DELTA_PX = 100
+const WHEEL_ZOOM_BASE = 0.95
+const WHEEL_ZOOM_SPEED = 1
 // Empty breathing room kept around the node graph (in rem), so connectors never sit flush against
 // the panel edges. Baked into the content bounds used for panning + centring, and into the fit gap.
 const CONTENT_PADDING_REM = 5
@@ -94,9 +97,9 @@ export class NodeEditorPanel {
   private storageKey: string | null = null
   private nodeIdsByRuntimeId = new Map<string, string>()
 
-  // Docked size in px (width for left/right, height for top/bottom). Defaults to 50% of the viewport
+  // Docked size in px (width for left, height for top/bottom). Defaults to 50% of the viewport
   // until the user drags the resize handle.
-  private mode: DockMode = 'right'
+  private mode: DockMode = 'bottom'
   private sideSize = Math.round(window.innerWidth * DEFAULT_FRACTION)
   private stripSize = Math.round(window.innerHeight * DEFAULT_FRACTION)
   private sizeUserSet = false
@@ -155,7 +158,7 @@ export class NodeEditorPanel {
       const btn = document.createElement('button')
       btn.className = `ne-dock__btn ne-dock__btn--${m}`
       btn.dataset.mode = m
-      btn.title = m === 'fullscreen' ? 'Fullscreen' : `Dock ${m}`
+      btn.title = `Dock ${m}`
       btn.setAttribute('aria-label', btn.title)
       appendLucideIcon(btn, DOCK_ICON[m])
       btn.addEventListener('click', () => this.setDockMode(m))
@@ -194,7 +197,7 @@ export class NodeEditorPanel {
     return this.open_
   }
 
-  open(config: EditorGraphConfig, mode: DockMode = 'right'): void {
+  open(config: EditorGraphConfig, mode: DockMode = 'bottom'): void {
     this.root.hidden = false
     this.open_ = true
     this.appElement.classList.add('editor-open')
@@ -243,9 +246,9 @@ export class NodeEditorPanel {
     this.root
       .querySelectorAll<HTMLButtonElement>('.ne-dock__btn')
       .forEach((b) => b.classList.toggle('is-active', b.dataset.mode === mode))
-    // Position the resize handle on the inner edge (none in fullscreen).
+    // Position the resize handle on the inner edge.
     this.handle.className = `ne-resize ne-resize--${mode}`
-    this.handle.hidden = mode === 'fullscreen'
+    this.handle.hidden = false
     this.applySize()
   }
 
@@ -262,17 +265,16 @@ export class NodeEditorPanel {
     this.clearAppPadding()
     const app = this.appElement.style
 
-    if (this.mode === 'left' || this.mode === 'right') {
+    if (this.mode === 'left') {
       this.sideSize = clamp(this.sideSize, MIN_SIDE, window.innerWidth - EDGE_MARGIN)
       root.width = `${this.sideSize}px`
-      app[this.mode === 'left' ? 'paddingLeft' : 'paddingRight'] = `${this.sideSize}px`
+      app.paddingLeft = `${this.sideSize}px`
     } else if (this.mode === 'top' || this.mode === 'bottom') {
-      this.stripSize = clamp(this.stripSize, MIN_STRIP, window.innerHeight - EDGE_MARGIN)
+      const maxStrip = Math.max(96, window.innerHeight - MIN_CONTROL_VIEWPORT)
+      this.stripSize = clamp(this.stripSize, Math.min(MIN_STRIP, maxStrip), maxStrip)
       root.height = `${this.stripSize}px`
       app[this.mode === 'top' ? 'paddingTop' : 'paddingBottom'] = `${this.stripSize}px`
-    } else {
-      // fullscreen: panel covers everything; canvas hidden via .editor-open--full
-      this.appElement.classList.add('editor-open--full')
+      app.setProperty(`--node-editor-${this.mode}-inset`, `${this.stripSize}px`)
     }
     this.notifyLayout()
   }
@@ -280,13 +282,13 @@ export class NodeEditorPanel {
   private clearAppPadding(): void {
     const s = this.appElement.style
     s.paddingLeft = s.paddingRight = s.paddingTop = s.paddingBottom = ''
-    this.appElement.classList.remove('editor-open--full')
+    s.removeProperty('--node-editor-top-inset')
+    s.removeProperty('--node-editor-bottom-inset')
   }
 
   private readonly onHandleDown = (event: PointerEvent): void => {
-    if (this.mode === 'fullscreen') return
     event.preventDefault()
-    const horizontal = this.mode === 'left' || this.mode === 'right'
+    const horizontal = this.mode === 'left'
     this.dragStart = {
       x: event.clientX,
       y: event.clientY,
@@ -303,8 +305,7 @@ export class NodeEditorPanel {
     if (!this.dragStart) return
     const { x, y, size } = this.dragStart
     // The handle sits on the inner edge, so growth direction is toward the viewport centre.
-    if (this.mode === 'right') this.sideSize = size - (event.clientX - x)
-    else if (this.mode === 'left') this.sideSize = size + (event.clientX - x)
+    if (this.mode === 'left') this.sideSize = size + (event.clientX - x)
     else if (this.mode === 'bottom') this.stripSize = size - (event.clientY - y)
     else if (this.mode === 'top') this.stripSize = size + (event.clientY - y)
     this.applySize()
@@ -529,17 +530,50 @@ export class NodeEditorPanel {
   }
 
   private readonly onWheelPan = (event: WheelEvent): void => {
-    event.preventDefault()
-    if (event.shiftKey) {
-      const rect = this.canvasHost.getBoundingClientRect()
-      const factor = event.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP
-      void this.zoomByAt(factor, event.clientX - rect.left, event.clientY - rect.top)
+    if (this.shouldHandleWheelZoom(event)) {
+      event.preventDefault()
+      void this.zoomByWheel(event)
       return
     }
-    let dx = event.deltaX
-    let dy = event.deltaY
+
+    if (event.shiftKey || !this.shouldHandleWheelPan(event)) {
+      return
+    }
+
+    event.preventDefault()
+    const dx = normalizedWheelDelta(event.deltaX, event.deltaMode)
+    const dy = normalizedWheelDelta(event.deltaY, event.deltaMode)
     // Scroll down/right reveals lower/right content, i.e. translate the content the opposite way.
     this.panBy(-dx, -dy)
+  }
+
+  private shouldHandleWheelZoom(event: WheelEvent): boolean {
+    if (!this.isCanvasWheelEvent(event)) return false
+    if (!event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return false
+    const deltaY = normalizedWheelDelta(event.deltaY, event.deltaMode)
+    return Number.isFinite(deltaY) && deltaY !== 0
+  }
+
+  private shouldHandleWheelPan(event: WheelEvent): boolean {
+    if (!this.isCanvasWheelEvent(event)) return false
+    if (event.altKey || event.ctrlKey || event.metaKey) return false
+    const dx = normalizedWheelDelta(event.deltaX, event.deltaMode)
+    const dy = normalizedWheelDelta(event.deltaY, event.deltaMode)
+    return Number.isFinite(dx) && Number.isFinite(dy) && (dx !== 0 || dy !== 0)
+  }
+
+  private isCanvasWheelEvent(event: WheelEvent): boolean {
+    if (event.type !== 'wheel' || event.defaultPrevented) return false
+    if (!this.open_ || !this.area || this.dragStart) return false
+    return !isInteractiveWheelTarget(event)
+  }
+
+  private async zoomByWheel(event: WheelEvent): Promise<void> {
+    const deltaY = normalizedWheelDelta(event.deltaY, event.deltaMode)
+    const orbitScale = orbitWheelZoomScale(deltaY)
+    const factor = deltaY < 0 ? 1 / orbitScale : orbitScale
+    const rect = this.canvasHost.getBoundingClientRect()
+    await this.zoomByAt(factor, event.clientX - rect.left, event.clientY - rect.top)
   }
 
   private panBy(dx: number, dy: number): void {
@@ -639,10 +673,8 @@ export class NodeEditorPanel {
 
 const DOCK_ICON: Record<DockMode, IconNode> = {
   left: PanelLeft,
-  right: PanelRight,
   top: PanelTop,
   bottom: PanelBottom,
-  fullscreen: Maximize,
 }
 
 const LAYOUT_ICON: Record<LayoutArrangement, IconNode> = {
@@ -665,6 +697,25 @@ function appendLucideIcon(button: HTMLButtonElement, icon: IconNode): void {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
+}
+
+function normalizedWheelDelta(delta: number, deltaMode: number): number {
+  if (deltaMode === WheelEvent.DOM_DELTA_LINE) return delta * WHEEL_LINE_DELTA_PX
+  if (deltaMode === WheelEvent.DOM_DELTA_PAGE) return delta * WHEEL_PAGE_DELTA_PX
+  return delta
+}
+
+function orbitWheelZoomScale(deltaY: number): number {
+  return Math.pow(WHEEL_ZOOM_BASE, WHEEL_ZOOM_SPEED * Math.abs(deltaY * 0.01))
+}
+
+function isInteractiveWheelTarget(event: WheelEvent): boolean {
+  for (const target of event.composedPath()) {
+    if (!(target instanceof Element)) continue
+    if (target.matches('input, select, textarea, button, [contenteditable="true"]')) return true
+    if (target.classList.contains('tp-dfwv') || target.classList.contains('tp-rotv')) return true
+  }
+  return false
 }
 
 function nextFrame(): Promise<void> {
