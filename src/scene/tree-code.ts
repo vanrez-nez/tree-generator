@@ -1,71 +1,42 @@
+import { RANGES } from "./tree-ranges";
+
 // Reversible tree "code": a compact, shareable encoding of every parameter that defines a tree's
-// form. Unlike a one-way PRNG seed, the code IS the configuration — so the two directions both
-// work:
+// form. Unlike a one-way PRNG seed, the code IS the configuration — so both directions work:
 //   • configure a tree (the form params) → `encodeForm` → a short string you can copy/share;
 //   • paste/keep that string → `decodeForm` → the exact same configuration.
 //
-// `randomForm` picks a random value per field, which `encodeForm` turns into a random (but valid)
-// code. The encoding is mixed-radix over base-62: each field contributes a digit in its own base
-// (its number of discrete steps), so the code stays short and self-describing. A `seed` field is
-// included so the leftover per-limb jitter (azimuth/attach/length wobble + modifier seeds) is also
-// captured — the code therefore fully determines the tree.
+// `randomForm` picks a random value per field (within each field's random window from tree-ranges),
+// which `encodeForm` turns into a random — but valid — code. The encoding is mixed-radix over
+// base-62: each field contributes a digit in its own base (its number of discrete steps), so the
+// code stays short. A `seed` field is included so the leftover per-limb jitter (azimuth/attach/
+// length wobble + modifier seeds) is captured too — the code therefore fully determines the tree.
+//
+// All ranges live in tree-ranges.ts; this module is just the codec over them.
 
-// Every form field: its key plus the quantized [min, max] grid the value snaps to. The order here
-// is the wire order — appending new fields at the END keeps existing codes decoding the same way
-// (older codes simply leave the new trailing fields at 0 / their min).
-export type FieldSpec = { key: keyof TreeForm; min: number; max: number; step: number };
+// The form is exactly one number per field defined in RANGES.
+export type TreeForm = { [K in keyof typeof RANGES]: number };
 
-export type TreeForm = {
-  seed: number; // jitter PRNG seed (per-limb wobble + modifier variation)
-  height: number;
-  branchCount: number;
-  branchLevels: number;
-  branchL2: number; // L2 children per parent (fan-out)
-  branchL3: number; // L3 children per parent
-  rootLevels: number;
-  rootL2: number;
-  rootL3: number;
-  trunkRadius: number;
-  radiusScale: number; // radius multiplier per branching level
-  tipScale: number; // taper fraction toward each line's tip
-  branchLean1: number; // joint lean clamp (°) at branch L1..L3
-  branchLean2: number;
-  branchLean3: number;
-  rootRadius: number;
-  rootHeight: number; // trunk fraction (0..0.5) where roots attach
-  rootLength: number;
-  rootDownAngle: number;
-  rootDownCurve: number;
-  maxRoots: number;
-  rootSeparation: number;
-  rootLSmooth: number;
+export type FieldSpec = {
+  key: keyof TreeForm;
+  min: number;
+  max: number;
+  step: number;
+  randMin: number; // resolved random window (defaults to [min, max])
+  randMax: number;
 };
 
-export const FIELDS: FieldSpec[] = [
-  { key: "seed", min: 0, max: 1_048_575, step: 1 }, // 2^20 jitter seeds
-  { key: "height", min: 2, max: 7, step: 0.25 },
-  { key: "branchCount", min: 0, max: 8, step: 1 },
-  { key: "branchLevels", min: 1, max: 3, step: 1 },
-  { key: "branchL2", min: 0, max: 5, step: 1 },
-  { key: "branchL3", min: 0, max: 5, step: 1 },
-  { key: "rootLevels", min: 1, max: 3, step: 1 },
-  { key: "rootL2", min: 0, max: 5, step: 1 },
-  { key: "rootL3", min: 0, max: 5, step: 1 },
-  { key: "trunkRadius", min: 0.2, max: 0.6, step: 0.01 },
-  { key: "radiusScale", min: 0.4, max: 0.8, step: 0.02 },
-  { key: "tipScale", min: 0.05, max: 0.25, step: 0.01 },
-  { key: "branchLean1", min: 0, max: 90, step: 5 },
-  { key: "branchLean2", min: 0, max: 90, step: 5 },
-  { key: "branchLean3", min: 0, max: 90, step: 5 },
-  { key: "rootRadius", min: 0.2, max: 0.7, step: 0.01 },
-  { key: "rootHeight", min: 0, max: 0.5, step: 0.01 },
-  { key: "rootLength", min: 0.5, max: 3, step: 0.05 },
-  { key: "rootDownAngle", min: 0, max: 90, step: 5 },
-  { key: "rootDownCurve", min: 0, max: 90, step: 5 },
-  { key: "maxRoots", min: 0, max: 16, step: 1 },
-  { key: "rootSeparation", min: 0, max: 2, step: 0.05 },
-  { key: "rootLSmooth", min: 0, max: 1, step: 0.05 },
-];
+// The wire order is RANGES' key order. Appending new fields at the END of RANGES keeps existing
+// codes decoding the same way (older codes leave the new trailing fields at their min).
+export const FIELDS: FieldSpec[] = (
+  Object.entries(RANGES) as [keyof TreeForm, (typeof RANGES)[keyof typeof RANGES]][]
+).map(([key, range]) => ({
+  key,
+  min: range.min,
+  max: range.max,
+  step: range.step,
+  randMin: "randMin" in range ? range.randMin : range.min,
+  randMax: "randMax" in range ? range.randMax : range.max,
+}));
 
 // Current "default tree" expressed as a form. Every value sits exactly on its field's grid.
 export const DEFAULT_FORM: TreeForm = {
@@ -171,11 +142,14 @@ export function decodeForm(code: string): TreeForm | null {
   return form;
 }
 
-// A random-but-valid form: each field gets a uniformly random index on its grid.
+// A random-but-valid form: each field gets a uniformly random index inside its random window
+// (randMin..randMax from tree-ranges), so random trees always stay within those limits.
 export function randomForm(): TreeForm {
   const form = { ...DEFAULT_FORM };
   for (const field of FIELDS) {
-    const index = Math.floor(Math.random() * stepCount(field));
+    const lo = toIndex(field.randMin, field);
+    const hi = toIndex(field.randMax, field);
+    const index = lo + Math.floor(Math.random() * (hi - lo + 1));
     form[field.key] = fromIndex(index, field);
   }
   return form;
