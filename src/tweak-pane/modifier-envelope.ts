@@ -2,11 +2,11 @@ import type {
   CubicBezierApi,
   CubicBezierObject,
 } from "@tweakpane/plugin-essentials";
-import type { FolderApi } from "tweakpane";
+import type { ContainerApi } from "@tweakpane/core";
 import type { LineModifier } from "../scene/graph/modifiers/modifier";
 
 export function addModifierEnvelopeControls(
-  folder: FolderApi,
+  folder: ContainerApi,
   modifier: LineModifier,
 ): void {
   folder.addBinding(modifier.envelope, "fadeInEnabled", {

@@ -31,7 +31,8 @@ body {
   overflow-y: auto;
 }
 
-.pane-host .tp-dfwv {
+.pane-host .tp-dfwv,
+.pane-host > .tp-rotv {
   min-height: 20rem !important;
   position: static !important;
   width: min(20rem, calc(100vw - 32px)) !important;

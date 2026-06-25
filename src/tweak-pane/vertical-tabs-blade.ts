@@ -335,7 +335,7 @@ export class VerticalTabsApi extends ContainerBladeApi<VerticalTabsController> {
 
   get pages(): TabPageApi[] {
     return this.controller.pageControllers.map(
-      (controller) => this.pool.createApi(controller) as TabPageApi,
+      (controller) => new TabPageApi(controller, this.pool as never),
     )
   }
 
@@ -348,7 +348,7 @@ export class VerticalTabsApi extends ContainerBladeApi<VerticalTabsController> {
   }
 
   addPage(params: VerticalTabPageParamsWithIndex): TabPageApi {
-    return this.pool.createApi(this.controller.addPage(params)) as TabPageApi
+    return new TabPageApi(this.controller.addPage(params), this.pool as never)
   }
 
   removePage(index: number): void {

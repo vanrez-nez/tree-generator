@@ -1,7 +1,8 @@
 import "./style.css";
 import * as EssentialsPlugin from "@tweakpane/plugin-essentials";
 import type { CubicBezierApi } from "@tweakpane/plugin-essentials";
-import { Image as ImageIcon, Network, Wrench } from "lucide";
+import type { ContainerApi } from "@tweakpane/core";
+import { Boxes, GitBranch, Layers as LayersIcon, SlidersVertical } from "lucide";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { FolderApi, Pane } from "tweakpane";
@@ -81,25 +82,6 @@ pane.registerPlugin(VerticalTabsPluginBundle);
 const stats = pane.addBlade({ view: "stats" }) as StatsBladeApi;
 stats.setRenderer(renderer.capabilities.isWebGL2 ? "WebGL2" : "WebGL");
 
-// Tree generation readout, pinned at the top under the FPS blade. Read-only bindings are monitors
-// that poll `meshStats`, so they refresh on their own after each (debounced) rebuild.
-const treeInfo = pane.addFolder({ title: "Tree", expanded: true });
-treeInfo.addBinding(mainScene.meshStats, "generationMs", {
-  readonly: true,
-  label: "gen (ms)",
-  format: (value) => value.toFixed(1),
-});
-treeInfo.addBinding(mainScene.meshStats, "vertices", {
-  readonly: true,
-  label: "verts",
-  format: (value) => value.toFixed(0),
-});
-treeInfo.addBinding(mainScene.meshStats, "triangles", {
-  readonly: true,
-  label: "tris",
-  format: (value) => value.toFixed(0),
-});
-
 // Single source of truth for the tree's form. Every form control binds to this object; the code
 // field is just a serialized view of it. `form` <-> `code` round-trips losslessly (tree-code.ts),
 // so you can read a code off a tuned tree and paste it back to reproduce that exact tree.
@@ -141,20 +123,62 @@ function applyForm(next: TreeForm): void {
   commitForm();
 }
 
-function addFormBinding(folder: FolderApi, key: keyof TreeForm, label: string): void {
-  folder.addBinding(form, key, { label, ...formRange(key) }).on("change", commitForm);
+function addFormBinding(container: ContainerApi, key: keyof TreeForm, label: string): void {
+  container.addBinding(form, key, { label, ...formRange(key) }).on("change", commitForm);
 }
 
-buildGenerationControls();
-
 const tab = pane.addTab({
-  pages: [{ title: "Line" }, { title: "Joints" }, { title: "Texture" }],
+  pages: [{ title: "Gen" }, { title: "Graph" }, { title: "Mesh" }, { title: "Texture" }],
 });
-const [linePage, jointsPage, texturePage] = tab.pages;
+const [genPage, graphPage, meshPage, texturePage] = tab.pages;
+
+const graphTabs = graphPage.addBlade({
+  view: "verticalTabs",
+  pages: [
+    {
+      title: "Layers",
+      tooltip: "Graph layers",
+      icon: LayersIcon,
+      color: "#8aa8ff",
+    },
+    {
+      title: "Joints",
+      tooltip: "Joint controls",
+      icon: GitBranch,
+      color: "#f472b6",
+    },
+    {
+      title: "Roots",
+      tooltip: "Root controls",
+      icon: GitBranch,
+      color: "#6ee7b7",
+    },
+    {
+      title: "Debug",
+      tooltip: "Debug controls",
+      icon: SlidersVertical,
+      color: "#f59e0b",
+    },
+  ],
+}) as VerticalTabsApi;
+const [graphLayersPage, graphJointsPage, graphRootsPage, graphDebugPage] = graphTabs.pages;
+
+const meshTabs = meshPage.addBlade({
+  view: "verticalTabs",
+  pages: [
+    {
+      title: "Mesh",
+      tooltip: "Mesh controls",
+      icon: Boxes,
+      color: "#c084fc",
+    },
+  ],
+}) as VerticalTabsApi;
+const [meshControlsPage] = meshTabs.pages;
 
 // The Lines + Joints panels are rebuilt whenever the tree is regenerated (their line/joint
 // instances change), so we track the folders they create to dispose them on rebuild.
-let scenePanelFolders: FolderApi[] = [];
+let scenePanelFolders: Array<{ dispose: () => void }> = [];
 
 // 2D texture-preview state (declared before buildTextureLayers runs, which references it).
 type PreviewChannel = "basecolor" | "normal" | "ao" | "roughness";
@@ -164,8 +188,11 @@ let lastPreviewSignature: string | undefined;
 // Triplanar mapping state (defaults mirror TreeMesher.triUniforms so the UI starts in sync).
 const triplanarState = { enabled: true, worldPerTile: 1.2, sharpness: 8 };
 
-buildMeshControls();
-buildRootControls();
+buildGenerationControls(genPage);
+buildTreeStatsControls(genPage);
+buildMeshControls(meshControlsPage);
+buildRootControls(graphRootsPage);
+buildDebugFolder(graphDebugPage);
 buildScenePanels();
 // Built once: the mixer persists across tree regeneration and is topology-independent, so its panel
 // must NOT be part of the scenePanelFolders rebuild cycle.
@@ -173,7 +200,6 @@ buildScenePanels();
 // 3D canvas reflows (resize is the onLayoutChange hook) and hides the Tweakpane while docked.
 const materialEditor = new NodeEditorPanel({ appElement: app });
 buildTextureLayers();
-buildVerticalTabsDemo();
 
 const timer = new THREE.Timer();
 timer.connect(document);
@@ -208,7 +234,7 @@ animate();
 
 // Per-line disc-tube controls: radius (max), tip taper, opacity, visibility, and a cubic-Bézier
 // curve that shapes how the radius falls off from the line's start to its tip.
-function addLineTubeControls(folder: FolderApi, line: GraphLine): void {
+function addLineTubeControls(folder: ContainerApi, line: GraphLine): void {
   const tube = line.tube;
 
   if (!tube) {
@@ -235,7 +261,7 @@ function addLineTubeControls(folder: FolderApi, line: GraphLine): void {
   });
 }
 
-function buildModifierControls(folder: FolderApi, modifier: LineModifier): void {
+function buildModifierControls(folder: ContainerApi, modifier: LineModifier): void {
   // `enabled` is driven by the layer's eye toggle, so only params + envelope here.
   if (modifier instanceof SmoothModifier) {
     folder.addBinding(modifier.params, "mode", {
@@ -386,7 +412,7 @@ function modifierTypeName(modifier: LineModifier): string {
 
 // Each line's modifiers are themselves a sortable layer list: add/remove modifiers,
 // toggle them with the eye (`enabled`), and reorder them to change the modifier stack.
-function buildModifierLayers(folder: FolderApi, line: GraphLine): void {
+function buildModifierLayers(folder: ContainerApi, line: GraphLine): void {
   const modifierTypes: LayerType<LineModifier>[] = [
     {
       name: "Smooth",
@@ -448,7 +474,7 @@ function buildModifierLayers(folder: FolderApi, line: GraphLine): void {
 }
 
 function buildScenePanels(): void {
-  scenePanelFolders = [buildLineLayers(), ...buildJointsPage()];
+  scenePanelFolders = [buildLineLayers(graphLayersPage), ...buildJointsPage(graphJointsPage)];
 }
 
 function rebuildScenePanels(): void {
@@ -520,64 +546,11 @@ function buildTextureLayers(): void {
   }
 }
 
-function buildVerticalTabsDemo(): void {
-  const tabs = pane.addBlade({
-    view: "verticalTabs",
-    minHeight: "20rem",
-    pages: [
-      {
-        title: "Tools",
-        tooltip: "Tool actions",
-        icon: Wrench,
-        color: "#8aa8ff",
-      },
-      {
-        title: "Preview",
-        tooltip: "Preview controls",
-        icon: ImageIcon,
-        color: "#6ee7b7",
-      },
-      {
-        title: "Graph",
-        tooltip: "Graph utilities",
-        icon: Network,
-        color: "#f59e0b",
-      },
-    ],
-  }) as VerticalTabsApi;
-
-  const toolState = { strength: 0.5, enabled: true };
-  const previewState = { exposure: 1, overlay: false };
-  const graphState = { mode: "tree" as "tree" | "material" };
-
-  const tools = tabs.pages[0];
-  tools?.addFolder({ title: "Tools", expanded: true });
-  tools?.addBinding(toolState, "enabled", { label: "enabled" });
-  tools?.addBinding(toolState, "strength", { min: 0, max: 1, step: 0.01 });
-
-  const preview = tabs.pages[1];
-  preview?.addFolder({ title: "Preview", expanded: true });
-  preview?.addBinding(previewState, "exposure", { min: 0, max: 4, step: 0.05 });
-  preview?.addBinding(previewState, "overlay");
-
-  const graph = tabs.pages[2];
-  graph?.addFolder({ title: "Graph", expanded: true });
-  graph?.addBinding(graphState, "mode", {
-    options: {
-      Tree: "tree",
-      Material: "material",
-    },
-  });
-  graph?.addButton({ title: "Open Node Editor" }).on("click", () => {
-    materialEditor.open(buildMaterialEditorConfig(mainScene.materialGraph), "right");
-  });
-}
-
 // Generation folder (pinned at the top): the reversible tree code plus the structural knobs that
 // feed it. Editing any knob re-encodes the code; editing the code (paste) decodes back into every
 // knob. "Random" rolls a fresh code. All of it regenerates the tree and the dependent panels.
-function buildGenerationControls(): void {
-  const folder = pane.addFolder({ title: "Generation", expanded: true });
+function buildGenerationControls(container: ContainerApi): void {
+  const folder = container.addFolder({ title: "Generation", expanded: true });
 
   // The code is editable: typing/pasting a valid code reconfigures the whole tree; an invalid one
   // is rejected and the field snaps back to the current tree's code.
@@ -620,6 +593,27 @@ function buildGenerationControls(): void {
   folder.addButton({ title: "Export JSON" }).on("click", () => downloadDocument(mainScene.getDocument()));
 }
 
+// Tree generation readout. Read-only bindings are monitors that poll `meshStats`, so they refresh
+// on their own after each (debounced) rebuild.
+function buildTreeStatsControls(container: ContainerApi): void {
+  const folder = container.addFolder({ title: "Tree", expanded: true });
+  folder.addBinding(mainScene.meshStats, "generationMs", {
+    readonly: true,
+    label: "gen (ms)",
+    format: (value) => value.toFixed(1),
+  });
+  folder.addBinding(mainScene.meshStats, "vertices", {
+    readonly: true,
+    label: "verts",
+    format: (value) => value.toFixed(0),
+  });
+  folder.addBinding(mainScene.meshStats, "triangles", {
+    readonly: true,
+    label: "tris",
+    format: (value) => value.toFixed(0),
+  });
+}
+
 // Serialize the current graph document and trigger a browser download.
 function downloadDocument(doc: GraphDocument): void {
   const blob = new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" });
@@ -633,29 +627,25 @@ function downloadDocument(doc: GraphDocument): void {
 
 // Root form controls. These are part of the form (and therefore the code): editing one rebuilds
 // the whole tree graph (count/topology may change) and re-encodes the code.
-function buildRootControls(): void {
-  const folder = pane.addFolder({ title: "Roots" });
-  addFormBinding(folder, "rootRadius", "radius");
-  addFormBinding(folder, "rootHeight", "height");
-  addFormBinding(folder, "rootSeparation", "separation");
-  addFormBinding(folder, "rootLSmooth", "L smooth");
-  addFormBinding(folder, "rootLength", "length");
-  addFormBinding(folder, "rootDownAngle", "down angle (°)");
-  addFormBinding(folder, "rootDownCurve", "down curve (°)");
-  addFormBinding(folder, "maxRoots", "max roots");
+function buildRootControls(container: ContainerApi): void {
+  addFormBinding(container, "rootRadius", "radius");
+  addFormBinding(container, "rootHeight", "height");
+  addFormBinding(container, "rootSeparation", "separation");
+  addFormBinding(container, "rootLSmooth", "L smooth");
+  addFormBinding(container, "rootLength", "length");
+  addFormBinding(container, "rootDownAngle", "down angle (°)");
+  addFormBinding(container, "rootDownCurve", "down curve (°)");
+  addFormBinding(container, "maxRoots", "max roots");
 }
 
-function buildMeshControls(): void {
-  buildMeshFolder();
-  buildDebugFolder();
+function buildMeshControls(container: ContainerApi): void {
+  buildMeshFolder(container);
 }
 
 // Mesh resolution + surface view: the actual geometry the mesher builds.
-function buildMeshFolder(): void {
-  const folder = pane.addFolder({ title: "Mesh" });
-
+function buildMeshFolder(container: ContainerApi): void {
   const meshParams = { subdivisions: DEFAULT_SUBDIVISIONS };
-  folder
+  container
     .addBinding(meshParams, "subdivisions", { min: 3, max: 48, step: 1 })
     .on("change", () => {
       mainScene.setSubdivisions(meshParams.subdivisions);
@@ -666,25 +656,25 @@ function buildMeshFolder(): void {
     radialResolution: DEFAULT_MESHER_OPTIONS.radialResolution,
     smoothIterations: DEFAULT_MESHER_OPTIONS.smoothIterations,
   };
-  folder
+  container
     .addBinding(mesherParams, "radialResolution", { label: "radial res", min: 3, max: 64, step: 1 })
     .on("change", () =>
       mainScene.setMesherOptions({ radialResolution: mesherParams.radialResolution }),
     );
-  folder
+  container
     .addBinding(mesherParams, "smoothIterations", { label: "smooth", min: 0, max: 12, step: 1 })
     .on("change", () =>
       mainScene.setMesherOptions({ smoothIterations: mesherParams.smoothIterations }),
     );
 
-  buildCapControls(folder);
+  buildCapControls(container);
 
-  folder.addButton({ title: "Rebuild mesh" }).on("click", () => mainScene.rebuildMesh());
+  container.addButton({ title: "Rebuild mesh" }).on("click", () => mainScene.rebuildMesh());
 }
 
 // Per-group tip-cap shape: length (× tip radius, 0 = flat) and roundness (0 = sharp cone,
 // 1 = rounded dome). The full caps object is owned here and re-sent on every edit.
-function buildCapControls(parent: FolderApi): void {
+function buildCapControls(parent: ContainerApi): void {
   const caps = structuredClone(DEFAULT_MESHER_OPTIONS.caps);
   const capsFolder = parent.addFolder({ title: "Caps", expanded: false });
 
@@ -699,9 +689,7 @@ function buildCapControls(parent: FolderApi): void {
 }
 
 // Debug instrumentation: overlay visibility + per-point markers, all editing aids.
-function buildDebugFolder(): void {
-  const folder = pane.addFolder({ title: "Debug" });
-
+function buildDebugFolder(container: ContainerApi): void {
   const debugView = {
     surface: true,
     wireframe: false,
@@ -714,40 +702,40 @@ function buildDebugFolder(): void {
     linePoints: false,
   };
   // Surface visibility + wireframe overlay (moved here from the Mesh folder).
-  folder
+  container
     .addBinding(debugView, "surface", { label: "mesh surface" })
     .on("change", (event) => mainScene.mesher.setSurfaceVisible(event.value));
-  folder
+  container
     .addBinding(debugView, "wireframe", { label: "wireframe" })
     .on("change", (event) => mainScene.mesher.setSurfaceWireframe(event.value));
   // Surface view: shaded PBR, view-space normals (normal map in action), or the UV checker.
-  folder
+  container
     .addBinding(debugView, "view", {
       label: "surface view",
       options: { Surface: "surface", Normals: "normals", UV: "uv" },
     })
     .on("change", (event) => mainScene.mesher.setDebugView(event.value));
-  folder
+  container
     .addBinding(debugView, "graph", { label: "graph" })
     .on("change", (event) => mainScene.setGraphVisible(event.value));
-  folder
+  container
     .addBinding(debugView, "helpers", { label: "helpers" })
     .on("change", (event) => mainScene.setDebugHelpersVisible(event.value));
-  folder
+  container
     .addBinding(debugView, "discs", { label: "show discs" })
     .on("change", (event) => mainScene.setDiscsVisible(event.value));
-  folder
+  container
     .addBinding(debugView, "debugT", { label: "debug T", min: 0, max: 1, step: 0.01 })
     .on("change", (event) => mainScene.setDebugT(event.value));
-  folder
+  container
     .addBinding(debugView, "debugPoint", { label: "debug point" })
     .on("change", (event) => mainScene.setDebugPointVisible(event.value));
-  folder
+  container
     .addBinding(debugView, "linePoints", { label: "line points" })
     .on("change", (event) => mainScene.setDebugLinePointsVisible(event.value));
 }
 
-function buildLineLayers(): FolderApi {
+function buildLineLayers(container: ContainerApi): { dispose: () => void } {
   // Each graph line is a layer; selecting one reveals its properties + modifier layers.
   const lineType: LayerType<GraphLine> = {
     name: "Line",
@@ -768,9 +756,10 @@ function buildLineLayers(): FolderApi {
     },
   };
 
-  return createLayers(linePage, {
+  return createLayers(container, {
     title: "Lines",
     addLabel: "Add Line",
+    wrap: false,
     types: [lineType],
     initialLayers: mainScene.graph.getLineEntries().map(({ id, line }) => ({
       type: "Line",
@@ -790,16 +779,16 @@ function buildLineLayers(): FolderApi {
     onRemove: (layer) => {
       mainScene.graph.removeLine(layer.state as GraphLine);
     },
-  }).folder;
+  });
 }
 
-function buildJointsPage(): FolderApi[] {
+function buildJointsPage(container: ContainerApi): FolderApi[] {
   const folders: FolderApi[] = [];
 
   for (const { document, joint } of mainScene.graph.getJointEntries()) {
     // Collapsed by default; populate the bindings only the first time the folder is expanded,
     // so opening the Joints tab doesn't build controls for every joint at once.
-    const folder = jointsPage.addFolder({ title: document.id, expanded: false });
+    const folder = container.addFolder({ title: document.id, expanded: false });
     folders.push(folder);
     let built = false;
 

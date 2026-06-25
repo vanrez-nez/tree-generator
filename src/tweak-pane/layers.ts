@@ -3,7 +3,7 @@
 // the layers folder (no extra wrapper), and selecting a layer shows that layer's controls
 // while hiding the others. The blade owns the Add/Remove footer (and its type-picker menu +
 // confirm dialog); this helper reacts to its events and manages the controls.
-import type { BladeApi, ContainerApi, FolderApi } from '@tweakpane/core'
+import type { BladeApi, ContainerApi } from '@tweakpane/core'
 import {
   type LayerItem,
   LayersBladeApi,
@@ -24,7 +24,7 @@ export type LayerType<T = any> = {
   /** Display name; also the label shown in the "Add Layer" menu. */
   name: string
   /** Add this layer's controls (folders, bindings) into the layers folder. */
-  build: (folder: FolderApi, layer: LayerHandle<T>) => void
+  build: (folder: ContainerApi, layer: LayerHandle<T>) => void
   /** Create the per-layer control state object bound by `build`. */
   createState?: () => T
 }
@@ -42,6 +42,8 @@ export type CreateLayersOptions = {
   title?: string
   addLabel?: string
   types: LayerType[]
+  /** Set false when the parent container already names the section, e.g. a vertical tab page. */
+  wrap?: boolean
   /** Layers added before the first user interaction. The first becomes selected. */
   initialLayers?: InitialLayer[]
   onSelect?: (layer: LayerHandle | null) => void
@@ -54,9 +56,10 @@ export type CreateLayersOptions = {
 export type LayersController = {
   /** Programmatically add a layer of the given type name. */
   addLayer: (typeName: string) => LayerHandle | null
+  dispose: () => void
   getLayers: () => LayerHandle[]
   blade: LayersBladeApi
-  folder: FolderApi
+  folder: ContainerApi
 }
 
 type LayerRecord = {
@@ -75,7 +78,8 @@ export function createLayers(
   const records = new Map<string, LayerRecord>()
   let counter = 0
 
-  const folder = container.addFolder({ title: options.title ?? 'Layers' })
+  const wrapper = options.wrap === false ? null : container.addFolder({ title: options.title ?? 'Layers' })
+  const folder = wrapper ?? container
   const blade = folder.addBlade({
     view: 'layers',
     addLabel: options.addLabel ?? 'Add Layer',
@@ -252,6 +256,18 @@ export function createLayers(
 
   return {
     addLayer,
+    dispose: () => {
+      if (wrapper) {
+        wrapper.dispose()
+        return
+      }
+      blade.dispose()
+      for (const record of records.values()) {
+        for (const control of record.controls) {
+          control.dispose()
+        }
+      }
+    },
     getLayers: () => Array.from(records.values()).map((record) => record.handle),
     blade,
     folder,
