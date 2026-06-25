@@ -25,8 +25,8 @@ export class EditorNode extends ClassicPreset.Node {
   mountControls?: (host: HTMLElement) => () => void
 }
 
-// Schemes use the base node type so the classic Lit/connection presets (typed against
-// `ClassicScheme`) apply; nodes are `EditorNode` instances at runtime and cast where needed.
+// Schemes use the base node type so the classic Lit/connection presets stay compatible; nodes are
+// `EditorNode` instances at runtime and are measured/cast where arrange-specific width/height is needed.
 export type Schemes = GetSchemes<
   ClassicPreset.Node,
   ClassicPreset.Connection<ClassicPreset.Node, ClassicPreset.Node>

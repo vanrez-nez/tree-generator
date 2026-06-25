@@ -115,13 +115,15 @@ body.ne-resizing .ne-canvas {
 }
 
 .ne-dock,
+.ne-layout,
 .ne-zoom {
   display: flex;
   gap: 2px;
 }
 
-/* Separate the zoom group from the dock group. */
-.ne-zoom {
+/* Separate compact tool groups in the header. */
+.ne-zoom,
+.ne-layout {
   margin-right: 8px;
 }
 
@@ -170,6 +172,24 @@ body.ne-resizing .ne-canvas {
   background-color: #1b1d21;
   background-image: radial-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px);
   background-size: 22px 22px;
+}
+
+.ne-canvas__tip {
+  position: absolute;
+  z-index: 2;
+  right: 10px;
+  bottom: 10px;
+  width: auto !important;
+  height: auto !important;
+  padding: 4px 7px;
+  border: 1px solid #3a3d44;
+  border-radius: 4px;
+  background: rgba(42, 44, 49, 0.9);
+  color: #aeb4bf;
+  font-size: 11px;
+  line-height: 1.2;
+  pointer-events: none;
+  user-select: none;
 }
 
 /* Rete injects its root into .ne-canvas; make it fill. */

@@ -8,11 +8,6 @@ import type { EditorGraphConfig, EditorNodeConfig } from "../../node-editor";
 import type { MaterialGraph } from "./material-graph";
 import type { MaterialNode } from "./engine/node";
 
-// Vertical processing chain on the left; the four channel outputs fanned out on the right.
-const CHAIN_X = 0;
-const CHANNEL_X = 360;
-const ROW = 150;
-
 type Build = (pane: Pane) => void;
 
 // A node that takes one input and produces one output (the linear chain links).
@@ -20,7 +15,6 @@ function chainNode(
   id: string,
   title: string,
   node: MaterialNode,
-  row: number,
   build: Build,
   opts: { hasInput?: boolean; enableable?: boolean } = {},
 ): EditorNodeConfig {
@@ -29,7 +23,6 @@ function chainNode(
   return {
     id,
     title,
-    position: { x: CHAIN_X, y: row * ROW },
     inputs: hasInput ? [{ key: "in" }] : [],
     outputs: [{ key: "out" }],
     enabled: node.enabled,
@@ -48,13 +41,11 @@ function channelNode(
   id: string,
   title: string,
   node: MaterialNode,
-  row: number,
   build: Build,
 ): EditorNodeConfig {
   return {
     id,
     title,
-    position: { x: CHANNEL_X, y: row * ROW },
     inputs: [{ key: "in" }],
     outputs: [],
     enabled: node.enabled,
@@ -82,7 +73,6 @@ export function buildMaterialEditorConfig(graph: MaterialGraph): EditorGraphConf
       "height",
       "Height — FBM",
       graph.height,
-      0,
       (p) => {
         p.addBinding(graph.height.params, "seed", { min: 0, max: 9999, step: 1 });
         p.addBinding(graph.height.params, "tiles", { min: 1, max: 16, step: 1 });
@@ -91,16 +81,16 @@ export function buildMaterialEditorConfig(graph: MaterialGraph): EditorGraphConf
       },
       { hasInput: false, enableable: false },
     ),
-    chainNode("warp", "Warp (weathering)", graph.warp, 1, (p) => {
+    chainNode("warp", "Warp (weathering)", graph.warp, (p) => {
       p.addBinding(graph.warp.params, "intensity", { min: 0, max: 0.5, step: 0.01 });
       p.addBinding(graph.warp.params, "tiles", { min: 1, max: 12, step: 1 });
       p.addBinding(graph.warp.params, "octaves", { min: 1, max: 8, step: 1 });
     }),
-    chainNode("slopeBlur", "Slope Blur (erosion)", graph.slopeBlur, 2, (p) => {
+    chainNode("slopeBlur", "Slope Blur (erosion)", graph.slopeBlur, (p) => {
       p.addBinding(graph.slopeBlur.params, "iterations", { min: 0, max: 16, step: 1 });
       p.addBinding(graph.slopeBlur.params, "intensity", { min: 1, max: 8, step: 0.5 });
     }),
-    chainNode("cells", "Cells (JFA plates)", graph.cells, 3, (p) => {
+    chainNode("cells", "Cells (JFA plates)", graph.cells, (p) => {
       p.addBinding(graph.cells.params, "cells", { min: 2, max: 32, step: 1 });
       p.addBinding(graph.cells.params, "jitter", { min: 0, max: 1, step: 0.01 });
       p.addBinding(graph.cells.params, "seed", { min: 0, max: 9999, step: 1 });
@@ -108,18 +98,18 @@ export function buildMaterialEditorConfig(graph: MaterialGraph): EditorGraphConf
       p.addBinding(graph.cells.params, "crackWidth", { label: "crack width", min: 1, max: 6, step: 1 });
       p.addBinding(graph.cells.params, "plateAmount", { label: "plate var", min: 0, max: 0.5, step: 0.01 });
     }),
-    channelNode("basecolor", "Basecolor — Gradient Map", graph.basecolor, 0, (p) => {
+    channelNode("basecolor", "Basecolor — Gradient Map", graph.basecolor, (p) => {
       p.addBinding(graph.basecolor.params, "colorA", { view: "color", label: "color A" });
       p.addBinding(graph.basecolor.params, "colorB", { view: "color", label: "color B" });
     }),
-    channelNode("normal", "Normal", graph.normal, 1, (p) => {
+    channelNode("normal", "Normal", graph.normal, (p) => {
       p.addBinding(graph.normal.params, "strength", { min: 0, max: 40, step: 0.5 });
     }),
-    channelNode("ao", "Ambient Occlusion", graph.ao, 2, (p) => {
+    channelNode("ao", "Ambient Occlusion", graph.ao, (p) => {
       p.addBinding(graph.ao.params, "radius", { min: 1, max: 32, step: 1 });
       p.addBinding(graph.ao.params, "strength", { min: 0, max: 12, step: 0.1 });
     }),
-    channelNode("roughness", "Roughness", graph.roughness, 3, (p) => {
+    channelNode("roughness", "Roughness", graph.roughness, (p) => {
       p.addBinding(graph.roughness.params, "min", { min: 0, max: 1, step: 0.01 });
       p.addBinding(graph.roughness.params, "max", { min: 0, max: 1, step: 0.01 });
       p.addBinding(graph.roughness.params, "invert");

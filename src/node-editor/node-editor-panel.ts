@@ -3,12 +3,21 @@
 // programmatically and user-initiated create/remove is vetoed, so the underlying fixed pipeline can't
 // be broken from the UI. Docking is done by padding `#app` on the docked edge so the (fullscreen)
 // 3D canvas shrinks into the remaining area and the existing resize handler picks it up.
-import { NodeEditor, ClassicPreset } from 'rete'
+import { NodeEditor, ClassicPreset, type GetSchemes } from 'rete'
 import { AreaPlugin, AreaExtensions } from 'rete-area-plugin'
 import { ConnectionPlugin, Presets as ConnectionPresets } from 'rete-connection-plugin'
 import { LitPlugin, Presets as LitPresets, type LitArea2D } from '@retejs/lit-plugin'
+import {
+  AutoArrangePlugin,
+  Presets as ArrangePresets,
+} from 'rete-auto-arrange-plugin'
+import type { LayoutOptions } from 'elkjs'
 import { html } from 'lit'
 import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
   createElement as createLucideElement,
   Maximize,
   PanelBottom,
@@ -31,6 +40,15 @@ import type { DockMode, EditorGraphConfig } from './types'
 import './node-editor.css'
 
 type AreaExtra = LitArea2D<Schemes>
+type ArrangeNode = ClassicPreset.Node & {
+  height: number
+  parent?: string
+  width: number
+}
+type ArrangeConnection = ClassicPreset.Connection<ClassicPreset.Node, ClassicPreset.Node>
+type ArrangeSchemes = GetSchemes<ArrangeNode, ArrangeConnection>
+type LayoutArrangement = 'down' | 'right' | 'up' | 'left'
+type StoredPositions = Record<string, { x: number; y: number }>
 
 export type NodeEditorPanelOptions = {
   /** Where the panel attaches; defaults to `document.body`. */
@@ -42,14 +60,15 @@ export type NodeEditorPanelOptions = {
 }
 
 const DOCK_MODES: DockMode[] = ['left', 'right', 'top', 'bottom', 'fullscreen']
+const LAYOUT_ARRANGEMENTS: LayoutArrangement[] = ['down', 'right', 'up', 'left']
 // Minimum docked extent, and the room always left for the rest of the app on the opposite side.
 const MIN_SIDE = 260
 const MIN_STRIP = 180
 const EDGE_MARGIN = 120
 const DEFAULT_FRACTION = 0.5 // docked panels default to 50% of the viewport
 
-// Zoom is via the header buttons only (the wheel pans instead). Clamped to this range; each button
-// press multiplies/divides by ZOOM_STEP.
+// Zoom is via the header buttons or Shift + wheel. Clamped to this range; each step
+// multiplies/divides by ZOOM_STEP.
 const MIN_ZOOM = 0.1
 const MAX_ZOOM = 2.5
 const ZOOM_STEP = 1.2
@@ -57,6 +76,7 @@ const ZOOM_STEP = 1.2
 // the panel edges. Baked into the content bounds used for panning + centring, and into the fit gap.
 const CONTENT_PADDING_REM = 5
 const FIT_SCALE = 0.8 // zoomAt gap to the viewport border on "fit" (lower = more margin)
+const STORAGE_PREFIX = 'tree-graph:node-editor:positions:v1'
 
 export class NodeEditorPanel {
   private readonly root: HTMLDivElement
@@ -67,8 +87,12 @@ export class NodeEditorPanel {
 
   private editor: NodeEditor<Schemes> | null = null
   private area: AreaPlugin<Schemes, AreaExtra> | null = null
+  private arrange: AutoArrangePlugin<ArrangeSchemes> | null = null
   private building = false
   private open_ = false
+  private layoutArrangement: LayoutArrangement = 'down'
+  private storageKey: string | null = null
+  private nodeIdsByRuntimeId = new Map<string, string>()
 
   // Docked size in px (width for left/right, height for top/bottom). Defaults to 50% of the viewport
   // until the user drags the resize handle.
@@ -94,7 +118,7 @@ export class NodeEditorPanel {
     title.textContent = 'Material'
     header.appendChild(title)
 
-    // Zoom controls: out / fit / in (wheel pans instead of zooming — see `ensureEditor`).
+    // Zoom controls: out / fit / in (plain wheel pans; Shift + wheel zooms — see `ensureEditor`).
     const zoom = document.createElement('div')
     zoom.className = 'ne-zoom'
     const zoomBtn = (icon: IconNode, label: string, onClick: () => void): void => {
@@ -110,6 +134,20 @@ export class NodeEditorPanel {
     zoomBtn(Scan, 'Fit to view', () => void this.zoomToFit())
     zoomBtn(ZoomIn, 'Zoom in', () => void this.zoomBy(ZOOM_STEP))
     header.appendChild(zoom)
+
+    const layout = document.createElement('div')
+    layout.className = 'ne-layout'
+    for (const arrangement of LAYOUT_ARRANGEMENTS) {
+      const btn = document.createElement('button')
+      btn.className = 'ne-dock__btn'
+      btn.dataset.arrangement = arrangement
+      btn.title = `Auto layout ${arrangement}`
+      btn.setAttribute('aria-label', btn.title)
+      appendLucideIcon(btn, LAYOUT_ICON[arrangement])
+      btn.addEventListener('click', () => this.setLayoutArrangement(arrangement))
+      layout.appendChild(btn)
+    }
+    header.appendChild(layout)
 
     const dock = document.createElement('div')
     dock.className = 'ne-dock'
@@ -135,6 +173,10 @@ export class NodeEditorPanel {
 
     this.canvasHost = document.createElement('div')
     this.canvasHost.className = 'ne-canvas'
+    const tip = document.createElement('div')
+    tip.className = 'ne-canvas__tip'
+    tip.textContent = 'Shift + Scroll to Zoom'
+    this.canvasHost.appendChild(tip)
 
     // Drag handle on the panel's inner edge (repositioned per dock mode in `applyDock`).
     this.handle = document.createElement('div')
@@ -145,6 +187,7 @@ export class NodeEditorPanel {
     this.root.appendChild(this.canvasHost)
     this.root.appendChild(this.handle)
     ;(options.host ?? document.body).appendChild(this.root)
+    this.updateLayoutButtons()
   }
 
   isOpen(): boolean {
@@ -171,14 +214,21 @@ export class NodeEditorPanel {
   setDockMode(mode: DockMode): void {
     if (!this.open_) return
     this.applyDock(mode)
-    // Refit the graph into the new viewport.
-    requestAnimationFrame(() => void this.zoomToFit())
+    // Reflow the selected arrangement into the changed viewport, then refit.
+    requestAnimationFrame(() => void this.arrangeGraph())
+  }
+
+  setLayoutArrangement(arrangement: LayoutArrangement): void {
+    this.layoutArrangement = arrangement
+    this.updateLayoutButtons()
+    requestAnimationFrame(() => void this.arrangeGraph())
   }
 
   dispose(): void {
     this.canvasHost.removeEventListener('wheel', this.onWheelPan)
     this.area?.destroy()
     this.area = null
+    this.arrange = null
     this.editor = null
     this.root.remove()
     this.appElement.classList.remove('editor-open')
@@ -283,6 +333,9 @@ export class NodeEditorPanel {
     const area = new AreaPlugin<Schemes, AreaExtra>(this.canvasHost)
     const connection = new ConnectionPlugin<Schemes, AreaExtra>()
     const render = new LitPlugin<Schemes, AreaExtra>()
+    const arrange = new AutoArrangePlugin<ArrangeSchemes>()
+
+    arrange.addPreset(ArrangePresets.classic.setup({ spacing: 34, top: 48, bottom: 24 }))
 
     render.addPreset(
       LitPresets.classic.setup({
@@ -312,12 +365,13 @@ export class NodeEditorPanel {
     editor.use(area)
     area.use(connection)
     area.use(render)
+    area.use(arrange as never)
 
-    // Wheel pans (zoom is buttons-only): disable the built-in wheel/pinch zoom and translate on wheel.
+    // Plain wheel pans. Shift + wheel zooms through our handler, so disable Rete's built-in wheel zoom.
     area.area.setZoomHandler(null)
     this.canvasHost.addEventListener('wheel', this.onWheelPan, { passive: false })
 
-    // Clamp button-zoom to range, and keep any pan (wheel or background drag) within the content
+    // Clamp zoom to range, and keep any pan (wheel or background drag) within the content
     // bounds. The wheel handler pre-clamps, so this mainly catches drag-pan; the `clamping` flag
     // prevents the corrective translate from recursing.
     let clamping = false
@@ -333,6 +387,9 @@ export class NodeEditorPanel {
           await area.area.translate(c.x, c.y)
           clamping = false
         }
+      }
+      if (context.type === 'nodetranslated' && !this.building) {
+        this.saveNodePositions()
       }
       return context
     })
@@ -351,6 +408,7 @@ export class NodeEditorPanel {
 
     this.editor = editor
     this.area = area
+    this.arrange = arrange
   }
 
   private async rebuild(config: EditorGraphConfig): Promise<void> {
@@ -364,6 +422,9 @@ export class NodeEditorPanel {
     for (const node of [...editor.getNodes()]) await editor.removeNode(node.id)
 
     const byId = new Map<string, EditorNode>()
+    this.storageKey = this.getStorageKey(config)
+    this.nodeIdsByRuntimeId.clear()
+    const stored = this.loadStoredPositions()
     for (const def of config.nodes) {
       const node = new EditorNode(def.title)
       node.enabled = def.enabled ?? true
@@ -383,7 +444,9 @@ export class NodeEditorPanel {
       }
 
       await editor.addNode(node)
-      if (def.position) await area.translate(node.id, def.position)
+      this.nodeIdsByRuntimeId.set(node.id, def.id)
+      const position = stored?.[def.id] ?? def.position
+      if (position) await area.translate(node.id, position)
       byId.set(def.id, node)
     }
 
@@ -397,7 +460,10 @@ export class NodeEditorPanel {
     }
     this.building = false
 
-    requestAnimationFrame(() => void this.zoomToFit())
+    requestAnimationFrame(() => {
+      if (stored) void this.zoomToFit()
+      else void this.arrangeGraph()
+    })
   }
 
   private async zoomToFit(): Promise<void> {
@@ -405,25 +471,73 @@ export class NodeEditorPanel {
     await AreaExtensions.zoomAt(this.area, this.editor.getNodes(), { scale: FIT_SCALE })
   }
 
-  // Zoom (button-driven) around the viewport centre, clamped to [MIN_ZOOM, MAX_ZOOM]; re-clamp the
-  // pan afterwards since the content's on-screen extent changed.
+  private async arrangeGraph(): Promise<void> {
+    if (!this.arrange || !this.area || !this.editor) return
+    await nextFrame()
+    this.measureNodeSizes()
+    await this.arrange.layout({ options: this.getLayoutOptions() })
+    await nextFrame()
+    this.saveNodePositions()
+    await this.zoomToFit()
+    this.clampPan()
+  }
+
+  private measureNodeSizes(): void {
+    if (!this.area || !this.editor) return
+    for (const node of this.editor.getNodes()) {
+      const view = this.area.nodeViews.get(node.id)
+      const element = (view?.element.querySelector('ne-node') ?? view?.element) as HTMLElement | undefined
+      const measuredNode = node as EditorNode
+      const width = element?.offsetWidth || measuredNode.width || 288
+      const height = element?.offsetHeight || measuredNode.height || 240
+      measuredNode.width = width
+      measuredNode.height = height
+    }
+  }
+
+  private getLayoutOptions(): LayoutOptions {
+    return {
+      'elk.direction': this.getElkDirection(),
+      'elk.edgeRouting': 'ORTHOGONAL',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '130',
+      'elk.spacing.nodeNode': '70',
+      'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
+      'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
+    }
+  }
+
+  private getElkDirection(): string {
+    if (this.layoutArrangement === 'down') return 'DOWN'
+    if (this.layoutArrangement === 'right') return 'RIGHT'
+    if (this.layoutArrangement === 'up') return 'UP'
+    return 'LEFT'
+  }
+
+  // Zoom around the viewport centre, clamped to [MIN_ZOOM, MAX_ZOOM]; re-clamp the pan afterwards
+  // since the content's on-screen extent changed.
   private async zoomBy(factor: number): Promise<void> {
+    await this.zoomByAt(factor, this.canvasHost.clientWidth / 2, this.canvasHost.clientHeight / 2)
+  }
+
+  private async zoomByAt(factor: number, originX: number, originY: number): Promise<void> {
     const area = this.area
     if (!area) return
     const k = clamp(area.area.transform.k * factor, MIN_ZOOM, MAX_ZOOM)
     if (k === area.area.transform.k) return
-    await area.area.zoom(k, this.canvasHost.clientWidth / 2, this.canvasHost.clientHeight / 2)
+    await area.area.zoom(k, originX, originY)
     this.clampPan()
   }
 
   private readonly onWheelPan = (event: WheelEvent): void => {
     event.preventDefault()
+    if (event.shiftKey) {
+      const rect = this.canvasHost.getBoundingClientRect()
+      const factor = event.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP
+      void this.zoomByAt(factor, event.clientX - rect.left, event.clientY - rect.top)
+      return
+    }
     let dx = event.deltaX
     let dy = event.deltaY
-    if (event.shiftKey && dx === 0) {
-      dx = dy
-      dy = 0
-    }
     // Scroll down/right reveals lower/right content, i.e. translate the content the opposite way.
     this.panBy(-dx, -dy)
   }
@@ -483,6 +597,44 @@ export class NodeEditorPanel {
       y: axis(y, bounds.y0, bounds.y1, this.canvasHost.clientHeight),
     }
   }
+
+  private updateLayoutButtons(): void {
+    this.root
+      .querySelectorAll<HTMLButtonElement>('.ne-layout [data-arrangement]')
+      .forEach((b) => b.classList.toggle('is-active', b.dataset.arrangement === this.layoutArrangement))
+  }
+
+  private getStorageKey(config: EditorGraphConfig): string {
+    const signature = config.nodes.map((node) => node.id).join('|')
+    return `${STORAGE_PREFIX}:${signature}`
+  }
+
+  private loadStoredPositions(): StoredPositions | null {
+    if (!this.storageKey) return null
+    try {
+      const raw = sessionStorage.getItem(this.storageKey)
+      if (!raw) return null
+      const parsed = JSON.parse(raw) as StoredPositions
+      return parsed && typeof parsed === 'object' ? parsed : null
+    } catch {
+      return null
+    }
+  }
+
+  private saveNodePositions(): void {
+    if (!this.storageKey || !this.area) return
+    const positions: StoredPositions = {}
+    for (const [runtimeId, graphId] of this.nodeIdsByRuntimeId) {
+      const view = this.area.nodeViews.get(runtimeId)
+      if (!view) continue
+      positions[graphId] = { x: view.position.x, y: view.position.y }
+    }
+    try {
+      sessionStorage.setItem(this.storageKey, JSON.stringify(positions))
+    } catch {
+      // Storage can fail in private browsing or quota-constrained contexts; the editor still works.
+    }
+  }
 }
 
 const DOCK_ICON: Record<DockMode, IconNode> = {
@@ -491,6 +643,13 @@ const DOCK_ICON: Record<DockMode, IconNode> = {
   top: PanelTop,
   bottom: PanelBottom,
   fullscreen: Maximize,
+}
+
+const LAYOUT_ICON: Record<LayoutArrangement, IconNode> = {
+  down: ArrowDown,
+  right: ArrowRight,
+  up: ArrowUp,
+  left: ArrowLeft,
 }
 
 function appendLucideIcon(button: HTMLButtonElement, icon: IconNode): void {
@@ -506,4 +665,8 @@ function appendLucideIcon(button: HTMLButtonElement, icon: IconNode): void {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
+}
+
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()))
 }
