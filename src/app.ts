@@ -34,6 +34,9 @@ import {
   type LayerType,
   LayersPluginBundle,
 } from "./tweak-pane/layers";
+import type { TextureLayer } from "./scene/texturer/layer";
+import { ImageLayer } from "./scene/texturer/layers/image";
+import { SAMPLE_TEXTURES } from "./scene/texturer/document";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -135,9 +138,9 @@ function addFormBinding(folder: FolderApi, key: keyof TreeForm, label: string): 
 buildGenerationControls();
 
 const tab = pane.addTab({
-  pages: [{ title: "Line" }, { title: "Joints" }],
+  pages: [{ title: "Line" }, { title: "Joints" }, { title: "Texture" }],
 });
-const [linePage, jointsPage] = tab.pages;
+const [linePage, jointsPage, texturePage] = tab.pages;
 
 // The Lines + Joints panels are rebuilt whenever the tree is regenerated (their line/joint
 // instances change), so we track the folders they create to dispose them on rebuild.
@@ -146,6 +149,9 @@ let scenePanelFolders: FolderApi[] = [];
 buildMeshControls();
 buildRootControls();
 buildScenePanels();
+// Built once: the mixer persists across tree regeneration and is topology-independent, so its panel
+// must NOT be part of the scenePanelFolders rebuild cycle.
+buildTextureLayers();
 
 const timer = new THREE.Timer();
 timer.connect(document);
@@ -424,6 +430,71 @@ function rebuildScenePanels(): void {
   }
   scenePanelFolders = [];
   buildScenePanels();
+}
+
+// The Texture tab: a layers panel over the texture mixer, mirroring buildModifierLayers. Each layer
+// is a configurable step composited in stack order; the eye toggles it, drag reorders. Every edit
+// invalidates the mixer so MainScene's poll repaints the surface texture.
+function buildTextureLayers(): void {
+  const imageType: LayerType<ImageLayer> = {
+    name: "Image",
+    createState: () => new ImageLayer(),
+    build: (folder, layer) => buildImageLayerControls(folder, layer.state),
+  };
+
+  createLayers(texturePage, {
+    title: "Layers",
+    addLabel: "Add Layer",
+    types: [imageType],
+    initialLayers: mainScene.mixer.getLayerEntries().map(({ layer }) => ({
+      type: "Image",
+      name: layer.name,
+      state: layer,
+      visible: layer.enabled,
+    })),
+    onVisibility: (layer) => {
+      (layer.state as TextureLayer).enabled = layer.visible;
+      mainScene.mixer.invalidate();
+    },
+    onAdd: (layer) => {
+      const textureLayer = layer.state as TextureLayer;
+      textureLayer.enabled = layer.visible;
+      mainScene.mixer.addLayer(textureLayer);
+    },
+    onRemove: (layer) => {
+      mainScene.mixer.removeLayer(layer.state as TextureLayer);
+    },
+    onReorder: (layers) => {
+      mainScene.mixer.reorderLayers(layers.map((layer) => layer.state as TextureLayer));
+    },
+  });
+}
+
+// Per-Image-layer controls. Every binding invalidates the mixer so the surface texture repaints.
+function buildImageLayerControls(folder: FolderApi, layer: ImageLayer): void {
+  const invalidate = (): void => mainScene.mixer.invalidate();
+  const srcOptions = Object.fromEntries(SAMPLE_TEXTURES.map((sample) => [sample.label, sample.path]));
+
+  folder.addBinding(layer.params, "src", { label: "image", options: srcOptions }).on("change", invalidate);
+  folder.addBinding(layer.params, "opacity", { min: 0, max: 1, step: 0.01 }).on("change", invalidate);
+  folder
+    .addBinding(layer.params, "blend", {
+      options: {
+        Normal: "source-over",
+        Multiply: "multiply",
+        Screen: "screen",
+        Overlay: "overlay",
+        Darken: "darken",
+        Lighten: "lighten",
+      },
+    })
+    .on("change", invalidate);
+  folder
+    .addBinding(layer.params, "fit", { options: { Stretch: "stretch", Tile: "tile" } })
+    .on("change", invalidate);
+  folder.addBinding(layer.params, "scale", { min: 0.1, max: 8, step: 0.05 }).on("change", invalidate);
+  folder.addBinding(layer.params, "offsetX", { label: "offset X", min: 0, max: 1, step: 0.01 }).on("change", invalidate);
+  folder.addBinding(layer.params, "offsetY", { label: "offset Y", min: 0, max: 1, step: 0.01 }).on("change", invalidate);
 }
 
 // Generation folder (pinned at the top): the reversible tree code plus the structural knobs that

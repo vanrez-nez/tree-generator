@@ -59,6 +59,13 @@ export class TreeMesher {
     return { vertices, triangles };
   }
 
+  // Attach (or clear) the color map for the solid surface. The material is persistent — only the
+  // geometry is replaced in `build()` — so a map set here survives every tree/mesh rebuild.
+  setTextureMap(texture: THREE.Texture | null): void {
+    this.solidMaterial.map = texture;
+    this.solidMaterial.needsUpdate = true;
+  }
+
   setSurfaceVisible(visible: boolean): void {
     this.solidMesh.visible = visible;
   }

@@ -6,6 +6,8 @@ import { DEFAULT_FORM, type TreeForm } from "./tree-code";
 import { RootSystem } from "./root-system";
 import { TreeMesher } from "./mesher/tree-mesher";
 import type { MesherOptions } from "./mesher/welding-mesher";
+import { TextureMixer } from "./texturer/mixer";
+import { DEFAULT_TEXTURE_DOCUMENT } from "./texturer/document";
 
 // How long graph edits must settle before the (expensive) surface mesh is rebuilt.
 const MESH_REBUILD_DEBOUNCE_MS = 200;
@@ -24,6 +26,8 @@ export class MainScene {
   readonly scene = new THREE.Scene();
   readonly graph = new Graph();
   readonly mesher = new TreeMesher();
+  // Builds the surface texture by layering steps (see texturer/). Persists across tree rebuilds.
+  readonly mixer = new TextureMixer();
 
   selectedLineId = "trunk";
 
@@ -45,6 +49,9 @@ export class MainScene {
   private debugT = 0.5;
   private meshDirty = false;
   private meshRebuildTimer: ReturnType<typeof setTimeout> | undefined;
+  // Last texture-mix signature we reacted to (the mixer bumps it on any layer/param change or async
+  // image load). Undefined until the first frame so the initial texture builds.
+  private lastTextureSignature: number | undefined;
   // Last graph-geometry signature we reacted to. The graph is the source of truth: whenever its
   // drawn geometry changes (from any source — UI, joints, root system, code), the signature
   // changes and we schedule a rebuild. Undefined until the first frame so the initial mesh builds.
@@ -55,6 +62,12 @@ export class MainScene {
     this.scene.add(this.graph.group);
     this.scene.add(this.mesher.object);
     this.loadTree();
+
+    // Wire the (persistent) mixed texture onto the (persistent) surface material once; the update
+    // loop only repaints the canvas afterward. The actual paint happens on the first frame when the
+    // texture signature is first observed.
+    this.loadTexture();
+    this.mesher.setTextureMap(this.mixer.getTexture());
 
     const light = new THREE.DirectionalLight(0xffffff, 3);
     light.position.set(2, 2, 3);
@@ -166,6 +179,12 @@ export class MainScene {
     // changes and `update` schedules the rebuild on the next frame.
   }
 
+  // Load the default texture mix (a single base Image layer). The mixer owns the layer stack from
+  // here; the Texture tab edits it live.
+  private loadTexture(): void {
+    this.mixer.loadDocument(DEFAULT_TEXTURE_DOCUMENT);
+  }
+
   // The disc overlay (per-line cross-section rings) is an editing aid, owned here so its
   // visibility survives graph rebuilds. Off by default.
   setDiscsVisible(visible: boolean): void {
@@ -225,6 +244,14 @@ export class MainScene {
       this.meshStats.vertices = vertices;
       this.meshStats.triangles = triangles;
       this.meshDirty = false;
+    }
+
+    // Rebuild the surface texture when the mix changes (layer/param edits or an async image load).
+    // The map is already attached to the persistent material, so a repaint is all that's needed.
+    const textureSignature = this.mixer.getSignature();
+    if (textureSignature !== this.lastTextureSignature) {
+      this.lastTextureSignature = textureSignature;
+      this.mixer.build();
     }
   }
 }
