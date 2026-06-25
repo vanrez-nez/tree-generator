@@ -127,16 +127,28 @@ body.ne-resizing .ne-canvas {
 
 .ne-dock__btn,
 .ne-header__close {
+  align-items: center;
   background: #34373e;
   border: 1px solid #3a3d44;
   border-radius: 4px;
   color: #c8ccd4;
   cursor: pointer;
+  display: inline-flex;
   font-size: 13px;
+  justify-content: center;
   line-height: 1;
   height: 22px;
   min-width: 24px;
   padding: 0 4px;
+}
+
+.ne-dock__btn .lucide-icon,
+.ne-header__close .lucide-icon {
+  display: block;
+  fill: none;
+  pointer-events: none;
+  stroke: currentColor;
+  stroke-width: 2;
 }
 
 .ne-dock__btn:hover,
@@ -170,7 +182,7 @@ body.ne-resizing .ne-canvas {
    global styles). */
 ne-node {
   display: block;
-  width: 230px;
+  width: 18rem;
   background: #2a2c31;
   border: 1px solid #3a3d44;
   border-radius: 8px;
@@ -212,7 +224,13 @@ ne-node .eye {
   padding: 2px;
   cursor: pointer;
   color: #d6d9df;
-  fill: currentColor;
+}
+ne-node .eye .lucide-icon {
+  display: block;
+  fill: none;
+  pointer-events: none;
+  stroke: currentColor;
+  stroke-width: 2;
 }
 ne-node .eye.off {
   opacity: 0.4;
@@ -229,8 +247,13 @@ ne-node .output {
 }
 ne-node .output-title,
 ne-node .input-title {
+  flex: 1;
+  min-width: 0;
   padding: 0 8px;
   color: #9aa0ab;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 ne-node .output-socket {
   margin-right: -12px;
@@ -239,7 +262,7 @@ ne-node .input-socket {
   margin-left: -12px;
 }
 ne-node .controls {
-  padding: 4px;
+  padding: 0;
 }
 ne-node .controls .control {
   display: block;
@@ -248,6 +271,7 @@ ne-node .controls .control {
 /* Embedded Tweakpane: drop its default floating/fixed-width root styling so it flows inside a node. */
 .ne-canvas .tp-dfwv {
   position: static;
-  width: 100%;
+  min-height: 18rem;
   min-width: 0;
+  width: 100%;
 }

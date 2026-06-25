@@ -2,7 +2,13 @@ import "./style.css";
 import * as EssentialsPlugin from "@tweakpane/plugin-essentials";
 import type { CubicBezierApi } from "@tweakpane/plugin-essentials";
 import type { ContainerApi } from "@tweakpane/core";
-import { Boxes, GitBranch, Layers as LayersIcon, SlidersVertical } from "lucide";
+import {
+  Boxes,
+  GitBranch,
+  SlidersVertical,
+  Sprout,
+  SwatchBook,
+} from "lucide";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { FolderApi, Pane } from "tweakpane";
@@ -127,54 +133,57 @@ function addFormBinding(container: ContainerApi, key: keyof TreeForm, label: str
   container.addBinding(form, key, { label, ...formRange(key) }).on("change", commitForm);
 }
 
-const tab = pane.addTab({
-  pages: [{ title: "Gen" }, { title: "Graph" }, { title: "Mesh" }, { title: "Texture" }],
-});
-const [genPage, graphPage, meshPage, texturePage] = tab.pages;
-
-const graphTabs = graphPage.addBlade({
+const mainTabs = pane.addBlade({
   view: "verticalTabs",
   pages: [
     {
-      title: "Layers",
-      tooltip: "Graph layers",
-      icon: LayersIcon,
-      color: "#8aa8ff",
-    },
-    {
-      title: "Joints",
-      tooltip: "Joint controls",
-      icon: GitBranch,
-      color: "#f472b6",
-    },
-    {
-      title: "Roots",
-      tooltip: "Root controls",
-      icon: GitBranch,
+      title: "Gen",
+      tooltip: "Generation",
+      icon: Sprout,
       color: "#6ee7b7",
     },
     {
-      title: "Debug",
-      tooltip: "Debug controls",
-      icon: SlidersVertical,
-      color: "#f59e0b",
+      title: "Graph",
+      tooltip: "Graph",
+      icon: GitBranch,
+      color: "#8aa8ff",
     },
-  ],
-}) as VerticalTabsApi;
-const [graphLayersPage, graphJointsPage, graphRootsPage, graphDebugPage] = graphTabs.pages;
-
-const meshTabs = meshPage.addBlade({
-  view: "verticalTabs",
-  pages: [
     {
       title: "Mesh",
-      tooltip: "Mesh controls",
+      tooltip: "Mesh",
       icon: Boxes,
       color: "#c084fc",
     },
+    {
+      title: "Texture",
+      tooltip: "Texture",
+      icon: SwatchBook,
+      color: "#f59e0b",
+    },
+    {
+      title: "Debug",
+      tooltip: "Debug",
+      icon: SlidersVertical,
+      color: "#fb7185",
+    },
   ],
 }) as VerticalTabsApi;
-const [meshControlsPage] = meshTabs.pages;
+const [genPage, graphPage, meshPage, texturePage, debugPage] = mainTabs.pages;
+
+const graphTabs = graphPage.addTab({
+  pages: [
+    {
+      title: "Layers",
+    },
+    {
+      title: "Joints",
+    },
+    {
+      title: "Roots",
+    },
+  ],
+});
+const [graphLayersPage, graphJointsPage, graphRootsPage] = graphTabs.pages;
 
 // The Lines + Joints panels are rebuilt whenever the tree is regenerated (their line/joint
 // instances change), so we track the folders they create to dispose them on rebuild.
@@ -190,9 +199,9 @@ const triplanarState = { enabled: true, worldPerTile: 1.2, sharpness: 8 };
 
 buildGenerationControls(genPage);
 buildTreeStatsControls(genPage);
-buildMeshControls(meshControlsPage);
+buildMeshControls(meshPage);
 buildRootControls(graphRootsPage);
-buildDebugFolder(graphDebugPage);
+buildDebugFolder(debugPage);
 buildScenePanels();
 // Built once: the mixer persists across tree regeneration and is topology-independent, so its panel
 // must NOT be part of the scenePanelFolders rebuild cycle.

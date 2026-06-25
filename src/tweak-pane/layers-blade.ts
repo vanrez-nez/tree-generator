@@ -25,7 +25,12 @@ import {
   extractClosestEdge,
   type Edge,
 } from '@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge'
-import { EYE_CLOSED_SVG, EYE_OPEN_SVG } from './eye-icons'
+import {
+  createElement as createLucideElement,
+  Eye,
+  EyeOff,
+  type IconNode,
+} from 'lucide'
 
 export type LayerItem = {
   id: string
@@ -55,6 +60,17 @@ const cn = ClassName('layers')
 
 const GRIP_SVG =
   '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><circle cx="6" cy="4" r="1.3"/><circle cx="10" cy="4" r="1.3"/><circle cx="6" cy="8" r="1.3"/><circle cx="10" cy="8" r="1.3"/><circle cx="6" cy="12" r="1.3"/><circle cx="10" cy="12" r="1.3"/></svg>'
+
+function createIcon(icon: IconNode): SVGElement {
+  const element = createLucideElement(icon, {
+    'aria-hidden': 'true',
+    height: 14,
+    stroke: 'currentColor',
+    width: 14,
+  })
+  element.classList.add(cn('icon'))
+  return element
+}
 
 class LayersPaneView implements View {
   readonly element: HTMLElement
@@ -251,7 +267,7 @@ class LayersPaneView implements View {
       if (!item.visible) {
         eye.classList.add(cn('eye', 'off'))
       }
-      eye.innerHTML = item.visible ? EYE_OPEN_SVG : EYE_CLOSED_SVG
+      eye.appendChild(createIcon(item.visible ? Eye : EyeOff))
       eye.title = item.visible ? 'Hide layer' : 'Show layer'
       eye.addEventListener('click', (event) => {
         event.stopPropagation()
@@ -658,9 +674,16 @@ export const LayersPluginBundle: TpPluginBundle = {
       color: var(--in-fg);
       cursor: pointer;
       display: flex;
-      fill: currentColor;
       flex: none;
       padding: 2px;
+    }
+
+    .${cn('icon')} {
+      display: block;
+      fill: none;
+      pointer-events: none;
+      stroke: currentColor;
+      stroke-width: 2;
     }
 
     .${cn('eye', 'off')} {

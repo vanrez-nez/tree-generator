@@ -9,6 +9,19 @@ import { ConnectionPlugin, Presets as ConnectionPresets } from 'rete-connection-
 import { LitPlugin, Presets as LitPresets, type LitArea2D } from '@retejs/lit-plugin'
 import { html } from 'lit'
 import {
+  createElement as createLucideElement,
+  Maximize,
+  PanelBottom,
+  PanelLeft,
+  PanelRight,
+  PanelTop,
+  Scan,
+  X,
+  ZoomIn,
+  ZoomOut,
+  type IconNode,
+} from 'lucide'
+import {
   EditorNode,
   PaneControl,
   type Schemes,
@@ -84,17 +97,18 @@ export class NodeEditorPanel {
     // Zoom controls: out / fit / in (wheel pans instead of zooming — see `ensureEditor`).
     const zoom = document.createElement('div')
     zoom.className = 'ne-zoom'
-    const zoomBtn = (label: string, label2: string, onClick: () => void): void => {
+    const zoomBtn = (icon: IconNode, label: string, onClick: () => void): void => {
       const b = document.createElement('button')
       b.className = 'ne-dock__btn'
-      b.textContent = label
-      b.title = label2
+      b.title = label
+      b.setAttribute('aria-label', label)
+      appendLucideIcon(b, icon)
       b.addEventListener('click', onClick)
       zoom.appendChild(b)
     }
-    zoomBtn('−', 'Zoom out', () => void this.zoomBy(1 / ZOOM_STEP))
-    zoomBtn('⊡', 'Fit to view', () => void this.zoomToFit())
-    zoomBtn('+', 'Zoom in', () => void this.zoomBy(ZOOM_STEP))
+    zoomBtn(ZoomOut, 'Zoom out', () => void this.zoomBy(1 / ZOOM_STEP))
+    zoomBtn(Scan, 'Fit to view', () => void this.zoomToFit())
+    zoomBtn(ZoomIn, 'Zoom in', () => void this.zoomBy(ZOOM_STEP))
     header.appendChild(zoom)
 
     const dock = document.createElement('div')
@@ -104,7 +118,8 @@ export class NodeEditorPanel {
       btn.className = `ne-dock__btn ne-dock__btn--${m}`
       btn.dataset.mode = m
       btn.title = m === 'fullscreen' ? 'Fullscreen' : `Dock ${m}`
-      btn.textContent = DOCK_GLYPH[m]
+      btn.setAttribute('aria-label', btn.title)
+      appendLucideIcon(btn, DOCK_ICON[m])
       btn.addEventListener('click', () => this.setDockMode(m))
       dock.appendChild(btn)
     }
@@ -113,7 +128,8 @@ export class NodeEditorPanel {
     const close = document.createElement('button')
     close.className = 'ne-header__close'
     close.title = 'Close'
-    close.textContent = '✕'
+    close.setAttribute('aria-label', 'Close')
+    appendLucideIcon(close, X)
     close.addEventListener('click', () => this.close())
     header.appendChild(close)
 
@@ -469,12 +485,23 @@ export class NodeEditorPanel {
   }
 }
 
-const DOCK_GLYPH: Record<DockMode, string> = {
-  left: '⊣',
-  right: '⊢',
-  top: '⊤',
-  bottom: '⊥',
-  fullscreen: '⛶',
+const DOCK_ICON: Record<DockMode, IconNode> = {
+  left: PanelLeft,
+  right: PanelRight,
+  top: PanelTop,
+  bottom: PanelBottom,
+  fullscreen: Maximize,
+}
+
+function appendLucideIcon(button: HTMLButtonElement, icon: IconNode): void {
+  const element = createLucideElement(icon, {
+    'aria-hidden': 'true',
+    height: 14,
+    stroke: 'currentColor',
+    width: 14,
+  })
+  element.classList.add('lucide-icon')
+  button.appendChild(element)
 }
 
 function clamp(value: number, min: number, max: number): number {

@@ -26,16 +26,16 @@ body {
   position: fixed;
   top: 16px;
   right: 16px;
-  width: min(20rem, calc(100vw - 32px));
+  width: min(25rem, calc(100vw - 32px));
   max-height: calc(100vh - 32px);
   overflow-y: auto;
 }
 
 .pane-host .tp-dfwv,
 .pane-host > .tp-rotv {
-  min-height: 20rem !important;
+  min-height: 25rem !important;
   position: static !important;
-  width: min(20rem, calc(100vw - 32px)) !important;
+  width: min(25rem, calc(100vw - 32px)) !important;
 }
 
 /* While the node editor is docked, the canvas content box is inset via inline padding on #app set by

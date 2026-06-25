@@ -7,9 +7,14 @@
 //  - `<ne-pane-control>`: hosts the mounted controls and disposes them on unmount.
 import { ClassicPreset, type GetSchemes } from 'rete'
 import { LitElement, html, nothing, type PropertyValues } from 'lit'
-import { EYE_CLOSED_SVG, EYE_OPEN_SVG } from '../tweak-pane/eye-icons'
+import {
+  createElement as createLucideElement,
+  Eye,
+  EyeOff,
+  type IconNode,
+} from 'lucide'
 
-const NODE_WIDTH = 230
+const NODE_WIDTH = 288
 
 export class EditorNode extends ClassicPreset.Node {
   width = NODE_WIDTH
@@ -107,8 +112,9 @@ export class EditorNodeElement extends LitElement {
               this.data.onToggle?.(next)
               this.requestUpdate() // `data` is mutated in place, so prompt a re-render of the eye
             }}
-            .innerHTML=${this.data.enabled ? EYE_OPEN_SVG : EYE_CLOSED_SVG}
-          ></button>`
+          >
+            ${lucideIcon(this.data.enabled ? Eye : EyeOff)}
+          </button>`
         : nothing
 
     return html`
@@ -163,6 +169,17 @@ export class EditorNodeElement extends LitElement {
     // Mirror Rete's expectation that the element reports an `auto` height when not fixed.
     this.style.width = `${this.data?.width ?? NODE_WIDTH}px`
   }
+}
+
+function lucideIcon(icon: IconNode): SVGElement {
+  const element = createLucideElement(icon, {
+    'aria-hidden': 'true',
+    height: 14,
+    stroke: 'currentColor',
+    width: 14,
+  })
+  element.classList.add('lucide-icon')
+  return element
 }
 
 let defined = false

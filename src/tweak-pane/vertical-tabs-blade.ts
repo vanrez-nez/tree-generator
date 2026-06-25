@@ -65,7 +65,7 @@ type PluginPoolLike = {
 
 const PLUGIN_ID = 'vertical-tabs'
 const VIEW = 'verticalTabs'
-const DEFAULT_MIN_HEIGHT = '20rem'
+const DEFAULT_MIN_HEIGHT = '25rem'
 const DEFAULT_ICON_COLOR = 'var(--lbl-fg)'
 const DEFAULT_ACTIVE_ICON_COLOR = 'var(--in-fg)'
 const cn = ClassName('vtabs')
