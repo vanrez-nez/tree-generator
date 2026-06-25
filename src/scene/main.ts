@@ -6,8 +6,7 @@ import { DEFAULT_FORM, type TreeForm } from "./tree-code";
 import { RootSystem } from "./root-system";
 import { TreeMesher } from "./mesher/tree-mesher";
 import type { MesherOptions } from "./mesher/welding-mesher";
-import { TextureMixer } from "./texturer/mixer";
-import { DEFAULT_TEXTURE_DOCUMENT } from "./texturer/document";
+import { MaterialGraph } from "./material/material-graph";
 
 // How long graph edits must settle before the (expensive) surface mesh is rebuilt.
 const MESH_REBUILD_DEBOUNCE_MS = 200;
@@ -26,8 +25,9 @@ export class MainScene {
   readonly scene = new THREE.Scene();
   readonly graph = new Graph();
   readonly mesher = new TreeMesher();
-  // Builds the surface texture by layering steps (see texturer/). Persists across tree rebuilds.
-  readonly mixer = new TextureMixer();
+  // Node-graph PBR material baker (src/scene/material/). Owns the GPU bake (app renderer's context)
+  // and exposes channel textures bound onto the surface material. Persists across tree rebuilds.
+  readonly materialGraph: MaterialGraph;
 
   selectedLineId = "trunk";
 
@@ -49,25 +49,31 @@ export class MainScene {
   private debugT = 0.5;
   private meshDirty = false;
   private meshRebuildTimer: ReturnType<typeof setTimeout> | undefined;
-  // Last texture-mix signature we reacted to (the mixer bumps it on any layer/param change or async
-  // image load). Undefined until the first frame so the initial texture builds.
-  private lastTextureSignature: number | undefined;
+  // Last material-graph signature we reacted to; changes when any node's params change, triggering a
+  // re-bake. Undefined until the first frame so the initial material bakes.
+  private lastMaterialSignature: string | undefined;
   // Last graph-geometry signature we reacted to. The graph is the source of truth: whenever its
   // drawn geometry changes (from any source — UI, joints, root system, code), the signature
   // changes and we schedule a rebuild. Undefined until the first frame so the initial mesh builds.
   private lastSignature: number | undefined;
 
-  constructor() {
+  constructor(renderer: THREE.WebGLRenderer) {
     this.scene.background = new THREE.Color(0x111111);
     this.scene.add(this.graph.group);
     this.scene.add(this.mesher.object);
     this.loadTree();
 
-    // Wire the (persistent) mixed texture onto the (persistent) surface material once; the update
-    // loop only repaints the canvas afterward. The actual paint happens on the first frame when the
-    // texture signature is first observed.
-    this.loadTexture();
-    this.mesher.setTextureMap(this.mixer.getTexture());
+    // Bake the material channels and bind them to the surface. The channel textures are persistent
+    // (each node reuses its render target), so binding once is enough; `update` re-bakes in place
+    // when the graph signature changes.
+    this.materialGraph = new MaterialGraph(renderer);
+    const channels = this.materialGraph.bake();
+    this.mesher.setMaterialMaps({
+      map: channels.basecolor,
+      normalMap: channels.normal,
+      aoMap: channels.ao,
+    });
+    this.lastMaterialSignature = this.materialGraph.signature();
 
     const light = new THREE.DirectionalLight(0xffffff, 3);
     light.position.set(2, 2, 3);
@@ -179,12 +185,6 @@ export class MainScene {
     // changes and `update` schedules the rebuild on the next frame.
   }
 
-  // Load the default texture mix (a single base Image layer). The mixer owns the layer stack from
-  // here; the Texture tab edits it live.
-  private loadTexture(): void {
-    this.mixer.loadDocument(DEFAULT_TEXTURE_DOCUMENT);
-  }
-
   // The disc overlay (per-line cross-section rings) is an editing aid, owned here so its
   // visibility survives graph rebuilds. Off by default.
   setDiscsVisible(visible: boolean): void {
@@ -246,12 +246,12 @@ export class MainScene {
       this.meshDirty = false;
     }
 
-    // Rebuild the surface texture when the mix changes (layer/param edits or an async image load).
-    // The map is already attached to the persistent material, so a repaint is all that's needed.
-    const textureSignature = this.mixer.getSignature();
-    if (textureSignature !== this.lastTextureSignature) {
-      this.lastTextureSignature = textureSignature;
-      this.mixer.build();
+    // Re-bake the material when any node's params change. Channel textures are persistent (nodes
+    // reuse their render targets), so the bound maps update in place — no re-binding needed.
+    const materialSignature = this.materialGraph.signature();
+    if (materialSignature !== this.lastMaterialSignature) {
+      this.lastMaterialSignature = materialSignature;
+      this.materialGraph.bake();
     }
   }
 }

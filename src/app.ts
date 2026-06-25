@@ -34,9 +34,6 @@ import {
   type LayerType,
   LayersPluginBundle,
 } from "./tweak-pane/layers";
-import type { TextureLayer } from "./scene/texturer/layer";
-import { ImageLayer } from "./scene/texturer/layers/image";
-import { SAMPLE_TEXTURES } from "./scene/texturer/document";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -61,7 +58,7 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 const controls = new OrbitControls(camera, sceneCanvas);
 controls.enableDamping = true;
 
-const mainScene = new MainScene();
+const mainScene = new MainScene(renderer);
 const rendererSize = new THREE.Vector2();
 
 const pane = new Pane({ container: paneHost, title: "Settings" });
@@ -432,69 +429,29 @@ function rebuildScenePanels(): void {
   buildScenePanels();
 }
 
-// The Texture tab: a layers panel over the texture mixer, mirroring buildModifierLayers. Each layer
-// is a configurable step composited in stack order; the eye toggles it, drag reorders. Every edit
-// invalidates the mixer so MainScene's poll repaints the surface texture.
+// The Texture tab drives the node-graph material (src/scene/material/). A single shared HEIGHT field
+// feeds the basecolor (gradient map), normal (slope) and AO (cavity) channels. Editing any param
+// changes the graph signature, so MainScene's poll re-bakes the affected channels on the GPU. No
+// explicit invalidate needed — params feed each node's signature.
 function buildTextureLayers(): void {
-  const imageType: LayerType<ImageLayer> = {
-    name: "Image",
-    createState: () => new ImageLayer(),
-    build: (folder, layer) => buildImageLayerControls(folder, layer.state),
-  };
+  const graph = mainScene.materialGraph;
 
-  createLayers(texturePage, {
-    title: "Layers",
-    addLabel: "Add Layer",
-    types: [imageType],
-    initialLayers: mainScene.mixer.getLayerEntries().map(({ layer }) => ({
-      type: "Image",
-      name: layer.name,
-      state: layer,
-      visible: layer.enabled,
-    })),
-    onVisibility: (layer) => {
-      (layer.state as TextureLayer).enabled = layer.visible;
-      mainScene.mixer.invalidate();
-    },
-    onAdd: (layer) => {
-      const textureLayer = layer.state as TextureLayer;
-      textureLayer.enabled = layer.visible;
-      mainScene.mixer.addLayer(textureLayer);
-    },
-    onRemove: (layer) => {
-      mainScene.mixer.removeLayer(layer.state as TextureLayer);
-    },
-    onReorder: (layers) => {
-      mainScene.mixer.reorderLayers(layers.map((layer) => layer.state as TextureLayer));
-    },
-  });
-}
+  const heightFolder = texturePage.addFolder({ title: "Height — FBM", expanded: true });
+  heightFolder.addBinding(graph.height.params, "seed", { min: 0, max: 9999, step: 1 });
+  heightFolder.addBinding(graph.height.params, "tiles", { min: 1, max: 16, step: 1 });
+  heightFolder.addBinding(graph.height.params, "octaves", { min: 1, max: 8, step: 1 });
+  heightFolder.addBinding(graph.height.params, "gain", { min: 0, max: 1, step: 0.01 });
 
-// Per-Image-layer controls. Every binding invalidates the mixer so the surface texture repaints.
-function buildImageLayerControls(folder: FolderApi, layer: ImageLayer): void {
-  const invalidate = (): void => mainScene.mixer.invalidate();
-  const srcOptions = Object.fromEntries(SAMPLE_TEXTURES.map((sample) => [sample.label, sample.path]));
+  const colorFolder = texturePage.addFolder({ title: "Basecolor — Gradient Map", expanded: true });
+  colorFolder.addBinding(graph.basecolor.params, "colorA", { view: "color", label: "color A" });
+  colorFolder.addBinding(graph.basecolor.params, "colorB", { view: "color", label: "color B" });
 
-  folder.addBinding(layer.params, "src", { label: "image", options: srcOptions }).on("change", invalidate);
-  folder.addBinding(layer.params, "opacity", { min: 0, max: 1, step: 0.01 }).on("change", invalidate);
-  folder
-    .addBinding(layer.params, "blend", {
-      options: {
-        Normal: "source-over",
-        Multiply: "multiply",
-        Screen: "screen",
-        Overlay: "overlay",
-        Darken: "darken",
-        Lighten: "lighten",
-      },
-    })
-    .on("change", invalidate);
-  folder
-    .addBinding(layer.params, "fit", { options: { Stretch: "stretch", Tile: "tile" } })
-    .on("change", invalidate);
-  folder.addBinding(layer.params, "scale", { min: 0.1, max: 8, step: 0.05 }).on("change", invalidate);
-  folder.addBinding(layer.params, "offsetX", { label: "offset X", min: 0, max: 1, step: 0.01 }).on("change", invalidate);
-  folder.addBinding(layer.params, "offsetY", { label: "offset Y", min: 0, max: 1, step: 0.01 }).on("change", invalidate);
+  const normalFolder = texturePage.addFolder({ title: "Normal", expanded: true });
+  normalFolder.addBinding(graph.normal.params, "strength", { min: 0, max: 40, step: 0.5 });
+
+  const aoFolder = texturePage.addFolder({ title: "Ambient Occlusion", expanded: true });
+  aoFolder.addBinding(graph.ao.params, "radius", { min: 1, max: 32, step: 1 });
+  aoFolder.addBinding(graph.ao.params, "strength", { min: 0, max: 12, step: 0.1 });
 }
 
 // Generation folder (pinned at the top): the reversible tree code plus the structural knobs that

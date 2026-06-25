@@ -59,10 +59,17 @@ export class TreeMesher {
     return { vertices, triangles };
   }
 
-  // Attach (or clear) the color map for the solid surface. The material is persistent — only the
-  // geometry is replaced in `build()` — so a map set here survives every tree/mesh rebuild.
-  setTextureMap(texture: THREE.Texture | null): void {
-    this.solidMaterial.map = texture;
+  // Bind the baked PBR channel textures onto the solid surface. The material is persistent — only
+  // the geometry is replaced in `build()` — so maps set here survive every tree/mesh rebuild.
+  // aoMap uses the geometry's `uv1` set (a copy of `uv`, see to-buffer-geometry).
+  setMaterialMaps(maps: {
+    map?: THREE.Texture | null;
+    normalMap?: THREE.Texture | null;
+    aoMap?: THREE.Texture | null;
+  }): void {
+    if ("map" in maps) this.solidMaterial.map = maps.map ?? null;
+    if ("normalMap" in maps) this.solidMaterial.normalMap = maps.normalMap ?? null;
+    if ("aoMap" in maps) this.solidMaterial.aoMap = maps.aoMap ?? null;
     this.solidMaterial.needsUpdate = true;
   }
 

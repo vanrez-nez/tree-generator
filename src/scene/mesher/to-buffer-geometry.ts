@@ -78,7 +78,11 @@ export function weldMeshToBufferGeometry(mesh: WeldMesh): BufferGeometry {
   const geometry = new BufferGeometry();
   geometry.setAttribute("position", new Float32BufferAttribute(positions, 3));
   geometry.setAttribute("normal", new Float32BufferAttribute(normals, 3));
-  geometry.setAttribute("uv", new Float32BufferAttribute(uvs, 2));
+  const uvAttribute = new Float32BufferAttribute(uvs, 2);
+  geometry.setAttribute("uv", uvAttribute);
+  // MeshStandardMaterial.aoMap samples the SECOND UV set (`uv1` in r184). We have one UV layout, so
+  // duplicate it — the AO map shares the bark UVs.
+  geometry.setAttribute("uv1", uvAttribute.clone());
   geometry.computeBoundingSphere();
   return geometry;
 }
