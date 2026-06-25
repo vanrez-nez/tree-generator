@@ -2,6 +2,7 @@ import * as THREE from "three";
 import type { BakeContext } from "./engine/node";
 import { PassRunner } from "./engine/pass-runner";
 import { HeightNode } from "./nodes/height";
+import { WarpNode } from "./nodes/warp";
 import { GradientMapNode } from "./nodes/gradient-map";
 import { NormalNode } from "./nodes/normal";
 import { AoNode } from "./nodes/ao";
@@ -20,12 +21,14 @@ export type MaterialChannels = {
 };
 
 export class MaterialGraph {
-  // Shared substrate (declared first so the channel nodes can reference it).
+  // Shared substrate: a height field, organically warped. Every channel derives from the warped
+  // height (coherent). Declared in dependency order.
   readonly height = new HeightNode();
+  readonly warp = new WarpNode(this.height);
   // Output nodes by channel — public so the UI can edit their params.
-  readonly basecolor = new GradientMapNode(this.height);
-  readonly normal = new NormalNode(this.height);
-  readonly ao = new AoNode(this.height);
+  readonly basecolor = new GradientMapNode(this.warp);
+  readonly normal = new NormalNode(this.warp);
+  readonly ao = new AoNode(this.warp);
 
   private readonly runner: PassRunner;
   private readonly width = MATERIAL_RESOLUTION;
@@ -58,6 +61,7 @@ export class MaterialGraph {
     this.basecolor.dispose();
     this.normal.dispose();
     this.ao.dispose();
+    this.warp.dispose();
     this.height.dispose();
     this.runner.dispose();
   }

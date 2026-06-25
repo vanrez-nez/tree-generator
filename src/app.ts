@@ -442,6 +442,11 @@ function buildTextureLayers(): void {
   heightFolder.addBinding(graph.height.params, "octaves", { min: 1, max: 8, step: 1 });
   heightFolder.addBinding(graph.height.params, "gain", { min: 0, max: 1, step: 0.01 });
 
+  const warpFolder = texturePage.addFolder({ title: "Warp (weathering)", expanded: true });
+  warpFolder.addBinding(graph.warp.params, "intensity", { min: 0, max: 0.5, step: 0.01 });
+  warpFolder.addBinding(graph.warp.params, "tiles", { min: 1, max: 12, step: 1 });
+  warpFolder.addBinding(graph.warp.params, "octaves", { min: 1, max: 8, step: 1 });
+
   const colorFolder = texturePage.addFolder({ title: "Basecolor — Gradient Map", expanded: true });
   colorFolder.addBinding(graph.basecolor.params, "colorA", { view: "color", label: "color A" });
   colorFolder.addBinding(graph.basecolor.params, "colorB", { view: "color", label: "color B" });
