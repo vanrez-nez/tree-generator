@@ -21,6 +21,23 @@ export function createColorTarget(width: number, height: number): THREE.WebGLRen
   });
 }
 
+// Full-float, NEAREST-filtered, wrapping target for JFA/flood-fill scratch. JFA stores exact seed
+// coordinates per texel, so it must NOT interpolate (Nearest) and needs the precision (Float).
+export function createFloatTarget(width: number, height: number): THREE.WebGLRenderTarget {
+  return new THREE.WebGLRenderTarget(width, height, {
+    depthBuffer: false,
+    stencilBuffer: false,
+    format: THREE.RGBAFormat,
+    type: THREE.FloatType,
+    colorSpace: THREE.NoColorSpace,
+    magFilter: THREE.NearestFilter,
+    minFilter: THREE.NearestFilter,
+    wrapS: THREE.RepeatWrapping,
+    wrapT: THREE.RepeatWrapping,
+    generateMipmaps: false,
+  });
+}
+
 export function createDataTarget(width: number, height: number): THREE.WebGLRenderTarget {
   return new THREE.WebGLRenderTarget(width, height, {
     depthBuffer: false,

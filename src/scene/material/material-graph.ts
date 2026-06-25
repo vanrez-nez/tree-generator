@@ -4,6 +4,7 @@ import { PassRunner } from "./engine/pass-runner";
 import { HeightNode } from "./nodes/height";
 import { WarpNode } from "./nodes/warp";
 import { SlopeBlurNode } from "./nodes/slope-blur";
+import { CellsNode } from "./nodes/cells";
 import { GradientMapNode } from "./nodes/gradient-map";
 import { NormalNode } from "./nodes/normal";
 import { AoNode } from "./nodes/ao";
@@ -24,16 +25,17 @@ export type MaterialChannels = {
 };
 
 export class MaterialGraph {
-  // Shared substrate: a height field, organically warped then slope-blurred (eroded). Every channel
-  // derives from this same field (coherent). Declared in dependency order.
+  // Shared substrate: a height field — warped, slope-blurred (eroded), then split into plates by the
+  // JFA cell structure. Every channel derives from this same field (coherent). Dependency order.
   readonly height = new HeightNode();
   readonly warp = new WarpNode(this.height);
   readonly slopeBlur = new SlopeBlurNode(this.warp);
+  readonly cells = new CellsNode(this.slopeBlur);
   // Output nodes by channel — public so the UI can edit their params.
-  readonly basecolor = new GradientMapNode(this.slopeBlur);
-  readonly normal = new NormalNode(this.slopeBlur);
-  readonly ao = new AoNode(this.slopeBlur);
-  readonly roughness = new RoughnessNode(this.slopeBlur);
+  readonly basecolor = new GradientMapNode(this.cells);
+  readonly normal = new NormalNode(this.cells);
+  readonly ao = new AoNode(this.cells);
+  readonly roughness = new RoughnessNode(this.cells);
 
   private readonly runner: PassRunner;
   private readonly width = MATERIAL_RESOLUTION;
@@ -73,6 +75,7 @@ export class MaterialGraph {
     this.normal.dispose();
     this.ao.dispose();
     this.roughness.dispose();
+    this.cells.dispose();
     this.slopeBlur.dispose();
     this.warp.dispose();
     this.height.dispose();

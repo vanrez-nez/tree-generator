@@ -451,6 +451,14 @@ function buildTextureLayers(): void {
   slopeFolder.addBinding(graph.slopeBlur.params, "iterations", { min: 0, max: 16, step: 1 });
   slopeFolder.addBinding(graph.slopeBlur.params, "intensity", { min: 1, max: 8, step: 0.5 });
 
+  const cellsFolder = texturePage.addFolder({ title: "Cells (JFA plates)", expanded: true });
+  cellsFolder.addBinding(graph.cells.params, "cells", { min: 2, max: 32, step: 1 });
+  cellsFolder.addBinding(graph.cells.params, "jitter", { min: 0, max: 1, step: 0.01 });
+  cellsFolder.addBinding(graph.cells.params, "seed", { min: 0, max: 9999, step: 1 });
+  cellsFolder.addBinding(graph.cells.params, "crackDepth", { label: "crack depth", min: 0, max: 0.5, step: 0.01 });
+  cellsFolder.addBinding(graph.cells.params, "crackWidth", { label: "crack width", min: 1, max: 6, step: 1 });
+  cellsFolder.addBinding(graph.cells.params, "plateAmount", { label: "plate var", min: 0, max: 0.5, step: 0.01 });
+
   const colorFolder = texturePage.addFolder({ title: "Basecolor — Gradient Map", expanded: true });
   colorFolder.addBinding(graph.basecolor.params, "colorA", { view: "color", label: "color A" });
   colorFolder.addBinding(graph.basecolor.params, "colorB", { view: "color", label: "color B" });
