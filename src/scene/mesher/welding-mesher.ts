@@ -169,13 +169,9 @@ function getBranchAngleAroundParent(parent: TreeNode, branch: TreeNode): number 
 
 function getBranchIndicesOnCircle(
   radialNPoints: number,
-  circleRadius: number,
-  branchRadius: number,
   branchAngle: number,
+  angleDelta: number,
 ): IndexRange {
-  const angleDelta = Math.asin(
-    Math.max(-1, Math.min(1, branchRadius / circleRadius)),
-  );
   const increment = TAU / radialNPoints;
   const minIndex = Math.floor(
     (((branchAngle - angleDelta + TAU) % TAU) + TAU) % TAU / increment,
@@ -186,16 +182,43 @@ function getBranchIndicesOnCircle(
   return { minIndex, maxIndex };
 }
 
+// The half-angle a child of `branchRadius` wants to occupy on a parent ring of `parentRadius`.
+function desiredHalfAngle(parentRadius: number, branchRadius: number): number {
+  return Math.asin(Math.max(-1, Math.min(1, branchRadius / parentRadius)));
+}
+
+// Build one hole band per side child (children[1..]). When several children share the SAME node
+// (e.g. the basal whorl of roots, all attached at one trunk segment), their desired bands can sum
+// past 360° and overlap — which makes multiple child base rings stitch to the same parent rim
+// vertices, producing non-manifold/boundary edges at the junction. To prevent that, each band's
+// half-angle is clamped so it can't reach within one ring slot of its angular neighbour. A lone
+// side child (the common branch case) is never clamped, so ordinary junctions are unchanged.
 function getChildrenRanges(node: TreeNode, radialNPoints: number): IndexRange[] {
-  const ranges: IndexRange[] = [];
+  const kids: { angle: number; half: number }[] = [];
   for (let i = 1; i < node.children.length; i++) {
     const child = node.children[i];
-    const angle = getBranchAngleAroundParent(node, child.node);
-    ranges.push(
-      getBranchIndicesOnCircle(radialNPoints, node.radius, child.node.radius, angle),
-    );
+    kids.push({
+      angle: getBranchAngleAroundParent(node, child.node),
+      half: desiredHalfAngle(node.radius, child.node.radius),
+    });
   }
-  return ranges;
+
+  if (kids.length > 1) {
+    const increment = TAU / radialNPoints;
+    const order = kids.map((_, i) => i).sort((a, b) => kids[a].angle - kids[b].angle);
+    for (let k = 0; k < order.length; k++) {
+      const cur = kids[order[k]];
+      const next = kids[order[(k + 1) % order.length]];
+      const prev = kids[order[(k - 1 + order.length) % order.length]];
+      const gapNext = (((next.angle - cur.angle) % TAU) + TAU) % TAU;
+      const gapPrev = (((cur.angle - prev.angle) % TAU) + TAU) % TAU;
+      // Half the smaller neighbour gap, minus one ring slot so adjacent holes never touch.
+      const maxHalf = Math.max(0, Math.min(gapNext, gapPrev) / 2 - increment);
+      if (cur.half > maxHalf) cur.half = maxHalf;
+    }
+  }
+
+  return kids.map((k) => getBranchIndicesOnCircle(radialNPoints, k.angle, k.half));
 }
 
 /** Collect the parent hole-rim vertex indices in loop order (lower arc, then upper arc reversed). */
@@ -474,6 +497,36 @@ function addCap(
   }
 }
 
+// Close the open trunk base (the start ring) with a flat fan to its centre. The start ring is only
+// ever bridged on its upper side, so without this the bottom of the trunk is a hole — visible from
+// below (you see up into the hollow trunk) and leaving the surface non-watertight. The fan winding
+// is reversed relative to the tip cap so the bottom face normal points down (outward at the base).
+function addBaseCap(stem: Stem, startCircle: CircleDesignator, mesh: WeldMesh): void {
+  const apexIndex = mesh.addVertex(stem.position.clone());
+  mesh.smoothAmount[apexIndex] = 0;
+  mesh.radius[apexIndex] = 0;
+  mesh.directionA[apexIndex] = stem.node.direction.clone().negate();
+  const apexUvIndex = mesh.uvs.length;
+  mesh.uvs.push(new Vector2(0.5, 0));
+
+  const radialN = startCircle.radialN;
+  for (let i = 0; i < radialN; i++) {
+    const p = mesh.addPolygon();
+    mesh.polygons[p] = [
+      startCircle.vertexIndex + ((i + 1) % radialN),
+      startCircle.vertexIndex + i,
+      apexIndex,
+      apexIndex,
+    ];
+    mesh.uvLoops[p] = [
+      startCircle.uvIndex + (i + 1),
+      startCircle.uvIndex + i,
+      apexUvIndex,
+      apexUvIndex,
+    ];
+  }
+}
+
 function meshNodeRec(
   node: TreeNode,
   nodePosition: Vector3,
@@ -540,6 +593,7 @@ export function meshTree(stem: Stem, opts: MesherOptions): WeldMesh {
   };
   addCircle(stem.position, stem.node, 0, opts.radialResolution, mesh, 0);
   meshNodeRec(stem.node, stem.position, startCircle, mesh, 0, opts);
+  addBaseCap(stem, startCircle, mesh);
 
   if (opts.smoothIterations > 0) {
     smoothMesh(mesh, opts.smoothIterations, 1, mesh.smoothAmount);
