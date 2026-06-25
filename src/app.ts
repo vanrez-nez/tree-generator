@@ -135,6 +135,7 @@ function addFormBinding(container: ContainerApi, key: keyof TreeForm, label: str
 
 const mainTabs = pane.addBlade({
   view: "verticalTabs",
+  stickyTabs: true,
   pages: [
     {
       title: "Gen",

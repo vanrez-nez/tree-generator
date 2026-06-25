@@ -47,6 +47,8 @@ type VerticalTabsBladeParams = {
   minHeight?: SizeParam
   pages: VerticalTabPageParams[]
   selectedIndex?: number
+  stickyTabs?: boolean
+  stickyTop?: SizeParam
   view: 'verticalTabs'
 }
 
@@ -73,6 +75,7 @@ const cn = ClassName('vtabs')
 class VerticalTabsView implements View {
   readonly element: HTMLElement
   readonly navElement: HTMLDivElement
+  readonly tabsElement: HTMLDivElement
   readonly contentsElement: HTMLDivElement
   readonly emitter = new Emitter<VerticalTabsEvents>()
   private readonly doc: Document
@@ -81,6 +84,8 @@ class VerticalTabsView implements View {
     height?: SizeParam
     maxHeight?: SizeParam
     minHeight?: SizeParam
+    stickyTabs?: boolean
+    stickyTop?: SizeParam
   }) {
     this.doc = doc
     this.element = doc.createElement('div')
@@ -92,15 +97,20 @@ class VerticalTabsView implements View {
 
     this.navElement = doc.createElement('div')
     this.navElement.classList.add(cn('rail'))
-    this.navElement.setAttribute('role', 'tablist')
-    this.navElement.setAttribute('aria-orientation', 'vertical')
     body.appendChild(this.navElement)
+
+    this.tabsElement = doc.createElement('div')
+    this.tabsElement.classList.add(cn('tabs'))
+    this.tabsElement.setAttribute('role', 'tablist')
+    this.tabsElement.setAttribute('aria-orientation', 'vertical')
+    this.navElement.appendChild(this.tabsElement)
 
     this.contentsElement = doc.createElement('div')
     this.contentsElement.classList.add(cn('contents'))
     body.appendChild(this.contentsElement)
 
     this.setSize(params)
+    this.setStickyTabs(params.stickyTabs ?? false, params.stickyTop)
   }
 
   setSize(params: {
@@ -113,8 +123,13 @@ class VerticalTabsView implements View {
     setOptionalStyle(this.element, '--vtabs-max-height', params.maxHeight)
   }
 
+  setStickyTabs(sticky: boolean, top?: SizeParam): void {
+    this.element.classList.toggle(cn('sticky'), sticky)
+    setOptionalStyle(this.element, '--vtabs-sticky-top', sticky ? top ?? 0 : undefined)
+  }
+
   renderTabs(pages: VerticalTabPageParams[], selectedIndex: number): void {
-    this.navElement.replaceChildren()
+    this.tabsElement.replaceChildren()
 
     pages.forEach((page, index) => {
       const selected = index === selectedIndex
@@ -157,12 +172,12 @@ class VerticalTabsView implements View {
       button.addEventListener('keydown', (event) => {
         this.handleTabKeydown(event, index, pages.length)
       })
-      this.navElement.appendChild(button)
+      this.tabsElement.appendChild(button)
     })
   }
 
   focusTab(index: number): void {
-    const button = this.navElement.children[index] as HTMLButtonElement | undefined
+    const button = this.tabsElement.children[index] as HTMLButtonElement | undefined
     button?.focus()
   }
 
@@ -186,7 +201,7 @@ class VerticalTabsView implements View {
     }
 
     event.preventDefault()
-    const page = this.navElement.children[nextIndex]
+    const page = this.tabsElement.children[nextIndex]
     this.emitter.emit('select', {
       index: nextIndex,
       title: page?.getAttribute('aria-label') ?? '',
@@ -208,6 +223,8 @@ class VerticalTabsController extends ContainerBladeController<VerticalTabsView> 
     minHeight?: SizeParam
     pages: VerticalTabPageParams[]
     selectedIndex?: number
+    stickyTabs?: boolean
+    stickyTop?: SizeParam
     viewProps: ViewProps
     document: Document
   }) {
@@ -215,6 +232,8 @@ class VerticalTabsController extends ContainerBladeController<VerticalTabsView> 
       height: args.height,
       maxHeight: args.maxHeight,
       minHeight: args.minHeight,
+      stickyTabs: args.stickyTabs,
+      stickyTop: args.stickyTop,
     })
 
     super({
@@ -323,6 +342,10 @@ class VerticalTabsController extends ContainerBladeController<VerticalTabsView> 
     this.pageControllers[index]?.itemController.props.set('title', next.title)
     this.view.renderTabs(this.pages, this.selectedIndexValue)
   }
+
+  setStickyTabs(sticky: boolean, top?: SizeParam): void {
+    this.view.setStickyTabs(sticky, top)
+  }
 }
 
 export class VerticalTabsApi extends ContainerBladeApi<VerticalTabsController> {
@@ -359,6 +382,10 @@ export class VerticalTabsApi extends ContainerBladeApi<VerticalTabsController> {
     this.controller.setPageMeta(index, params)
   }
 
+  setStickyTabs(sticky: boolean, top?: SizeParam): void {
+    this.controller.setStickyTabs(sticky, top)
+  }
+
   on<EventName extends keyof VerticalTabsEvents>(
     eventName: EventName,
     handler: (event: VerticalTabsEvents[EventName]) => void,
@@ -386,6 +413,8 @@ const VerticalTabsBladePlugin: BladePlugin<VerticalTabsBladeParams> = createPlug
       minHeight: parser.optional.custom(parseSizeParam),
       pages: parser.required.array(parser.required.custom(parsePageParams)),
       selectedIndex: parser.optional.number,
+      stickyTabs: parser.optional.boolean,
+      stickyTop: parser.optional.custom(parseSizeParam),
       view: parser.required.constant(VIEW),
     }))
 
@@ -400,6 +429,8 @@ const VerticalTabsBladePlugin: BladePlugin<VerticalTabsBladeParams> = createPlug
       minHeight: args.params.minHeight,
       pages: args.params.pages,
       selectedIndex: args.params.selectedIndex,
+      stickyTabs: args.params.stickyTabs,
+      stickyTop: args.params.stickyTop,
       viewProps: args.viewProps,
     })
   },
@@ -422,6 +453,7 @@ export const VerticalTabsPluginBundle: TpPluginBundle = {
       --vtabs-height: auto;
       --vtabs-max-height: none;
       --vtabs-min-height: ${DEFAULT_MIN_HEIGHT};
+      --vtabs-sticky-top: 0px;
       box-sizing: border-box;
       display: block;
       padding: var(--cnt-vp) var(--cnt-hp);
@@ -440,16 +472,31 @@ export const VerticalTabsPluginBundle: TpPluginBundle = {
       width: 100%;
     }
 
+    .${cn('sticky')} .${cn('body')} {
+      overflow: visible;
+    }
+
     .${cn('rail')} {
-      align-items: center;
       background-color: var(--cnt-bg);
       border-right: 1px solid var(--grv-fg);
-      display: flex;
       flex: none;
+      padding: 0 2px;
+      width: calc(var(--cnt-usz) + 12px);
+    }
+
+    .${cn('tabs')} {
+      align-items: center;
+      display: flex;
       flex-direction: column;
       gap: 2px;
-      padding: var(--cnt-vp) 2px;
-      width: calc(var(--cnt-usz) + 12px);
+      padding: var(--cnt-vp) 0;
+    }
+
+    .${cn('sticky')} .${cn('tabs')} {
+      padding-top: 2px;
+      position: sticky;
+      top: var(--vtabs-sticky-top);
+      z-index: 2;
     }
 
     .${cn('tab')} {
