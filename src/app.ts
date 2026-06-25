@@ -1,6 +1,7 @@
 import "./style.css";
 import * as EssentialsPlugin from "@tweakpane/plugin-essentials";
 import type { CubicBezierApi } from "@tweakpane/plugin-essentials";
+import { Image as ImageIcon, Network, Wrench } from "lucide";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { FolderApi, Pane } from "tweakpane";
@@ -38,6 +39,10 @@ import {
   TexturePreviewBladeApi,
   TexturePreviewPluginBundle,
 } from "./tweak-pane/texture-preview-blade";
+import {
+  VerticalTabsApi,
+  VerticalTabsPluginBundle,
+} from "./tweak-pane/vertical-tabs-blade";
 import { NodeEditorPanel } from "./node-editor";
 import { buildMaterialEditorConfig } from "./scene/material/editor-config";
 
@@ -72,6 +77,7 @@ pane.registerPlugin(EssentialsPlugin);
 pane.registerPlugin(StatsPanePluginBundle);
 pane.registerPlugin(LayersPluginBundle);
 pane.registerPlugin(TexturePreviewPluginBundle);
+pane.registerPlugin(VerticalTabsPluginBundle);
 const stats = pane.addBlade({ view: "stats" }) as StatsBladeApi;
 stats.setRenderer(renderer.capabilities.isWebGL2 ? "WebGL2" : "WebGL");
 
@@ -167,6 +173,7 @@ buildScenePanels();
 // 3D canvas reflows (resize is the onLayoutChange hook) and hides the Tweakpane while docked.
 const materialEditor = new NodeEditorPanel({ appElement: app });
 buildTextureLayers();
+buildVerticalTabsDemo();
 
 const timer = new THREE.Timer();
 timer.connect(document);
@@ -511,6 +518,59 @@ function buildTextureLayers(): void {
       .addButton({ title: `Export ${channel}` })
       .on("click", () => mainScene.materialGraph.exportChannel(channel));
   }
+}
+
+function buildVerticalTabsDemo(): void {
+  const tabs = pane.addBlade({
+    view: "verticalTabs",
+    minHeight: "20rem",
+    pages: [
+      {
+        title: "Tools",
+        tooltip: "Tool actions",
+        icon: Wrench,
+        color: "#8aa8ff",
+      },
+      {
+        title: "Preview",
+        tooltip: "Preview controls",
+        icon: ImageIcon,
+        color: "#6ee7b7",
+      },
+      {
+        title: "Graph",
+        tooltip: "Graph utilities",
+        icon: Network,
+        color: "#f59e0b",
+      },
+    ],
+  }) as VerticalTabsApi;
+
+  const toolState = { strength: 0.5, enabled: true };
+  const previewState = { exposure: 1, overlay: false };
+  const graphState = { mode: "tree" as "tree" | "material" };
+
+  const tools = tabs.pages[0];
+  tools?.addFolder({ title: "Tools", expanded: true });
+  tools?.addBinding(toolState, "enabled", { label: "enabled" });
+  tools?.addBinding(toolState, "strength", { min: 0, max: 1, step: 0.01 });
+
+  const preview = tabs.pages[1];
+  preview?.addFolder({ title: "Preview", expanded: true });
+  preview?.addBinding(previewState, "exposure", { min: 0, max: 4, step: 0.05 });
+  preview?.addBinding(previewState, "overlay");
+
+  const graph = tabs.pages[2];
+  graph?.addFolder({ title: "Graph", expanded: true });
+  graph?.addBinding(graphState, "mode", {
+    options: {
+      Tree: "tree",
+      Material: "material",
+    },
+  });
+  graph?.addButton({ title: "Open Node Editor" }).on("click", () => {
+    materialEditor.open(buildMaterialEditorConfig(mainScene.materialGraph), "right");
+  });
 }
 
 // Generation folder (pinned at the top): the reversible tree code plus the structural knobs that

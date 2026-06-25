@@ -26,14 +26,15 @@ body {
   position: fixed;
   top: 16px;
   right: 16px;
-  width: min(256px, calc(100vw - 32px));
+  width: min(20rem, calc(100vw - 32px));
   max-height: calc(100vh - 32px);
   overflow-y: auto;
 }
 
 .pane-host .tp-dfwv {
+  min-height: 20rem !important;
   position: static !important;
-  width: 100% !important;
+  width: min(20rem, calc(100vw - 32px)) !important;
 }
 
 /* While the node editor is docked, the canvas content box is inset via inline padding on #app set by
