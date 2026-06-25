@@ -18,13 +18,14 @@ const copyMaterial = new THREE.ShaderMaterial({
   uniforms: { uTex: { value: null } },
 });
 
-export function downloadChannelPng(
+// Copy a channel texture into an RGBA8 target, read it back, and return top-down ImageData (GL is
+// bottom-up, so rows are flipped). Shared by PNG export and the 2D texture preview.
+export function renderChannelToImageData(
   runner: PassRunner,
   texture: THREE.Texture,
   width: number,
   height: number,
-  filename: string,
-): void {
+): ImageData {
   const target = createByteTarget(width, height);
   copyMaterial.uniforms.uTex.value = texture;
   runner.render(copyMaterial, target);
@@ -33,14 +34,23 @@ export function downloadChannelPng(
   runner.readback(target, buffer, width, height);
   target.dispose();
 
-  // Flip Y into top-down ImageData rows.
   const flipped = new Uint8ClampedArray(width * height * 4);
   const rowBytes = width * 4;
   for (let y = 0; y < height; y++) {
     const src = (height - 1 - y) * rowBytes;
     flipped.set(buffer.subarray(src, src + rowBytes), y * rowBytes);
   }
+  return new ImageData(flipped, width, height);
+}
 
+export function downloadChannelPng(
+  runner: PassRunner,
+  texture: THREE.Texture,
+  width: number,
+  height: number,
+  filename: string,
+): void {
+  const data = renderChannelToImageData(runner, texture, width, height);
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
@@ -48,7 +58,7 @@ export function downloadChannelPng(
   if (!ctx) {
     return;
   }
-  ctx.putImageData(new ImageData(flipped, width, height), 0, 0);
+  ctx.putImageData(data, 0, 0);
   canvas.toBlob((blob) => {
     if (!blob) {
       return;

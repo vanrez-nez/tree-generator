@@ -34,6 +34,10 @@ import {
   type LayerType,
   LayersPluginBundle,
 } from "./tweak-pane/layers";
+import {
+  TexturePreviewBladeApi,
+  TexturePreviewPluginBundle,
+} from "./tweak-pane/texture-preview-blade";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -65,6 +69,7 @@ const pane = new Pane({ container: paneHost, title: "Settings" });
 pane.registerPlugin(EssentialsPlugin);
 pane.registerPlugin(StatsPanePluginBundle);
 pane.registerPlugin(LayersPluginBundle);
+pane.registerPlugin(TexturePreviewPluginBundle);
 const stats = pane.addBlade({ view: "stats" }) as StatsBladeApi;
 stats.setRenderer(renderer.capabilities.isWebGL2 ? "WebGL2" : "WebGL");
 
@@ -143,6 +148,12 @@ const [linePage, jointsPage, texturePage] = tab.pages;
 // instances change), so we track the folders they create to dispose them on rebuild.
 let scenePanelFolders: FolderApi[] = [];
 
+// 2D texture-preview state (declared before buildTextureLayers runs, which references it).
+type PreviewChannel = "basecolor" | "normal" | "ao" | "roughness";
+let texturePreview: TexturePreviewBladeApi | null = null;
+const previewState = { channel: "basecolor" as PreviewChannel, seams: false };
+let lastPreviewSignature: string | undefined;
+
 buildMeshControls();
 buildRootControls();
 buildScenePanels();
@@ -166,6 +177,7 @@ function animate(timestamp?: number): void {
 
   renderer.getDrawingBufferSize(rendererSize);
   mainScene.update(timer.getDelta(), camera, rendererSize);
+  refreshTexturePreview();
   controls.update();
   renderer.render(mainScene.scene, camera);
   stats.end();
@@ -433,8 +445,35 @@ function rebuildScenePanels(): void {
 // feeds the basecolor (gradient map), normal (slope) and AO (cavity) channels. Editing any param
 // changes the graph signature, so MainScene's poll re-bakes the affected channels on the GPU. No
 // explicit invalidate needed — params feed each node's signature.
+// 2D texture preview (top of the Texture tab): drag to pan the tiling texture, wheel to zoom, with a
+// channel selector and a seams overlay. Fed from MainScene's animate loop when the material changes.
+// State is declared earlier (before buildTextureLayers runs).
+function refreshTexturePreview(): void {
+  if (!texturePreview) return;
+  const signature = `${previewState.channel}|${mainScene.materialGraph.signature()}`;
+  if (signature === lastPreviewSignature) return;
+  lastPreviewSignature = signature;
+  texturePreview.setImageData(mainScene.materialGraph.readChannelImageData(previewState.channel));
+}
+
 function buildTextureLayers(): void {
   const graph = mainScene.materialGraph;
+
+  const previewFolder = texturePage.addFolder({ title: "Preview", expanded: true });
+  texturePreview = previewFolder.addBlade({
+    view: "texturePreview",
+    height: 220,
+  }) as TexturePreviewBladeApi;
+  previewFolder
+    .addBinding(previewState, "channel", {
+      options: { Basecolor: "basecolor", Normal: "normal", AO: "ao", Roughness: "roughness" },
+    })
+    .on("change", () => {
+      lastPreviewSignature = undefined; // force a refresh on the next frame
+    });
+  previewFolder
+    .addBinding(previewState, "seams")
+    .on("change", (event) => texturePreview?.setSeams(event.value));
 
   const heightFolder = texturePage.addFolder({ title: "Height — FBM", expanded: true });
   heightFolder.addBinding(graph.height.params, "seed", { min: 0, max: 9999, step: 1 });

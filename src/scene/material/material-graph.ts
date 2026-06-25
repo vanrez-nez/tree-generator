@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import type { BakeContext } from "./engine/node";
 import { PassRunner } from "./engine/pass-runner";
-import { downloadChannelPng } from "./engine/export";
+import { downloadChannelPng, renderChannelToImageData } from "./engine/export";
 import { HeightNode } from "./nodes/height";
 import { WarpNode } from "./nodes/warp";
 import { SlopeBlurNode } from "./nodes/slope-blur";
@@ -75,6 +75,12 @@ export class MaterialGraph {
   exportChannel(name: keyof MaterialChannels): void {
     const channels = this.bake();
     downloadChannelPng(this.runner, channels[name], this.width, this.height_, `bark-${name}.png`);
+  }
+
+  // Bake then read one channel back as ImageData (top-down) for the 2D texture preview.
+  readChannelImageData(name: keyof MaterialChannels): ImageData {
+    const channels = this.bake();
+    return renderChannelToImageData(this.runner, channels[name], this.width, this.height_);
   }
 
   dispose(): void {
