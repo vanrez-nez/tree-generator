@@ -153,6 +153,8 @@ type PreviewChannel = "basecolor" | "normal" | "ao" | "roughness";
 let texturePreview: TexturePreviewBladeApi | null = null;
 const previewState = { channel: "basecolor" as PreviewChannel, seams: false };
 let lastPreviewSignature: string | undefined;
+// Triplanar mapping state (defaults mirror TreeMesher.triUniforms so the UI starts in sync).
+const triplanarState = { enabled: true, worldPerTile: 1.2, sharpness: 8 };
 
 buildMeshControls();
 buildRootControls();
@@ -474,6 +476,19 @@ function buildTextureLayers(): void {
   previewFolder
     .addBinding(previewState, "seams")
     .on("change", (event) => texturePreview?.setSeams(event.value));
+
+  // Triplanar mapping: how the baked channels are projected onto the surface. `worldPerTile` is the
+  // single master bark-scale knob; `enabled` A/B-toggles against the legacy tubular-UV mapping.
+  const mappingFolder = texturePage.addFolder({ title: "Mapping — Triplanar", expanded: true });
+  mappingFolder
+    .addBinding(triplanarState, "enabled", { label: "triplanar" })
+    .on("change", (event) => mainScene.mesher.setTriplanarEnabled(event.value));
+  mappingFolder
+    .addBinding(triplanarState, "worldPerTile", { label: "world / tile", min: 0.2, max: 6, step: 0.05 })
+    .on("change", (event) => mainScene.mesher.setTriplanarScale(event.value));
+  mappingFolder
+    .addBinding(triplanarState, "sharpness", { label: "blend sharp", min: 1, max: 16, step: 0.5 })
+    .on("change", (event) => mainScene.mesher.setTriplanarSharpness(event.value));
 
   const heightFolder = texturePage.addFolder({ title: "Height — FBM", expanded: true });
   heightFolder.addBinding(graph.height.params, "seed", { min: 0, max: 9999, step: 1 });
