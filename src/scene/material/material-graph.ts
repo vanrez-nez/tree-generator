@@ -3,9 +3,11 @@ import type { BakeContext } from "./engine/node";
 import { PassRunner } from "./engine/pass-runner";
 import { HeightNode } from "./nodes/height";
 import { WarpNode } from "./nodes/warp";
+import { SlopeBlurNode } from "./nodes/slope-blur";
 import { GradientMapNode } from "./nodes/gradient-map";
 import { NormalNode } from "./nodes/normal";
 import { AoNode } from "./nodes/ao";
+import { RoughnessNode } from "./nodes/roughness";
 
 // The authored material DAG + its "Material Output". A single shared HEIGHT field (FBM) drives every
 // channel — basecolor (gradient map), normal (slope), AO (cavity) — the coherent-derivation
@@ -18,17 +20,20 @@ export type MaterialChannels = {
   basecolor: THREE.Texture;
   normal: THREE.Texture;
   ao: THREE.Texture;
+  roughness: THREE.Texture;
 };
 
 export class MaterialGraph {
-  // Shared substrate: a height field, organically warped. Every channel derives from the warped
-  // height (coherent). Declared in dependency order.
+  // Shared substrate: a height field, organically warped then slope-blurred (eroded). Every channel
+  // derives from this same field (coherent). Declared in dependency order.
   readonly height = new HeightNode();
   readonly warp = new WarpNode(this.height);
+  readonly slopeBlur = new SlopeBlurNode(this.warp);
   // Output nodes by channel — public so the UI can edit their params.
-  readonly basecolor = new GradientMapNode(this.warp);
-  readonly normal = new NormalNode(this.warp);
-  readonly ao = new AoNode(this.warp);
+  readonly basecolor = new GradientMapNode(this.slopeBlur);
+  readonly normal = new NormalNode(this.slopeBlur);
+  readonly ao = new AoNode(this.slopeBlur);
+  readonly roughness = new RoughnessNode(this.slopeBlur);
 
   private readonly runner: PassRunner;
   private readonly width = MATERIAL_RESOLUTION;
@@ -42,18 +47,24 @@ export class MaterialGraph {
     return { runner: this.runner, width: this.width, height: this.height_ };
   }
 
-  // Aggregate signature across all channel outputs (each folds in the shared height).
+  // Aggregate signature across all channel outputs (each folds in the shared height chain).
   signature(): string {
-    return `${this.basecolor.signature()}|${this.normal.signature()}|${this.ao.signature()}`;
+    return [
+      this.basecolor.signature(),
+      this.normal.signature(),
+      this.ao.signature(),
+      this.roughness.signature(),
+    ].join("|");
   }
 
-  // Evaluate every channel (lazy/cached per node; the shared height bakes once) and return textures.
+  // Evaluate every channel (lazy/cached per node; the shared chain bakes once) and return textures.
   bake(): MaterialChannels {
     const ctx = this.ctx();
     return {
       basecolor: this.basecolor.resolve(ctx),
       normal: this.normal.resolve(ctx),
       ao: this.ao.resolve(ctx),
+      roughness: this.roughness.resolve(ctx),
     };
   }
 
@@ -61,6 +72,8 @@ export class MaterialGraph {
     this.basecolor.dispose();
     this.normal.dispose();
     this.ao.dispose();
+    this.roughness.dispose();
+    this.slopeBlur.dispose();
     this.warp.dispose();
     this.height.dispose();
     this.runner.dispose();

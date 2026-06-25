@@ -447,6 +447,10 @@ function buildTextureLayers(): void {
   warpFolder.addBinding(graph.warp.params, "tiles", { min: 1, max: 12, step: 1 });
   warpFolder.addBinding(graph.warp.params, "octaves", { min: 1, max: 8, step: 1 });
 
+  const slopeFolder = texturePage.addFolder({ title: "Slope Blur (erosion)", expanded: true });
+  slopeFolder.addBinding(graph.slopeBlur.params, "iterations", { min: 0, max: 16, step: 1 });
+  slopeFolder.addBinding(graph.slopeBlur.params, "intensity", { min: 1, max: 8, step: 0.5 });
+
   const colorFolder = texturePage.addFolder({ title: "Basecolor — Gradient Map", expanded: true });
   colorFolder.addBinding(graph.basecolor.params, "colorA", { view: "color", label: "color A" });
   colorFolder.addBinding(graph.basecolor.params, "colorB", { view: "color", label: "color B" });
@@ -457,6 +461,11 @@ function buildTextureLayers(): void {
   const aoFolder = texturePage.addFolder({ title: "Ambient Occlusion", expanded: true });
   aoFolder.addBinding(graph.ao.params, "radius", { min: 1, max: 32, step: 1 });
   aoFolder.addBinding(graph.ao.params, "strength", { min: 0, max: 12, step: 0.1 });
+
+  const roughFolder = texturePage.addFolder({ title: "Roughness", expanded: true });
+  roughFolder.addBinding(graph.roughness.params, "min", { min: 0, max: 1, step: 0.01 });
+  roughFolder.addBinding(graph.roughness.params, "max", { min: 0, max: 1, step: 0.01 });
+  roughFolder.addBinding(graph.roughness.params, "invert");
 }
 
 // Generation folder (pinned at the top): the reversible tree code plus the structural knobs that
@@ -563,14 +572,6 @@ function buildMeshFolder(): void {
       mainScene.setMesherOptions({ smoothIterations: mesherParams.smoothIterations }),
     );
 
-  const view = { surface: true, wireframe: false };
-  folder
-    .addBinding(view, "surface", { label: "mesh surface" })
-    .on("change", (event) => mainScene.mesher.setSurfaceVisible(event.value));
-  folder
-    .addBinding(view, "wireframe", { label: "wireframe" })
-    .on("change", (event) => mainScene.mesher.setSurfaceWireframe(event.value));
-
   buildCapControls(folder);
 
   folder.addButton({ title: "Rebuild mesh" }).on("click", () => mainScene.rebuildMesh());
@@ -597,6 +598,9 @@ function buildDebugFolder(): void {
   const folder = pane.addFolder({ title: "Debug" });
 
   const debugView = {
+    surface: true,
+    wireframe: false,
+    view: "surface" as "surface" | "normals" | "uv",
     graph: true,
     helpers: true,
     discs: false,
@@ -604,6 +608,20 @@ function buildDebugFolder(): void {
     debugPoint: true,
     linePoints: false,
   };
+  // Surface visibility + wireframe overlay (moved here from the Mesh folder).
+  folder
+    .addBinding(debugView, "surface", { label: "mesh surface" })
+    .on("change", (event) => mainScene.mesher.setSurfaceVisible(event.value));
+  folder
+    .addBinding(debugView, "wireframe", { label: "wireframe" })
+    .on("change", (event) => mainScene.mesher.setSurfaceWireframe(event.value));
+  // Surface view: shaded PBR, view-space normals (normal map in action), or the UV checker.
+  folder
+    .addBinding(debugView, "view", {
+      label: "surface view",
+      options: { Surface: "surface", Normals: "normals", UV: "uv" },
+    })
+    .on("change", (event) => mainScene.mesher.setDebugView(event.value));
   folder
     .addBinding(debugView, "graph", { label: "graph" })
     .on("change", (event) => mainScene.setGraphVisible(event.value));

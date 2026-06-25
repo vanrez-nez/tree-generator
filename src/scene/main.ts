@@ -72,6 +72,7 @@ export class MainScene {
       map: channels.basecolor,
       normalMap: channels.normal,
       aoMap: channels.ao,
+      roughnessMap: channels.roughness,
     });
     this.lastMaterialSignature = this.materialGraph.signature();
 
