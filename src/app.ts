@@ -5,7 +5,15 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { FolderApi, Pane } from "tweakpane";
 import { DEFAULT_MESHER_OPTIONS, MainScene } from "./scene/main";
-import { DEFAULT_TREE_OPTIONS } from "./scene/tree";
+import { DEFAULT_SUBDIVISIONS } from "./scene/tree";
+import {
+  DEFAULT_FORM,
+  FIELDS,
+  decodeForm,
+  encodeForm,
+  randomForm,
+  type TreeForm,
+} from "./scene/tree-code";
 import type { GraphDocument } from "./scene/graph/document";
 import { GraphLine } from "./scene/graph/line";
 import type { CubicBezierCurve } from "./scene/graph/curve";
@@ -78,6 +86,51 @@ treeInfo.addBinding(mainScene.meshStats, "triangles", {
   label: "tris",
   format: (value) => value.toFixed(0),
 });
+
+// Single source of truth for the tree's form. Every form control binds to this object; the code
+// field is just a serialized view of it. `form` <-> `code` round-trips losslessly (tree-code.ts),
+// so you can read a code off a tuned tree and paste it back to reproduce that exact tree.
+const form: TreeForm = { ...DEFAULT_FORM };
+const codeState = { code: encodeForm(form) };
+let refreshCode: () => void = () => {};
+// Set while a wholesale form replacement refreshes the bound controls, so their change events
+// don't each fire a redundant commit (and re-encode) mid-update.
+let suppressFormSync = false;
+
+// Snap a binding's range to the codec grid, so dragged/typed values land exactly on values the
+// code can represent (no silent quantization surprises).
+function formRange(key: keyof TreeForm): { min: number; max: number; step: number } {
+  const field = FIELDS.find((spec) => spec.key === key);
+  if (!field) {
+    throw new Error(`No field spec for form key: ${key}`);
+  }
+  return { min: field.min, max: field.max, step: field.step };
+}
+
+// Push the live form to the scene, refresh the code readout, and rebuild the dependent panels.
+function commitForm(): void {
+  if (suppressFormSync) {
+    return;
+  }
+  codeState.code = encodeForm(form);
+  refreshCode();
+  mainScene.setTreeForm(form);
+  rebuildScenePanels();
+}
+
+// Replace the whole form at once (from a pasted code or the Random button): copy the values in,
+// refresh every bound control, then commit a single time.
+function applyForm(next: TreeForm): void {
+  Object.assign(form, next);
+  suppressFormSync = true;
+  pane.refresh();
+  suppressFormSync = false;
+  commitForm();
+}
+
+function addFormBinding(folder: FolderApi, key: keyof TreeForm, label: string): void {
+  folder.addBinding(form, key, { label, ...formRange(key) }).on("change", commitForm);
+}
 
 buildGenerationControls();
 
@@ -373,51 +426,49 @@ function rebuildScenePanels(): void {
   buildScenePanels();
 }
 
-// Generation folder (pinned at the top): structural knobs (branch/root levels + fan-out) and the
-// seed. Any change regenerates the tree and rebuilds the dependent panels so the UX follows it.
+// Generation folder (pinned at the top): the reversible tree code plus the structural knobs that
+// feed it. Editing any knob re-encodes the code; editing the code (paste) decodes back into every
+// knob. "Random" rolls a fresh code. All of it regenerates the tree and the dependent panels.
 function buildGenerationControls(): void {
   const folder = pane.addFolder({ title: "Generation", expanded: true });
 
-  const gen = {
-    seed: DEFAULT_TREE_OPTIONS.seed,
-    branchCount: DEFAULT_TREE_OPTIONS.branchCount,
-    branchLevels: DEFAULT_TREE_OPTIONS.branchLevels,
-    branchL2: DEFAULT_TREE_OPTIONS.branchSubCounts[0],
-    branchL3: DEFAULT_TREE_OPTIONS.branchSubCounts[1],
-    rootLevels: DEFAULT_TREE_OPTIONS.rootLevels,
-    rootL2: DEFAULT_TREE_OPTIONS.rootSubCounts[0],
-    rootL3: DEFAULT_TREE_OPTIONS.rootSubCounts[1],
-  };
-
-  const apply = (): void => {
-    mainScene.setTreeOptions({
-      seed: gen.seed,
-      branchCount: gen.branchCount,
-      branchLevels: gen.branchLevels,
-      branchSubCounts: [gen.branchL2, gen.branchL3],
-      rootLevels: gen.rootLevels,
-      rootSubCounts: [gen.rootL2, gen.rootL3],
-    });
-    rebuildScenePanels();
-  };
-
-  const seedBinding = folder.addBinding(gen, "seed", {
-    readonly: true,
-    format: (value) => value.toFixed(0),
-  });
-  folder.addButton({ title: "New Seed" }).on("click", () => {
-    gen.seed = Math.floor(Math.random() * 1_000_000_000);
-    seedBinding.refresh();
-    apply();
+  // The code is editable: typing/pasting a valid code reconfigures the whole tree; an invalid one
+  // is rejected and the field snaps back to the current tree's code.
+  const codeBinding = folder.addBinding(codeState, "code", { label: "code" });
+  refreshCode = () => codeBinding.refresh();
+  codeBinding.on("change", (event) => {
+    if (suppressFormSync) {
+      return;
+    }
+    const decoded = decodeForm(event.value);
+    if (!decoded) {
+      codeState.code = encodeForm(form);
+      codeBinding.refresh();
+      return;
+    }
+    applyForm(decoded);
   });
 
-  folder.addBinding(gen, "branchCount", { label: "branches", min: 0, max: 8, step: 1 }).on("change", apply);
-  folder.addBinding(gen, "branchLevels", { label: "branch levels", min: 1, max: 3, step: 1 }).on("change", apply);
-  folder.addBinding(gen, "branchL2", { label: "branch L2 fan", min: 0, max: 5, step: 1 }).on("change", apply);
-  folder.addBinding(gen, "branchL3", { label: "branch L3 fan", min: 0, max: 5, step: 1 }).on("change", apply);
-  folder.addBinding(gen, "rootLevels", { label: "root levels", min: 1, max: 3, step: 1 }).on("change", apply);
-  folder.addBinding(gen, "rootL2", { label: "root L2 fan", min: 0, max: 5, step: 1 }).on("change", apply);
-  folder.addBinding(gen, "rootL3", { label: "root L3 fan", min: 0, max: 5, step: 1 }).on("change", apply);
+  folder.addButton({ title: "Random" }).on("click", () => applyForm(randomForm()));
+
+  addFormBinding(folder, "height", "height");
+  addFormBinding(folder, "branchCount", "branches");
+  addFormBinding(folder, "branchLevels", "branch levels");
+  addFormBinding(folder, "branchL2", "branch L2 fan");
+  addFormBinding(folder, "branchL3", "branch L3 fan");
+  addFormBinding(folder, "rootLevels", "root levels");
+  addFormBinding(folder, "rootL2", "root L2 fan");
+  addFormBinding(folder, "rootL3", "root L3 fan");
+
+  // Proportions + per-level lean: shape variations that are still part of the form (and the code),
+  // tucked into a collapsed subfolder to keep the top of the panel about topology.
+  const shape = folder.addFolder({ title: "Proportions", expanded: false });
+  addFormBinding(shape, "trunkRadius", "trunk radius");
+  addFormBinding(shape, "radiusScale", "radius scale");
+  addFormBinding(shape, "tipScale", "tip scale");
+  addFormBinding(shape, "branchLean1", "lean L1 (°)");
+  addFormBinding(shape, "branchLean2", "lean L2 (°)");
+  addFormBinding(shape, "branchLean3", "lean L3 (°)");
 
   folder.addButton({ title: "Export JSON" }).on("click", () => downloadDocument(mainScene.getDocument()));
 }
@@ -433,34 +484,18 @@ function downloadDocument(doc: GraphDocument): void {
   URL.revokeObjectURL(url);
 }
 
-// Live tree controls: editing a root param rebuilds the whole tree graph (count/topology may
-// change) and refreshes the dependent panels.
+// Root form controls. These are part of the form (and therefore the code): editing one rebuilds
+// the whole tree graph (count/topology may change) and re-encodes the code.
 function buildRootControls(): void {
-  const rootParams = {
-    rootRadius: DEFAULT_TREE_OPTIONS.rootRadius,
-    rootHeight: DEFAULT_TREE_OPTIONS.rootHeight,
-    rootSeparation: DEFAULT_TREE_OPTIONS.rootSeparation,
-    rootLSmooth: DEFAULT_TREE_OPTIONS.rootLSmooth,
-    rootLength: DEFAULT_TREE_OPTIONS.rootLength,
-    rootDownAngle: DEFAULT_TREE_OPTIONS.rootDownAngle,
-    rootDownCurve: DEFAULT_TREE_OPTIONS.rootDownCurve,
-    maxRoots: DEFAULT_TREE_OPTIONS.maxRoots,
-  };
-
   const folder = pane.addFolder({ title: "Roots" });
-  folder.addBinding(rootParams, "rootRadius", { label: "radius", min: 0.02, max: 1, step: 0.01 });
-  folder.addBinding(rootParams, "rootHeight", { label: "height", min: 0, max: 0.5, step: 0.01 });
-  folder.addBinding(rootParams, "rootSeparation", { label: "separation", min: 0, max: 2, step: 0.05 });
-  folder.addBinding(rootParams, "rootLSmooth", { label: "L smooth", min: 0, max: 1, step: 0.05 });
-  folder.addBinding(rootParams, "rootLength", { label: "length", min: 0.2, max: 5, step: 0.05 });
-  folder.addBinding(rootParams, "rootDownAngle", { label: "down angle (°)", min: 0, max: 90, step: 1 });
-  folder.addBinding(rootParams, "rootDownCurve", { label: "down curve (°)", min: 0, max: 90, step: 1 });
-  folder.addBinding(rootParams, "maxRoots", { label: "max roots", min: 0, max: 24, step: 1 });
-
-  folder.on("change", () => {
-    mainScene.setTreeOptions({ ...rootParams });
-    rebuildScenePanels();
-  });
+  addFormBinding(folder, "rootRadius", "radius");
+  addFormBinding(folder, "rootHeight", "height");
+  addFormBinding(folder, "rootSeparation", "separation");
+  addFormBinding(folder, "rootLSmooth", "L smooth");
+  addFormBinding(folder, "rootLength", "length");
+  addFormBinding(folder, "rootDownAngle", "down angle (°)");
+  addFormBinding(folder, "rootDownCurve", "down curve (°)");
+  addFormBinding(folder, "maxRoots", "max roots");
 }
 
 function buildMeshControls(): void {
@@ -472,11 +507,11 @@ function buildMeshControls(): void {
 function buildMeshFolder(): void {
   const folder = pane.addFolder({ title: "Mesh" });
 
-  const meshParams = { subdivisions: DEFAULT_TREE_OPTIONS.subdivisions };
+  const meshParams = { subdivisions: DEFAULT_SUBDIVISIONS };
   folder
     .addBinding(meshParams, "subdivisions", { min: 3, max: 48, step: 1 })
     .on("change", () => {
-      mainScene.setTreeOptions({ subdivisions: meshParams.subdivisions });
+      mainScene.setSubdivisions(meshParams.subdivisions);
       rebuildScenePanels();
     });
 
@@ -602,82 +637,8 @@ function buildLineLayers(): FolderApi {
   }).folder;
 }
 
-function jointGroup(childLineId: string): "branch" | "root" | null {
-  if (childLineId.startsWith("branch")) {
-    return "branch";
-  }
-  if (childLineId.startsWith("root")) {
-    return "root";
-  }
-  return null;
-}
-
-// Branching level encoded in the line id: `branch-0` / `root-0` = 1, `branch-0-1` = 2, …
-function jointLevel(childLineId: string): number {
-  return childLineId.split("-").length - 1;
-}
-
-// One slider per group + level that drives the lean clamp of every joint at that level. The
-// constraint reads `maxLeanAngle` live each frame, so edits reshape all those forks at once.
-function buildLeanAngleControls(): FolderApi | null {
-  const seen = new Map<string, { group: string; level: number; angle: number }>();
-
-  for (const { document, joint } of mainScene.graph.getJointEntries()) {
-    const group = jointGroup(document.childLineId);
-
-    if (!group) {
-      continue;
-    }
-
-    const level = jointLevel(document.childLineId);
-    const key = `${group}-${level}`;
-
-    if (!seen.has(key)) {
-      seen.set(key, { group, level, angle: joint.maxLeanAngle });
-    }
-  }
-
-  if (seen.size === 0) {
-    return null;
-  }
-
-  const folder = jointsPage.addFolder({ title: "Lean angles", expanded: true });
-  const combos = [...seen.values()].sort(
-    (a, b) => a.group.localeCompare(b.group) || a.level - b.level,
-  );
-
-  for (const combo of combos) {
-    const state = { value: combo.angle };
-
-    folder
-      .addBinding(state, "value", {
-        label: `${combo.group} L${combo.level} (°)`,
-        min: 0,
-        max: 90,
-        step: 1,
-      })
-      .on("change", (event) => {
-        for (const { document, joint } of mainScene.graph.getJointEntries()) {
-          if (
-            jointGroup(document.childLineId) === combo.group &&
-            jointLevel(document.childLineId) === combo.level
-          ) {
-            joint.maxLeanAngle = event.value;
-          }
-        }
-      });
-  }
-
-  return folder;
-}
-
 function buildJointsPage(): FolderApi[] {
   const folders: FolderApi[] = [];
-  const leanFolder = buildLeanAngleControls();
-
-  if (leanFolder) {
-    folders.push(leanFolder);
-  }
 
   for (const { document, joint } of mainScene.graph.getJointEntries()) {
     // Collapsed by default; populate the bindings only the first time the folder is expanded,

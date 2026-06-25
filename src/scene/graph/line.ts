@@ -31,9 +31,40 @@ type LineGeometryWithInstanceCache = LineGeometry & {
 const DEBUG_POINT_RADIUS = 0.055;
 const DEBUG_POINT_SCREEN_RADIUS = 0.0047;
 
+// A line's connection to the rest of the tree. The world assembler (`VirtualLine.worldPoints`) is
+// the ONLY producer of world-space points, and it always re-bases the pivot onto `anchor()`, so a
+// line's connection point is `world[pivot] === anchor()` BY CONSTRUCTION — no modifier, jitter, or
+// generation path can break it. `restWorldOverride` lets roots supply a parent-riding shape;
+// otherwise the local authored shape is rotated by `orient()` about the pivot and placed at the
+// anchor. The trunk uses the origin attachment (anchored at world origin, no rotation).
+export interface LineAttachment {
+  pivot: number;
+  anchor(): THREE.Vector3;
+  orient(): THREE.Quaternion;
+  restWorldOverride?: () => THREE.Vector3[];
+}
+
+export const ORIGIN_ATTACHMENT: LineAttachment = {
+  pivot: 0,
+  anchor: () => new THREE.Vector3(),
+  orient: () => new THREE.Quaternion(),
+};
+
+// Per-frame memo key. `Graph.update` bumps it once per frame so every line resolves at most once,
+// and a parent pulled lazily by several children is computed a single time.
+let worldCacheFrame = 0;
+export function beginWorldFrame(): void {
+  worldCacheFrame += 1;
+}
+
 export class VirtualLine {
   modifiers: LineModifier[];
-  points: THREE.Vector3[];
+  points: THREE.Vector3[]; // LOCAL authored shape; points[pivot] is the local origin.
+  attachment: LineAttachment = ORIGIN_ATTACHMENT;
+
+  private cacheFrame = -1;
+  private cachedWorld: THREE.Vector3[] = [];
+  private cachedRest: THREE.Vector3[] = [];
 
   constructor({
     modifiers = [],
@@ -46,94 +77,102 @@ export class VirtualLine {
       : modifiers;
   }
 
+  // The single world-space producer. (1) place/override the rest shape in world, (2) apply
+  // modifiers, (3) re-base the pivot onto the anchor. Step 3 makes `world[pivot] === anchor` an
+  // algebraic identity — the structural connection guarantee.
+  worldPoints(): THREE.Vector3[] {
+    this.resolve();
+    return this.cachedWorld;
+  }
+
+  // Pre-modifier world rest, so a parent's structural heading can orient its children without being
+  // thrown off by the parent's twist/gnarl wiggle.
+  worldRestPoints(): THREE.Vector3[] {
+    this.resolve();
+    return this.cachedRest;
+  }
+
+  getDrawPoints(): THREE.Vector3[] {
+    return this.worldPoints();
+  }
+
   getPointAt(t: number): THREE.Vector3 {
-    const normalizedT = clamp01(t);
-    const transformedPoints = this.getTransformedPoints();
-
-    if (transformedPoints.length === 0) {
-      return new THREE.Vector3();
-    }
-
-    if (transformedPoints.length === 1) {
-      return transformedPoints[0].clone();
-    }
-
-    return getLinearPointAt(transformedPoints, normalizedT);
+    return sampleAt(this.worldPoints(), clamp01(t));
   }
 
   getPointAtStep(step: number, steps: number): THREE.Vector3 {
     if (steps <= 0) {
       return this.getPointAt(0);
     }
-
     return this.getPointAt(step / steps);
   }
 
-  // Samples the structural (pre-modifier) skeleton, so callers that care about a
-  // line's authored direction aren't thrown off by twist/gnarl/coil wiggle.
   getBasePointAt(t: number): THREE.Vector3 {
-    const basePoints = this.points;
-
-    if (basePoints.length === 0) {
-      return new THREE.Vector3();
-    }
-
-    if (basePoints.length === 1) {
-      return basePoints[0].clone();
-    }
-
-    return getLinearPointAt(basePoints, clamp01(t));
-  }
-
-  getDrawPoints(): THREE.Vector3[] {
-    return this.getTransformedPoints();
+    return sampleAt(this.worldRestPoints(), clamp01(t));
   }
 
   getDrawnPointForIndex(index: number): THREE.Vector3 {
-    const basePoints = this.points;
-
-    if (index < 0 || index >= basePoints.length) {
+    const shape = this.points;
+    if (index < 0 || index >= shape.length) {
       return new THREE.Vector3();
     }
-
-    const drawPoints = this.getTransformedPoints();
-
-    if (drawPoints.length === 0) {
-      return basePoints[index].clone();
+    const world = this.worldPoints();
+    if (world.length === 0) {
+      return new THREE.Vector3();
     }
-
-    if (drawPoints.length === 1) {
-      return drawPoints[0].clone();
+    if (world.length === 1) {
+      return world[0].clone();
     }
-
-    const pointTs = getPolylinePointTs(basePoints);
-
-    return getLinearPointAt(drawPoints, pointTs[index]);
+    return getLinearPointAt(world, getPolylinePointTs(shape)[index]);
   }
 
-  getTransformedPoints(): THREE.Vector3[] {
-    let transformedPoints = this.getBasePoints();
+  private resolve(): void {
+    // Set the cache key up front so an (ill-formed) cyclic attachment returns the stale buffers
+    // instead of recursing forever; well-formed trees never re-enter their own resolve.
+    if (this.cacheFrame === worldCacheFrame) {
+      return;
+    }
+    this.cacheFrame = worldCacheFrame;
 
+    const attachment = this.attachment;
+    const rest = attachment.restWorldOverride
+      ? attachment.restWorldOverride()
+      : this.placeRest(attachment);
+    this.cachedRest = rest;
+
+    let world = rest.map((point) => point.clone());
     for (const modifier of this.modifiers) {
       if (modifier.enabled) {
-        const inputPoints = transformedPoints;
-        const outputPoints = modifier.apply(inputPoints);
-        transformedPoints = applyEnvelope(inputPoints, outputPoints, modifier.envelope);
+        const input = world;
+        const output = modifier.apply(input);
+        world = applyEnvelope(input, output, modifier.envelope);
       }
     }
 
-    // Structural invariant: a line's anchor (index 0) is the vertex its joint connects to
-    // (childPointIndex is always 0). No modifier may move it, or the segment detaches from its
-    // parent. Enforced centrally here so every current and future modifier is covered.
-    if (transformedPoints.length > 0 && this.points.length > 0) {
-      transformedPoints[0] = this.points[0].clone();
+    if (world.length > 0) {
+      const pivot = Math.min(Math.max(attachment.pivot, 0), world.length - 1);
+      const delta = attachment.anchor().sub(world[pivot]);
+      for (const point of world) {
+        point.add(delta);
+      }
     }
 
-    return transformedPoints;
+    this.cachedWorld = world;
   }
 
-  private getBasePoints(): THREE.Vector3[] {
-    return this.points.map((point) => point.clone());
+  // Place the local shape in world: rotate about the pivot by orient(), pivot landing on anchor().
+  private placeRest(attachment: LineAttachment): THREE.Vector3[] {
+    const shape = this.points;
+    if (shape.length === 0) {
+      return [];
+    }
+    const pivot = Math.min(Math.max(attachment.pivot, 0), shape.length - 1);
+    const orient = attachment.orient();
+    const anchor = attachment.anchor();
+    const pivotPoint = shape[pivot];
+    return shape.map((point) =>
+      point.clone().sub(pivotPoint).applyQuaternion(orient).add(anchor),
+    );
   }
 }
 
@@ -431,6 +470,15 @@ export class GraphLine {
     return this.virtual.getBasePointAt(t);
   }
 
+  // Connection point: the world position of the pivot, which the assembler pins to the parent.
+  get attachment(): LineAttachment {
+    return this.virtual.attachment;
+  }
+
+  set attachment(attachment: LineAttachment) {
+    this.virtual.attachment = attachment;
+  }
+
   updateDrawing(camera?: THREE.Camera, viewportSize?: THREE.Vector2): void {
     this.visual.updateDrawing(camera, viewportSize);
   }
@@ -466,6 +514,16 @@ function computeGeometryHash(points: THREE.Vector3[], tube?: LineTube): number {
 
 function clamp01(value: number): number {
   return Math.min(Math.max(value, 0), 1);
+}
+
+function sampleAt(points: THREE.Vector3[], t: number): THREE.Vector3 {
+  if (points.length === 0) {
+    return new THREE.Vector3();
+  }
+  if (points.length === 1) {
+    return points[0].clone();
+  }
+  return getLinearPointAt(points, t);
 }
 
 function getLinearPointAt(points: THREE.Vector3[], t: number): THREE.Vector3 {

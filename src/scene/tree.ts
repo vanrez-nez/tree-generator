@@ -9,6 +9,7 @@ import type {
 import type { ModifierEnvelope } from "./graph/modifiers/modifier";
 import { cubicBezierEasing, type CubicBezierCurve } from "./graph/curve";
 import type { LineTubeOptions } from "./graph/line-tube";
+import type { TreeForm } from "./tree-code";
 
 // Domain layer: assembles a tree (trunk, branches, roots) as a plain line graph using the
 // generic graph primitives + modifiers. The graph engine stays tree-agnostic; all tree
@@ -16,64 +17,79 @@ import type { LineTubeOptions } from "./graph/line-tube";
 //
 // Branches and roots are recursive: an L1 limb forks off the trunk, an L2 forks off each L1,
 // an L3 off each L2 — every level connected by a (lean-constrained) joint.
+//
+// The form (everything that shapes the graph) comes from a `TreeForm` so it round-trips through
+// the reversible tree code (see tree-code.ts). Only `subdivisions` is supplied separately, as a
+// pure mesh-resolution knob that doesn't change the form. A few values that are structural
+// constants rather than "variations" stay fixed here (FIXED_PARAMS).
 
-export type TreeOptions = {
-  seed?: number; // drives layout jitter + per-limb gnarl/twist variation
-  height?: number;
-  branchCount?: number;
-  branchLevels?: number;
-  branchSubCounts?: number[]; // children per parent at branch depth 2, 3, … (fan-out)
-  rootLevels?: number; // deepest root level (1 = main roots only, 2/3 add sub-roots)
-  rootSubCounts?: number[]; // children per parent at root depth 2, 3, … (fan-out)
-  trunkRadius?: number;
-  radiusScale?: number;
-  tipScale?: number;
-  subdivisions?: number; // global mesh resolution: disc vertex count + density scale
-  levelDensity?: number[]; // relative disc-density weights per level (scaled by subdivisions)
-  branchLeanAngles?: number[];
-  rootLeanAngles?: number[];
-  // Roots (point-based, main roots only).
-  rootRadius?: number; // max disc radius at the root base (decoupled from the branch radiusScale)
-  rootHeight?: number; // trunk parameter (0..0.5) where roots attach
-  rootLength?: number; // root polyline length
-  rootDownAngle?: number; // initial tilt below horizontal (degrees), outer flare only
-  rootDownCurve?: number; // extra downward bend accumulated over the length (degrees), outer flare
-  maxRoots?: number; // cap on root count (actual = min(maxRoots, how many fit around the base))
-  rootSeparation?: number; // inner descent radial offset, relative to trunk radius (0 = centerline)
-  rootLSmooth?: number; // how rounded the base corner is (0 = sharp L, 1 = smooth)
+// Fully-resolved generation parameters consumed by the builders below.
+type TreeParams = {
+  seed: number;
+  height: number;
+  branchCount: number;
+  branchLevels: number;
+  branchSubCounts: number[]; // children per parent at branch depth 2, 3, … (fan-out)
+  rootLevels: number; // deepest root level (1 = main roots only, 2/3 add sub-roots)
+  rootSubCounts: number[]; // children per parent at root depth 2, 3, … (fan-out)
+  trunkRadius: number; // master disc radius at the trunk (everything derives from this)
+  radiusScale: number; // disc radius multiplier per branching level
+  tipScale: number; // each line's radius tapers to this fraction toward its tip
+  subdivisions: number; // global mesh resolution: disc vertex count + density scale
+  levelDensity: number[]; // relative disc-density weights per level (scaled by subdivisions)
+  branchLeanAngles: number[]; // joint lean clamp (°) by branch level L1..L3
+  rootLeanAngles: number[]; // roots stay unconstrained so they descend freely
+  rootRadius: number; // max disc radius at the root base (decoupled from the branch radiusScale)
+  rootHeight: number; // trunk parameter (0..0.5) where roots attach
+  rootLength: number; // root polyline length
+  rootDownAngle: number; // initial tilt below horizontal (degrees), outer flare only
+  rootDownCurve: number; // extra downward bend accumulated over the length (degrees), outer flare
+  maxRoots: number; // cap on root count (actual = min(maxRoots, how many fit around the base))
+  rootSeparation: number; // inner descent radial offset, relative to trunk radius (0 = centerline)
+  rootLSmooth: number; // how rounded the base corner is (0 = sharp L, 1 = smooth)
 };
 
-type TreeParams = Required<TreeOptions>;
+// Default mesh resolution. Not part of the form/code: it scales vertex density without changing
+// the tree's shape.
+export const DEFAULT_SUBDIVISIONS = 6;
 
-const DEFAULT_OPTIONS: TreeParams = {
-  seed: 1,
-  height: 4,
-  branchCount: 3,
-  branchLevels: 3,
-  branchSubCounts: [2, 1], // L2, L3 children per parent
-  rootLevels: 1, // main roots only by default; raise for sub-roots
-  rootSubCounts: [2, 1], // L2, L3 sub-roots per parent
-  trunkRadius: 0.45, // master disc radius at the trunk (everything derives from this)
-  radiusScale: 0.6, // disc radius multiplier per branching level
-  tipScale: 0.12, // each line's radius tapers to this fraction toward its tip
-  subdivisions: 6,
-  levelDensity: [16, 16, 16, 16], // relative density per level at subdivisions = SUBDIVISION_REF
-  // ^ L2 (index 2) is denser than L1: short L2 limbs lose several disks to the inside-parent cull,
-  //   so the finer spacing keeps enough alive disks contiguous for the walk to stay connected.
-  branchLeanAngles: [30, 60, 70], // joint lean clamp (°) by branch level L1..L3
-  rootLeanAngles: [90, 90, 90], // roots stay unconstrained so they descend freely
-  rootRadius: 0.53,
-  rootHeight: 0.03,
-  rootLength: 1.6,
-  rootDownAngle: 0,
-  rootDownCurve: 0,
-  maxRoots: 8,
-  rootSeparation: 0.6,
-  rootLSmooth: 0.5,
-};
+// Structural constants that aren't exposed as form variations:
+// - levelDensity: L2 (index 2) is denser than L1 because short L2 limbs lose several disks to the
+//   inside-parent cull, so finer spacing keeps enough alive disks contiguous for the walk.
+// - rootLeanAngles: roots stay unconstrained (90°) so their authored down direction is preserved.
+const FIXED_PARAMS = {
+  levelDensity: [16, 16, 16, 16],
+  rootLeanAngles: [90, 90, 90],
+} as const;
 
-// Resolved defaults, exported so the UI can initialize its controls.
-export const DEFAULT_TREE_OPTIONS: TreeParams = DEFAULT_OPTIONS;
+// Expand the flat, code-friendly form into the nested params the builders use, folding in the
+// fixed structural constants and the externally-supplied mesh resolution.
+function formToParams(form: TreeForm, subdivisions: number): TreeParams {
+  return {
+    seed: form.seed,
+    height: form.height,
+    branchCount: form.branchCount,
+    branchLevels: form.branchLevels,
+    branchSubCounts: [form.branchL2, form.branchL3],
+    rootLevels: form.rootLevels,
+    rootSubCounts: [form.rootL2, form.rootL3],
+    trunkRadius: form.trunkRadius,
+    radiusScale: form.radiusScale,
+    tipScale: form.tipScale,
+    subdivisions,
+    levelDensity: [...FIXED_PARAMS.levelDensity],
+    branchLeanAngles: [form.branchLean1, form.branchLean2, form.branchLean3],
+    rootLeanAngles: [...FIXED_PARAMS.rootLeanAngles],
+    rootRadius: form.rootRadius,
+    rootHeight: form.rootHeight,
+    rootLength: form.rootLength,
+    rootDownAngle: form.rootDownAngle,
+    rootDownCurve: form.rootDownCurve,
+    maxRoots: form.maxRoots,
+    rootSeparation: form.rootSeparation,
+    rootLSmooth: form.rootLSmooth,
+  };
+}
 
 const TUBE_OPACITY = 0.35;
 const LINEAR_TAPER: CubicBezierCurve = [0.33, 0.33, 0.66, 0.66];
@@ -533,8 +549,15 @@ function assignTubes(
   }
 }
 
-export function buildTreeDocument(options: TreeOptions = {}): GraphDocument {
-  const params: TreeParams = { ...DEFAULT_OPTIONS, ...options };
+// Build the tree graph from a form (its full shape) and a mesh resolution. Returns the document
+// plus the resolved params, so callers (RootSystem) can read the root shaping values without
+// re-deriving them. The form's `seed` drives all remaining per-limb jitter, so a given code always
+// reproduces the same tree.
+export function buildTreeDocument(
+  form: TreeForm,
+  subdivisions: number = DEFAULT_SUBDIVISIONS,
+): { document: GraphDocument; params: TreeParams } {
+  const params = formToParams(form, subdivisions);
   const rng = makeRng(params.seed);
 
   const trunk = buildTrunk(params, rng);
@@ -546,7 +569,7 @@ export function buildTreeDocument(options: TreeOptions = {}): GraphDocument {
   assignTubes(lines, joints, params);
 
   return {
-    lines,
-    joints,
+    document: { lines, joints },
+    params,
   };
 }

@@ -2,12 +2,13 @@ import * as THREE from "three";
 import type { GraphLine } from "./graph/line";
 import { rootFlareOffsets } from "./tree";
 
-// Runtime root shaping (tree domain). Each frame, every root line is rewritten as two segments:
+// Root shaping (tree domain). Each main root is a parent-riding limb whose world shape is two parts:
 //   1. an inner descent that rides the TRUNK's live drawn line from the root height down to the
 //      base, offset radially by `rootSeparation` (relative to the trunk radius) — the bulge;
 //   2. the unchanged outer flare anchored at the base corner.
-// The descent must follow the trunk at runtime because the trunk's gnarl/twist deform
-// differently at each height and can't be baked statically.
+// This shape can't be baked statically (the trunk's gnarl/twist deform differently at each height),
+// so it's supplied as a `restWorldOverride` on each root's attachment: the world assembler pulls it
+// each frame and re-bases its base onto the trunk connection point — so a root can never detach.
 
 export type RootSystemParams = {
   rootHeight: number;
@@ -30,71 +31,92 @@ export class RootSystem {
   constructor(
     private readonly trunk: GraphLine | undefined,
     rootLines: GraphLine[],
-    private params: RootSystemParams,
+    private readonly params: RootSystemParams,
   ) {
     const count = rootLines.length;
     this.roots = rootLines.map((line, index) => ({
       line,
       azimuth: count > 0 ? (index / count) * Math.PI * 2 : 0,
     }));
+
+    // Wire each main root's attachment to ride the trunk. The anchor is the trunk point at the root
+    // height; the override supplies the descent+flare shape (which starts at that same point). The
+    // assembler re-bases the base onto the anchor, guaranteeing the connection.
+    for (const entry of this.roots) {
+      entry.line.attachment = {
+        pivot: 0,
+        anchor: () => this.anchor(),
+        orient: () => new THREE.Quaternion(),
+        restWorldOverride: () => this.computeRoot(entry),
+      };
+    }
   }
 
-  setParams(params: RootSystemParams): void {
-    this.params = params;
+  // The trunk point where the roots connect (arc-fraction `rootHeight` down the trunk).
+  private anchor(): THREE.Vector3 {
+    const sampled = this.sampleTrunk();
+    return sampled
+      ? sampleByArc(sampled.points, sampled.cumulative, sampled.total, this.rootHeightFraction())
+      : new THREE.Vector3();
   }
 
-  update(): void {
-    if (!this.trunk || this.roots.length === 0) {
-      return;
+  private computeRoot(entry: RootEntry): THREE.Vector3[] {
+    const sampled = this.sampleTrunk();
+    if (!sampled) {
+      return entry.line.points.map((point) => point.clone());
     }
 
-    const trunkPoints = this.trunk.virtual.getDrawPoints();
-
-    if (trunkPoints.length < 2) {
-      return;
-    }
-
-    const cumulative = cumulativeLengths(trunkPoints);
-    const total = cumulative[cumulative.length - 1];
-
-    if (total <= 1e-6) {
-      return;
-    }
-
-    const trunkTube = this.trunk.tube;
+    const { points: trunkPoints, cumulative, total } = sampled;
+    const trunkTube = this.trunk?.tube;
     const radiusAt = (t: number): number => (trunkTube ? trunkTube.radiusAt(t) : 0);
     const p = this.params;
-    const rootHeight = THREE.MathUtils.clamp(p.rootHeight, 0, 1);
+    const rootHeight = this.rootHeightFraction();
+    const azimuth = entry.azimuth;
+    const azDir = new THREE.Vector3(Math.cos(azimuth), 0, Math.sin(azimuth));
 
-    for (const { line, azimuth } of this.roots) {
-      const azDir = new THREE.Vector3(Math.cos(azimuth), 0, Math.sin(azimuth));
-
-      // Inner descent: ride the trunk from the root height down to the base, offset radially.
-      // Separation necks in from 0 at the connecting point (step 0), so the root stays attached
-      // to the trunk there while the rest of the descent pulls out to form the bulge.
-      const inner: THREE.Vector3[] = [];
-      for (let step = 0; step <= INNER_STEPS; step += 1) {
-        const u = step / INNER_STEPS; // 0 at the trunk connection, 1 at the base
-        const t = rootHeight * (1 - u);
-        const center = sampleByArc(trunkPoints, cumulative, total, t);
-        const neck = smoothstep(Math.min(1, u / NECK_FRACTION));
-        inner.push(center.addScaledVector(azDir, p.rootSeparation * radiusAt(t) * neck));
-      }
-
-      // Outer flare anchored at the base corner (unchanged shape).
-      const corner = inner[inner.length - 1];
-      const flare = rootFlareOffsets(
-        azimuth,
-        p.rootLength,
-        p.rootDownAngle,
-        p.rootDownCurve,
-        FLARE_STEPS,
-      );
-      const outer = flare.slice(1).map((offset) => corner.clone().add(offset));
-
-      const points = [...inner, ...outer];
-      line.points = roundCorner(points, inner.length - 1, p.rootLSmooth);
+    // Inner descent: ride the trunk from the root height down to the base, offset radially.
+    // Separation necks in from 0 at the connecting point (step 0), so the root stays attached
+    // to the trunk there while the rest of the descent pulls out to form the bulge.
+    const inner: THREE.Vector3[] = [];
+    for (let step = 0; step <= INNER_STEPS; step += 1) {
+      const u = step / INNER_STEPS; // 0 at the trunk connection, 1 at the base
+      const t = rootHeight * (1 - u);
+      const center = sampleByArc(trunkPoints, cumulative, total, t);
+      const neck = smoothstep(Math.min(1, u / NECK_FRACTION));
+      inner.push(center.addScaledVector(azDir, p.rootSeparation * radiusAt(t) * neck));
     }
+
+    // Outer flare anchored at the base corner (unchanged shape).
+    const corner = inner[inner.length - 1];
+    const flare = rootFlareOffsets(
+      azimuth,
+      p.rootLength,
+      p.rootDownAngle,
+      p.rootDownCurve,
+      FLARE_STEPS,
+    );
+    const outer = flare.slice(1).map((offset) => corner.clone().add(offset));
+
+    return roundCorner([...inner, ...outer], inner.length - 1, p.rootLSmooth);
+  }
+
+  private rootHeightFraction(): number {
+    return THREE.MathUtils.clamp(this.params.rootHeight, 0, 1);
+  }
+
+  private sampleTrunk():
+    | { points: THREE.Vector3[]; cumulative: number[]; total: number }
+    | undefined {
+    if (!this.trunk) {
+      return undefined;
+    }
+    const points = this.trunk.virtual.getDrawPoints();
+    if (points.length < 2) {
+      return undefined;
+    }
+    const cumulative = cumulativeLengths(points);
+    const total = cumulative[cumulative.length - 1];
+    return total <= 1e-6 ? undefined : { points, cumulative, total };
   }
 }
 

@@ -1,7 +1,8 @@
 import * as THREE from "three";
 import { Graph } from "./graph/graph";
 import type { GraphDocument } from "./graph/document";
-import { DEFAULT_TREE_OPTIONS, buildTreeDocument, type TreeOptions } from "./tree";
+import { DEFAULT_SUBDIVISIONS, buildTreeDocument } from "./tree";
+import { DEFAULT_FORM, type TreeForm } from "./tree-code";
 import { RootSystem } from "./root-system";
 import { TreeMesher } from "./mesher/tree-mesher";
 import type { MesherOptions } from "./mesher/welding-mesher";
@@ -29,9 +30,11 @@ export class MainScene {
   // Last surface generation: build time + geometry size, surfaced in the pane's stats readout.
   readonly meshStats = { generationMs: 0, vertices: 0, triangles: 0 };
 
-  private treeOptions: TreeOptions = {};
+  // The tree's form (everything that shapes the graph) and the mesh resolution. The form
+  // round-trips through the reversible tree code; subdivisions is a pure resolution knob.
+  private form: TreeForm = { ...DEFAULT_FORM };
+  private subdivisions = DEFAULT_SUBDIVISIONS;
   private currentDocument: GraphDocument = { lines: [], joints: [] };
-  private rootSystem: RootSystem | undefined;
   private mesherOptions: MesherOptions = { ...DEFAULT_MESHER_OPTIONS };
   private discsVisible = false;
   private debugHelpers: THREE.Group | undefined;
@@ -124,9 +127,15 @@ export class MainScene {
     }
   }
 
-  // Merge new tree options and rebuild the graph from scratch (count/topology may change).
-  setTreeOptions(options: TreeOptions): void {
-    this.treeOptions = { ...this.treeOptions, ...options };
+  // Replace the tree's form and rebuild the graph from scratch (count/topology may change).
+  setTreeForm(form: TreeForm): void {
+    this.form = { ...form };
+    this.loadTree();
+  }
+
+  // Change the global mesh resolution (disc vertex count + density) and rebuild. Form is unchanged.
+  setSubdivisions(subdivisions: number): void {
+    this.subdivisions = subdivisions;
     this.loadTree();
   }
 
@@ -136,18 +145,19 @@ export class MainScene {
   }
 
   private loadTree(): void {
-    const document = buildTreeDocument(this.treeOptions);
+    const { document, params } = buildTreeDocument(this.form, this.subdivisions);
     this.currentDocument = document;
     this.graph.loadDocument(document);
     this.selectedLineId = document.lines[0]?.id ?? "trunk";
 
-    const params = { ...DEFAULT_TREE_OPTIONS, ...this.treeOptions };
     const trunk = this.graph.getLineById("trunk");
     const rootLines = this.graph
       .getLineEntries()
       .filter(({ id }) => /^root-\d+$/.test(id))
       .map(({ line }) => line);
-    this.rootSystem = new RootSystem(trunk, rootLines, params);
+    // Wire the main roots' parent-riding attachments. RootSystem is now a wiring helper, not a
+    // per-frame driver: the root lines retain it via their attachment closures and pull it lazily.
+    new RootSystem(trunk, rootLines, params);
     // Reapply the persisted disc-overlay visibility: loadTree creates fresh tubes (visible by
     // default), so without this a rebuild from any control would silently re-show the discs.
     this.applyDiscsVisibility();
@@ -198,7 +208,7 @@ export class MainScene {
   }
 
   update(_deltaTime: number, camera: THREE.Camera, viewportSize?: THREE.Vector2): void {
-    this.graph.update(camera, viewportSize, () => this.rootSystem?.update());
+    this.graph.update(camera, viewportSize);
 
     // The graph is the source of truth: react to changes in its drawn geometry, not to UI events.
     const signature = this.graph.getGeometrySignature();

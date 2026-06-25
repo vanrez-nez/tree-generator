@@ -30,11 +30,6 @@ export class Joint {
   collarT = 0;
   readonly collarPoint = new THREE.Vector3();
 
-  // The child's authored (rest) geometry. `resolve` is a pure function of this
-  // snapshot, so the lean clamp is non-destructive: relaxing `maxLeanAngle`
-  // restores the original angle instead of leaving it stuck at the clamp.
-  private readonly restChildPoints: THREE.Vector3[];
-
   constructor({
     id,
     parentLine,
@@ -51,29 +46,69 @@ export class Joint {
     this.childPointIndex = childPointIndex;
     this.maxLeanAngle = maxLeanAngle;
     this.directionPoints = directionPoints;
-    this.restChildPoints = childLine.points.map((point) => point.clone());
+
+    // Declarative connection: the child's world points are assembled relative to this anchor every
+    // frame (pull-based), so the child is structurally pinned to the parent — never mutated/drifted.
+    // `parentT`/`maxLeanAngle` are read live, so editing them reshapes the fork without re-snapshot.
+    if (this.parentLine !== this.childLine) {
+      this.childLine.attachment = {
+        pivot: this.childPointIndex,
+        anchor: () => this.anchorPoint(),
+        orient: () => this.orient(),
+      };
+    }
   }
 
-  resolve(): void {
-    if (this.parentLine === this.childLine) {
-      return;
+  // Where the child's pivot connects on the parent (the parent's centerline at `parentT`).
+  anchorPoint(): THREE.Vector3 {
+    return this.parentLine.getPointAt(THREE.MathUtils.clamp(this.parentT, 0, 1));
+  }
+
+  // Rotation applied to the child's local shape (about its pivot) so its heading stays within
+  // `maxLeanAngle` of perpendicular-to-the-parent. Identity when unconstrained or already in range.
+  // This is the former `clampRestPoints`, returning the rotation instead of mutating points.
+  orient(): THREE.Quaternion {
+    if (this.maxLeanAngle >= 90) {
+      return new THREE.Quaternion();
     }
 
-    if (!this.restChildPoints[this.childPointIndex]) {
-      return;
+    const parentDirection = this.getParentDirection();
+    if (!parentDirection) {
+      return new THREE.Quaternion();
     }
 
-    // Rebuild the child from its rest geometry every frame: clamp the
-    // orientation, then translate to connect. Because both steps derive from the
-    // untouched rest points, the clamp never accumulates.
-    const placed = this.clampRestPoints();
-    this.childLine.points = placed;
+    const childDirection = this.getChildDirection(this.childLine.points);
+    if (!childDirection) {
+      return new THREE.Quaternion();
+    }
 
-    const parentPoint = this.parentLine.getPointAt(THREE.MathUtils.clamp(this.parentT, 0, 1));
-    const childPoint = this.childLine.getDrawnPointForIndex(this.childPointIndex);
-    const delta = parentPoint.sub(childPoint);
+    const angle = Math.acos(THREE.MathUtils.clamp(parentDirection.dot(childDirection), -1, 1));
+    const lean = THREE.MathUtils.degToRad(this.maxLeanAngle);
+    const targetAngle = THREE.MathUtils.clamp(
+      angle,
+      Math.PI / 2 - lean,
+      Math.PI / 2 + lean,
+    );
 
-    this.childLine.points = placed.map((point) => point.add(delta));
+    if (Math.abs(targetAngle - angle) <= ANGLE_EPSILON) {
+      return new THREE.Quaternion();
+    }
+
+    // In-plane direction perpendicular to the parent, on the child's side.
+    const planar = childDirection
+      .clone()
+      .addScaledVector(parentDirection, -childDirection.dot(parentDirection));
+    const inPlane =
+      planar.lengthSq() > DIRECTION_EPSILON * DIRECTION_EPSILON
+        ? planar.normalize()
+        : anyPerpendicular(parentDirection);
+
+    const targetDirection = parentDirection
+      .clone()
+      .multiplyScalar(Math.cos(targetAngle))
+      .addScaledVector(inPlane, Math.sin(targetAngle));
+
+    return new THREE.Quaternion().setFromUnitVectors(childDirection, targetDirection);
   }
 
   // Compute the collar (child centerline crossing the parent tube surface) and hand the child
@@ -104,59 +139,6 @@ export class Joint {
     const collar = computeCollar(this.childLine.virtual.getDrawPoints(), surface);
     this.collarT = collar.t;
     this.collarPoint.copy(collar.point);
-  }
-
-  private clampRestPoints(): THREE.Vector3[] {
-    const rest = this.restChildPoints.map((point) => point.clone());
-
-    if (this.maxLeanAngle >= 90) {
-      return rest;
-    }
-
-    const parentDirection = this.getParentDirection();
-
-    if (!parentDirection) {
-      return rest;
-    }
-
-    const pivot = rest[this.childPointIndex];
-    const childDirection = this.getChildDirection(rest);
-
-    if (!childDirection) {
-      return rest;
-    }
-
-    const angle = Math.acos(THREE.MathUtils.clamp(parentDirection.dot(childDirection), -1, 1));
-    const lean = THREE.MathUtils.degToRad(this.maxLeanAngle);
-    const targetAngle = THREE.MathUtils.clamp(
-      angle,
-      Math.PI / 2 - lean,
-      Math.PI / 2 + lean,
-    );
-
-    if (Math.abs(targetAngle - angle) <= ANGLE_EPSILON) {
-      return rest;
-    }
-
-    // In-plane direction perpendicular to the parent, on the child's side.
-    const planar = childDirection
-      .clone()
-      .addScaledVector(parentDirection, -childDirection.dot(parentDirection));
-    const inPlane =
-      planar.lengthSq() > DIRECTION_EPSILON * DIRECTION_EPSILON
-        ? planar.normalize()
-        : anyPerpendicular(parentDirection);
-
-    const targetDirection = parentDirection
-      .clone()
-      .multiplyScalar(Math.cos(targetAngle))
-      .addScaledVector(inPlane, Math.sin(targetAngle));
-
-    const rotation = new THREE.Quaternion().setFromUnitVectors(childDirection, targetDirection);
-
-    return rest.map((point) =>
-      pivot.clone().add(point.clone().sub(pivot).applyQuaternion(rotation)),
-    );
   }
 
   // Direction the child leaves the joint, averaged over the first N base points

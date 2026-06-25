@@ -7,7 +7,7 @@ import type {
 } from "./document";
 import { FNV_OFFSET, hashInt, hashString } from "./hash";
 import { Joint } from "./joint";
-import { GraphLine, type GraphLineOptions } from "./line";
+import { beginWorldFrame, GraphLine, type GraphLineOptions } from "./line";
 import type { LineModifier } from "./modifiers/modifier";
 import { CoilModifier } from "./modifiers/coil";
 import { DiscAlignModifier } from "./modifiers/disc-align";
@@ -159,21 +159,14 @@ export class Graph {
     return hash >>> 0;
   }
 
-  // `onPositioned` runs after joints have placed everything but before junctions/draw, so a
-  // caller can reshape lines against the settled geometry (e.g. roots tracing the trunk).
-  update(
-    camera: THREE.Camera,
-    viewportSize?: THREE.Vector2,
-    onPositioned?: () => void,
-  ): void {
-    for (const { joint } of this.jointEntries) {
-      joint.resolve();
-    }
+  // World points are resolved lazily and pull-based: a child reads its parent on demand, so parents
+  // are always computed first and connectivity (`world[pivot] === parentAnchor`) holds by
+  // construction — there is no per-frame mutation of line points to get out of order.
+  update(camera: THREE.Camera, viewportSize?: THREE.Vector2): void {
+    beginWorldFrame();
 
-    onPositioned?.();
-
-    // Positions are settled: compute each junction (collar + parent-surface clip for the child
-    // tube) before drawing so child discs render already cut against the parent.
+    // Junctions first (they pull final world points and set each child tube's parent-surface clip),
+    // then draw — both reuse the per-frame world cache.
     for (const { joint } of this.jointEntries) {
       joint.resolveJunction();
     }
@@ -181,11 +174,36 @@ export class Graph {
     for (const line of this.lines) {
       line.updateDrawing(camera, viewportSize);
     }
+
+    if (import.meta.env.DEV) {
+      this.assertConnected();
+    }
+  }
+
+  // Dev-only guard on the structural invariant: every line's pivot equals its attachment anchor
+  // (a point that is, by construction, on its parent). The re-base assembler makes this impossible
+  // to fail, so a violation means someone reintroduced a code path that bypasses it.
+  private assertConnected(): void {
+    for (const { id, line } of this.getLineEntries()) {
+      const { pivot, anchor } = line.attachment;
+      const base = line.getDrawnPointForIndex(pivot);
+      const target = anchor();
+      const drift = base.distanceTo(target);
+      if (drift > 1e-3) {
+        console.error(
+          `[graph] line ${id} detached from its anchor by ${drift.toFixed(4)}: base ${formatVec(base)} ≠ anchor ${formatVec(target)}`,
+        );
+      }
+    }
   }
 
   dispose(): void {
     this.clear();
   }
+}
+
+function formatVec(v: THREE.Vector3): string {
+  return `(${v.x.toFixed(3)}, ${v.y.toFixed(3)}, ${v.z.toFixed(3)})`;
 }
 
 function createLineOptions(lineDocument: GraphLineDocument): GraphLineOptions {
