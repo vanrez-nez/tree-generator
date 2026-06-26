@@ -3,8 +3,9 @@
 Status: **testing pipeline built (§5); Phases 0–3, 6 complete & verified. Phase 4: Noise ✓, Voronoi
 (F1 Distance/Color/Position + Distance-to-Edge) ✓, Gradient ✓, Wave ✓ (F2/Smooth-F1 + Minkowski
 pending). Phase 5: group compile core ✓, editor navigation ✓, declare(params) ✓ (group-interface-edit
-UI + harness group-inlining pending). Node-family fill-in underway (Mapping ✓ + a `vec3` param type; see
-§11 for the remaining node inventory).**
+UI + harness group-inlining pending). Node-family fill-in underway (Texture Coordinate ✓, Mapping ✓
+[+ `vec3` param type], Vector Math ✓, Color family ✓ [Invert / Bright-Contrast / Hue-Sat-Val], Converter cluster ✓
+[Clamp / Separate-Combine XYZ / extended Math]; see §11 for the remaining node inventory).**
 This document is the full plan for aligning our material graph with Blender's node architecture, grounded
 in three.js / TSL / WebGPU. Reference material lives in `external/blender_nodes/` (master:
 `blender_node_system.md`; per-tree node docs under `docs/shader/`, `docs/compositor/`, `docs/texture/`).
@@ -514,17 +515,23 @@ bakes are fast. The `sRGBTransferOETF` wrap itself is trivial.
 ## 11. Node-family inventory (the grounded §4.B set — done vs missing)
 Tracks coverage of the §4.B node families beyond the phase work. ✓ = built & verified.
 
-- **Input:** Value ✓ (`constant-field`), Color ✓ (`constant-color`). **Missing:** Tex Coordinate, UV,
-  Geometry/Normal (interpolated). *Biggest remaining gap — explicit coordinate-source nodes.*
+- **Input:** Value ✓ (`constant-field`), Color ✓ (`constant-color`), **Texture Coordinate ✓**
+  (`tex-coordinate`: Generated/UV/Object/Normal). *Limitation:* only UV is real in the baked (uv-quad)
+  backend — Generated/Object/Normal are mesh-local and live-render-only, collapsing to UV when baking;
+  Generated is object-space `positionLocal`, not bbox-normalized. **Missing:** a separate UV-Map node
+  (TexCoord.uv covers it).
 - **Texture:** Noise ✓, Voronoi ✓ (F1 Distance/Color/Position + Distance-to-Edge), Gradient ✓, Wave ✓.
   **Missing:** Voronoi F2 / Smooth-F1 / Minkowski; Brick/Magic/Musgrave/Gabor (out of scope unless needed).
-- **Vector:** Mapping ✓ (point/texture/vector/normal; needs the new `vec3` param type), Bump ≈
-  `normal-from-height`. **Missing:** Vector Math, Normalize, Normal Map.
-- **Color:** Mix Color ✓ (`blend`), ColorRamp ✓. **Missing:** Invert, Bright/Contrast,
-  Hue/Saturation/Value, RGB Curves.
-- **Converter:** Math ✓ (only 6 of ~40 ops), Map Range ✓ (`levels`), Separate/Combine Color ✓
-  (`split`/`combine-channels`), RGB-to-BW ✓ (`luminance`). **Missing:** Clamp, Separate/Combine XYZ,
-  the rest of Math's operations.
+- **Vector:** Mapping ✓ (point/texture/vector/normal; uses the `vec3` param type), **Vector Math ✓**
+  (`vector-math`: 22 ops; outputs switch vector↔value via declare; Normalize is one of its ops), Bump ≈
+  `normal-from-height`. **Missing:** Normal Map.
+- **Color:** Mix Color ✓ (`blend`), ColorRamp ✓, **Invert ✓**, **Bright/Contrast ✓**,
+  **Hue/Saturation/Value ✓** (branchless TSL ports of Blender's rgb_to_hsv/hsv_to_rgb in
+  `tsl/blender-color.ts`). **Missing:** RGB Curves.
+- **Converter:** Math ✓ (now 22 ops: +divide/power/sqrt/abs/sine/cosine/tangent/arctan2/floor/ceil/
+  round/fraction/modulo/greater-than/less-than/sign), Map Range ✓ (`levels`), **Clamp ✓** (minmax/range),
+  **Separate XYZ ✓**, **Combine XYZ ✓**, Separate/Combine Color ✓ (`split`/`combine-channels`),
+  RGB-to-BW ✓ (`luminance`). **Missing:** the remaining ~18 Math ops (hyperbolic/log/compare/smoothmin…).
 - **Shader:** Principled ✓ (Subsurface/Anisotropy/Tangent not exposed — L2), Emission ✓.
   **Output:** Material Output ✓. **Group:** ✓.
 - Non-Blender outliers kept from before: `domain-warp`, `anisotropic-stripes` (no Blender equivalent).

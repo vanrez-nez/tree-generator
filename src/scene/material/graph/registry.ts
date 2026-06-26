@@ -9,9 +9,17 @@ import { mathNode } from "./nodes/math";
 import { levelsNode } from "./nodes/levels";
 import { colorRampNode } from "./nodes/color-ramp";
 import { blendNode } from "./nodes/blend";
+import { invertNode } from "./nodes/invert";
+import { brightContrastNode } from "./nodes/bright-contrast";
+import { hueSatValNode } from "./nodes/hue-sat-val";
 import { luminanceNode, splitChannelsNode, combineChannelsNode } from "./nodes/adapters";
+import { clampNode } from "./nodes/clamp";
+import { separateXyzNode, combineXyzNode } from "./nodes/xyz";
 import { constantFieldNode, constantColorNode } from "./nodes/constant";
+import { texCoordNode } from "./nodes/tex-coordinate";
+import { vectorMathNode } from "./nodes/vector-math";
 import { normalFromHeightNode } from "./nodes/normal-from-height";
+import { normalMapNode } from "./nodes/normal-map";
 import { mappingNode } from "./nodes/mapping";
 import { principledBsdfNode } from "./nodes/principled-bsdf";
 import { emissionNode } from "./nodes/emission";
@@ -70,12 +78,21 @@ export function createDefaultRegistry(): NodeRegistry {
     .register(levelsNode)
     .register(colorRampNode)
     .register(blendNode)
+    .register(invertNode)
+    .register(brightContrastNode)
+    .register(hueSatValNode)
     .register(luminanceNode)
     .register(splitChannelsNode)
     .register(combineChannelsNode)
+    .register(clampNode)
+    .register(separateXyzNode)
+    .register(combineXyzNode)
     .register(constantFieldNode)
     .register(constantColorNode)
+    .register(texCoordNode)
+    .register(vectorMathNode)
     .register(normalFromHeightNode)
+    .register(normalMapNode)
     .register(mappingNode)
     .register(principledBsdfNode)
     .register(emissionNode)

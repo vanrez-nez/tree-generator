@@ -56,7 +56,10 @@ export class ChannelBaker {
     this.quad.render(renderer);
     renderer.setRenderTarget(previous);
 
-    // WebGPU readback returns the typed array (RGBA8 bytes); no caller-supplied buffer.
+    // WebGPU readback returns the typed array (RGBA8 bytes); no caller-supplied buffer. NOTE: `size`
+    // must give 256-byte-aligned rows (i.e. a multiple of 64 px, since 64*4 = 256) — otherwise the
+    // GPU copy's per-row padding isn't accounted for here and the image comes back row-scrambled. All
+    // real callers use aligned sizes (preview 256, export BAKE_SIZE 1024); keep test sizes aligned too.
     const buffer = (await renderer.readRenderTargetPixelsAsync(rt, 0, 0, size, size)) as unknown as Uint8Array;
 
     // GPU readback is bottom-up; flip vertically into the ImageData buffer.
