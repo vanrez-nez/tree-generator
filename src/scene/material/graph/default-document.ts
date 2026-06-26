@@ -2,14 +2,15 @@ import type { MaterialGraphDocument } from "./types";
 
 // The default bark material, expressed entirely with GENERIC nodes (no wood-specific nodes):
 //   domain-warp ─▶ fbm (broad grain) ─┐
-//               └▶ anisotropic-stripes ┴▶ math(mix) = height ─▶ color-ramp  → baseColor
-//                                                            ├▶ normal-from-height → normal
-//                                                            └▶ levels (invert)    → roughness
+//               └▶ anisotropic-stripes ┴▶ math(mix) = height ─▶ color-ramp  → Base Color ┐
+//                                                            ├▶ normal-from-height → Normal ┤
+//                                                            └▶ levels (invert)    → Roughness ┘
+//                                                                          → Principled BSDF → Material Output
 // This is the "bark is just a preset" demonstration: swapping stops/counts retargets it to other
-// materials. Node positions seed the editor layout (Phase 4).
+// materials. Node positions seed the editor layout.
 export function createDefaultDocument(): MaterialGraphDocument {
   return {
-    version: 1,
+    version: 2,
     nodes: [
       {
         id: "warp",
@@ -61,10 +62,17 @@ export function createDefaultDocument(): MaterialGraphDocument {
         enabled: true,
       },
       {
-        id: "out",
-        type: "pbr-output",
+        id: "principled",
+        type: "principled-bsdf",
         params: {},
         position: { x: 1100, y: 240 },
+        enabled: true,
+      },
+      {
+        id: "out",
+        type: "material-output",
+        params: {},
+        position: { x: 1400, y: 260 },
         enabled: true,
       },
     ],
@@ -76,9 +84,10 @@ export function createDefaultDocument(): MaterialGraphDocument {
       { fromNode: "height", fromOutput: "field", toNode: "ramp", toInput: "field" },
       { fromNode: "height", fromOutput: "field", toNode: "normal", toInput: "height" },
       { fromNode: "height", fromOutput: "field", toNode: "rough", toInput: "field" },
-      { fromNode: "ramp", fromOutput: "color", toNode: "out", toInput: "baseColor" },
-      { fromNode: "normal", fromOutput: "normal", toNode: "out", toInput: "normal" },
-      { fromNode: "rough", fromOutput: "field", toNode: "out", toInput: "roughness" },
+      { fromNode: "ramp", fromOutput: "color", toNode: "principled", toInput: "baseColor" },
+      { fromNode: "normal", fromOutput: "normal", toNode: "principled", toInput: "normal" },
+      { fromNode: "rough", fromOutput: "field", toNode: "principled", toInput: "roughness" },
+      { fromNode: "principled", fromOutput: "bsdf", toNode: "out", toInput: "surface" },
     ],
   };
 }

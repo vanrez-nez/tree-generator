@@ -230,6 +230,10 @@ buildScenePanels();
 // Dockable material node editor (src/node-editor/). Opened from the Texture tab; it pads #app so the
 // 3D canvas reflows (resize is the onLayoutChange hook) while the Tweakpane remains scrollable.
 const materialEditor = new NodeEditorPanel({ appElement: app });
+// (Re)open the editor with a fresh config from the controller's active document. Passed as the rerender
+// callback so group enter/exit navigation can swap the displayed subgraph.
+const rebuildEditor = (): void =>
+  materialEditor.open(buildMaterialEditorConfig(mainScene.materialController, rebuildEditor));
 buildTextureLayers();
 
 const timer = new THREE.Timer();
@@ -276,7 +280,7 @@ if (import.meta.env.DEV) {
     __renderer: renderer,
     __camera: camera,
     __editor: materialEditor,
-    __openEditor: () => materialEditor.open(buildMaterialEditorConfig(mainScene.materialController)),
+    __openEditor: rebuildEditor,
     __baker: channelBaker,
     __savePng: saveChannelToBake,
     __bakeConfig: bakeConfigToBake,
@@ -655,7 +659,7 @@ function buildTextureLayers(): void {
   // registry. Param/toggle edits flow into the controller and recompile the surface.
   texturePage
     .addButton({ title: "Open Node Editor" })
-    .on("click", () => materialEditor.open(buildMaterialEditorConfig(mainScene.materialController)));
+    .on("click", () => rebuildEditor());
 
   // Export each PBR channel to a PNG (baked from the graph via convertToTexture readback).
   const exportFolder = texturePage.addFolder({ title: "Export PNG", expanded: false });

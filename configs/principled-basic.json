@@ -5,28 +5,28 @@
       "id": "fbm",
       "type": "fbm",
       "params": { "scale": 1.2, "octaves": 4, "lacunarity": 2, "gain": 0.5 },
-      "position": { "x": 80, "y": 120 },
+      "position": { "x": 60, "y": 120 },
       "enabled": true
     },
     {
       "id": "ramp",
       "type": "color-ramp",
-      "params": { "colorA": "#222222", "colorB": "#dddddd", "low": 0.3, "high": 0.75 },
-      "position": { "x": 380, "y": 80 },
+      "params": { "colorA": "#2a1c12", "colorB": "#b98a5a", "low": 0.25, "high": 0.8 },
+      "position": { "x": 360, "y": 80 },
       "enabled": true
     },
     {
       "id": "principled",
       "type": "principled-bsdf",
-      "params": {},
-      "position": { "x": 720, "y": 160 },
+      "params": { "metallic": 0, "roughness": 0.5 },
+      "position": { "x": 700, "y": 160 },
       "enabled": true
     },
     {
       "id": "out",
       "type": "material-output",
       "params": {},
-      "position": { "x": 1040, "y": 180 },
+      "position": { "x": 1020, "y": 180 },
       "enabled": true
     }
   ],

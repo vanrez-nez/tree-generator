@@ -212,6 +212,38 @@ ne-node .title {
   border-radius: 7px 7px 0 0;
   border-bottom: 1px solid #3a3d44;
 }
+/* Node-header colour by node class (Blender nclass convention). Overrides the neutral default above. */
+ne-node .title[data-class='input'] {
+  background: #3d5a80;
+}
+ne-node .title[data-class='texture'] {
+  background: #7a3b3b;
+}
+ne-node .title[data-class='color'] {
+  background: #8a7a3a;
+}
+ne-node .title[data-class='vector'] {
+  background: #4a4a8a;
+}
+ne-node .title[data-class='converter'] {
+  background: #3a6a6a;
+}
+ne-node .title[data-class='shader'] {
+  background: #3f7d4f;
+}
+ne-node .title[data-class='output'] {
+  background: #8a3b4a;
+}
+ne-node .title[data-class='group'] {
+  background: #2f6e6e;
+}
+ne-node .title.enterable {
+  cursor: pointer;
+}
+ne-node .title.enterable .title-text::after {
+  content: ' ⤵';
+  opacity: 0.6;
+}
 ne-node .title-text {
   flex: 1;
   overflow: hidden;
@@ -295,6 +327,71 @@ ne-node .ne-del .lucide-icon {
 .ne-palette__item:hover {
   background: #2b2f36;
 }
+/* Category headings in the grouped Add menu, tinted to match node-header families. */
+.ne-palette__group {
+  padding: 6px 8px 2px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #7f8794;
+}
+.ne-palette__group:not(:first-child) {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid #2b2f36;
+}
+.ne-palette__group[data-category='input'] {
+  color: #7a93b8;
+}
+.ne-palette__group[data-category='texture'] {
+  color: #c08a8a;
+}
+.ne-palette__group[data-category='color'] {
+  color: #c7bd86;
+}
+.ne-palette__group[data-category='vector'] {
+  color: #9090c7;
+}
+.ne-palette__group[data-category='converter'] {
+  color: #79b3b3;
+}
+.ne-palette__group[data-category='shader'] {
+  color: #86c796;
+}
+
+/* Group-navigation breadcrumb (header). */
+.ne-breadcrumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 8px;
+  font-size: 12px;
+}
+.ne-breadcrumb[hidden] {
+  display: none;
+}
+.ne-breadcrumb__crumb {
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  border-radius: 4px;
+  color: #9aa0ab;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ne-breadcrumb__crumb:hover {
+  background: #2b2f36;
+  color: #d6d9df;
+}
+.ne-breadcrumb__crumb.current {
+  color: #d6d9df;
+  font-weight: 600;
+  cursor: default;
+}
+.ne-breadcrumb__sep {
+  color: #5a606b;
+}
 ne-node .output,
 ne-node .input {
   display: flex;
@@ -327,6 +424,25 @@ ne-node .output-socket {
 }
 ne-node .input-socket {
   margin-left: calc(0px - var(--socket-size) - var(--socket-margin, 6px));
+}
+/* Socket dot colour by data type (Blender socket-colour convention). The wrapper span carries
+   data-kind and sets --ne-kind-color; we pipe it into the socket component's --socket-color. The
+   descendant selector (specificity 0,1,2) outweighs the component's own :host default (0,1,0). */
+ne-node [data-kind='float'] {
+  --ne-kind-color: #a1a1a1; /* grey */
+}
+ne-node [data-kind='vector'] {
+  --ne-kind-color: #6363c7; /* blue */
+}
+ne-node [data-kind='color'] {
+  --ne-kind-color: #c7c729; /* yellow */
+}
+ne-node [data-kind='shader'] {
+  --ne-kind-color: #63c763; /* green (future Shader socket) */
+}
+ne-node .output-socket rete-socket,
+ne-node .input-socket rete-socket {
+  --socket-color: var(--ne-kind-color, #a1a1a1);
 }
 ne-node .controls {
   padding: 0;

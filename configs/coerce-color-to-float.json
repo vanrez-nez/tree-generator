@@ -11,8 +11,8 @@
     {
       "id": "ramp",
       "type": "color-ramp",
-      "params": { "colorA": "#222222", "colorB": "#dddddd", "low": 0.3, "high": 0.75 },
-      "position": { "x": 380, "y": 80 },
+      "params": { "colorA": "#1b3a6b", "colorB": "#e0c060", "low": 0.25, "high": 0.8 },
+      "position": { "x": 380, "y": 120 },
       "enabled": true
     },
     {
@@ -32,8 +32,7 @@
   ],
   "edges": [
     { "fromNode": "fbm", "fromOutput": "field", "toNode": "ramp", "toInput": "field" },
-    { "fromNode": "ramp", "fromOutput": "color", "toNode": "principled", "toInput": "baseColor" },
-    { "fromNode": "fbm", "fromOutput": "field", "toNode": "principled", "toInput": "roughness" },
+    { "fromNode": "ramp", "fromOutput": "color", "toNode": "principled", "toInput": "roughness" },
     { "fromNode": "principled", "fromOutput": "bsdf", "toNode": "out", "toInput": "surface" }
   ]
 }

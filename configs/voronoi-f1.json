@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "nodes": [
+    {
+      "id": "vor",
+      "type": "voronoi",
+      "params": { "scale": 5, "randomness": 1, "metric": "euclidean" },
+      "position": { "x": 80, "y": 120 },
+      "enabled": true
+    },
+    {
+      "id": "principled",
+      "type": "principled-bsdf",
+      "params": {},
+      "position": { "x": 460, "y": 160 },
+      "enabled": true
+    },
+    {
+      "id": "out",
+      "type": "material-output",
+      "params": {},
+      "position": { "x": 780, "y": 180 },
+      "enabled": true
+    }
+  ],
+  "edges": [
+    { "fromNode": "vor", "fromOutput": "distance", "toNode": "principled", "toInput": "roughness" },
+    { "fromNode": "principled", "fromOutput": "bsdf", "toNode": "out", "toInput": "surface" }
+  ]
+}

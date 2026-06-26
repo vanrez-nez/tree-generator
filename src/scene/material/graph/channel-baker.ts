@@ -1,11 +1,15 @@
 import { QuadMesh, RenderTarget, MeshBasicNodeMaterial, type WebGPURenderer } from "three/webgpu";
-import { vec3 } from "three/tsl";
+import { vec3, sRGBTransferOETF } from "three/tsl";
 import { compileSockets } from "./compiler";
 import type { MaterialGraphController } from "./controller";
-import type { PbrSocket } from "./types";
+import type { MaterialValue, PbrSocket } from "./types";
 
-// Scalar-field channels are shown as grayscale; colour/normal channels render as-is.
+// Colour-management convention (plan L5 / Phase 6): the graph works in LINEAR space, and a baked PNG
+// follows texture convention — colour channels are sRGB-encoded (display), data channels stay linear.
+// Scalar-field channels render as linear grayscale; colour channels get the sRGB OETF; normal is encoded
+// vector data and stays linear/raw.
 const FIELD_CHANNELS: PbrSocket[] = ["roughness", "metallic", "ambientOcclusion"];
+const COLOR_CHANNELS: PbrSocket[] = ["baseColor", "emission"];
 
 // Renders a single material-graph channel to a 2D texture for the preview / PNG export. Compiles the
 // graph with the baked (uv) backend so each channel is a function of uv, draws it on a fullscreen
@@ -32,13 +36,18 @@ export class ChannelBaker {
     channel: PbrSocket,
     size = 512,
   ): Promise<ImageData | null> {
-    const { sockets } = compileSockets(controller.document, controller.getRegistry(), {
+    const { bundle } = compileSockets(controller.document, controller.getRegistry(), {
       backend: "baked",
     });
-    const node = sockets[channel];
+    // PBR channels are a subset of the bundle keys (ao has no Principled source → null, like Blender).
+    const node = (bundle as Partial<Record<string, MaterialValue>>)[channel];
     if (!node) return null;
 
-    this.material.colorNode = FIELD_CHANNELS.includes(channel) ? vec3(node) : node;
+    this.material.colorNode = FIELD_CHANNELS.includes(channel)
+      ? vec3(node) // linear grayscale data
+      : COLOR_CHANNELS.includes(channel)
+        ? sRGBTransferOETF(node) // sRGB-encode colour (texture/display convention)
+        : node; // normal / other: encoded vector data, leave linear
     this.material.needsUpdate = true;
 
     const rt = this.target(size);

@@ -2,8 +2,9 @@
 //
 // A MaterialGraphDocument is a serializable, id-based DAG of typed nodes. Each node type is described
 // by a MaterialNodeDef in the registry, whose build() emits TSL node-values per output. The compiler
-// (compiler.ts) topo-sorts the document and feeds the terminal `pbr-output` node's connected inputs
-// into a MeshStandardNodeMaterial (live node sockets) or convertToTexture-baked maps.
+// (compiler.ts) topo-sorts the document, resolves the Principled BSDF feeding the terminal
+// `material-output` node, and unpacks its bundle into a MeshPhysicalNodeMaterial (live node sockets) or
+// convertToTexture-baked maps.
 
 // TSL node-values are dynamically typed: DefinitelyTyped's TSL coverage is partial and the
 // ShaderNodeObject<T> variance is awkward to thread through generic graph boundaries. A documented
@@ -18,7 +19,10 @@ export type MaterialValue = any;
 //   color  -> TSL vec3     (yellow: sRGB-authored colour — basecolor, emission)
 // `field` was renamed to `float`; `normal` was folded into `vector` — Blender has no separate normal
 // socket type, a normal is just a Vector with semantics (blender-node-alignment-plan.md L3).
-export type PortKind = "float" | "vector" | "color";
+// `shader` (green) is the constrained BSDF-closure marker: only Principled BSDF / Emission emit it and
+// only Material Output consumes it (TSL has no real closure type — plan L1). It carries a MaterialBundle,
+// never a TSL value, and never coerces to/from another kind.
+export type PortKind = "float" | "vector" | "color" | "shader";
 
 export interface PortDef {
   key: string;
@@ -35,9 +39,17 @@ export type NodeClass =
   | "texture"
   | "color"
   | "vector"
-  | "converter";
+  | "converter"
+  | "group";
 
-export type ParamType = "float" | "int" | "bool" | "color" | "select";
+export type ParamType = "float" | "int" | "bool" | "color" | "select" | "vec3";
+
+// A vec3 param value (location/rotation/scale on the Mapping node). Serialized as plain {x,y,z}.
+export interface Vec3Value {
+  x: number;
+  y: number;
+  z: number;
+}
 
 export interface ParamDef {
   key: string;
@@ -70,10 +82,17 @@ export interface MaterialNodeDef {
   type: string;
   nodeClass: NodeClass;
   label: string;
+  // Static port interface. For mode-driven nodes whose ports depend on a param (e.g. Voronoi's feature),
+  // provide `declare(params)` instead — it overrides these. `inputs`/`outputs` should then list the
+  // default-param interface (used for fallbacks / palette). Resolved everywhere via registry.nodePorts.
   inputs: PortDef[];
   outputs: PortDef[];
   params: ParamDef[];
-  // Emit one TSL node-value per output port key. The terminal `pbr-output` returns {} — the compiler
+  // Optional dynamic socket declaration (Blender's declare()): compute the node's ports from its current
+  // params. When present, a param change can add/remove sockets — the controller prunes now-dangling
+  // edges and the editor reconciles. See plan L7 / Phase 5.
+  declare?(params: Record<string, unknown>): { inputs: PortDef[]; outputs: PortDef[] };
+  // Emit one TSL node-value per output port key. The terminal `material-output` returns {} — the compiler
   // reads its connected inputs directly.
   build(ctx: BuildCtx): Record<string, MaterialValue>;
 }
@@ -84,7 +103,18 @@ export interface GraphNode {
   params: Record<string, unknown>;
   position: { x: number; y: number };
   enabled: boolean;
+  // Instance-specific ports — set only on group / group-input / group-output nodes, whose interface is
+  // defined per instance rather than by a static MaterialNodeDef. Resolved via nodePorts() in registry.ts.
+  ports?: { inputs: PortDef[]; outputs: PortDef[] };
+  // A group node owns a nested document (Blender's node group). Compiled recursively by the compiler.
+  subgraph?: MaterialGraphDocument;
 }
+
+// Node-type ids for the composite (group) system. group-input / group-output are the subgraph boundary
+// markers (Blender's Group Input / Group Output). See plan L7 / Phase 5.
+export const GROUP_TYPE = "group";
+export const GROUP_INPUT_TYPE = "group-input";
+export const GROUP_OUTPUT_TYPE = "group-output";
 
 export interface GraphEdge {
   fromNode: string;
@@ -99,9 +129,11 @@ export interface MaterialGraphDocument {
   edges: GraphEdge[];
 }
 
-export const PBR_OUTPUT_TYPE = "pbr-output";
+// The terminal node (Blender's Material Output). Exactly one per graph; consumes a single shader marker.
+export const MATERIAL_OUTPUT_TYPE = "material-output";
 
-// The six PBR output sockets, in UI order. Internal keys; `baseColor` shows as "Albedo / Diffuse".
+// PBR channels the previews / channel-baker can render. Internal keys; `baseColor` shows as
+// "Albedo / Diffuse". These are a subset of the Principled BSDF inputs the compiler unpacks.
 export const PBR_SOCKETS = [
   "baseColor",
   "normal",
@@ -111,6 +143,25 @@ export const PBR_SOCKETS = [
   "ambientOcclusion",
 ] as const;
 export type PbrSocket = (typeof PBR_SOCKETS)[number];
+
+// What a shader node (Principled BSDF / Emission) bundles for Material Output, carried as the
+// `shader`-kind value — a plain object, since TSL has no closure type (plan L1). The compiler unpacks it
+// onto MeshPhysicalNodeMaterial channels. Fields are undefined when inactive (left at the renderer
+// default) so unused physical lobes (coat/sheen/transmission) don't get enabled.
+export interface MaterialBundle {
+  baseColor?: MaterialValue;
+  metallic?: MaterialValue;
+  roughness?: MaterialValue;
+  ior?: MaterialValue;
+  alpha?: MaterialValue;
+  normal?: MaterialValue;
+  emission?: MaterialValue;
+  coat?: MaterialValue;
+  coatRoughness?: MaterialValue;
+  sheen?: MaterialValue;
+  sheenRoughness?: MaterialValue;
+  transmission?: MaterialValue;
+}
 
 // --- Permissive type coercion (Blender-like) -------------------------------------------------------
 // Maps an (output kind → input kind) pair to the conversion injected at build time. Same-kind pairs are
@@ -130,6 +181,9 @@ export const COERCION_MATRIX: Record<PortKind, Partial<Record<PortKind, Coercion
   float: { float: "identity", vector: "float-to-vector", color: "float-to-color" },
   vector: { vector: "identity", float: "vector-to-float", color: "vector-to-color" },
   color: { color: "identity", float: "color-to-float", vector: "color-to-vector" },
+  // shader only connects shader→shader (Principled/Emission → Material Output); no cross-kind row, so
+  // every float/vector/color → shader (and shader → them) is rejected. Plan L1/L6.
+  shader: { shader: "identity" },
 };
 
 // How (or whether) an output kind may feed an input kind. undefined → reject the connection.

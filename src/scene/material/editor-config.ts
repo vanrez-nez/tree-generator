@@ -2,9 +2,20 @@ import { Pane } from "tweakpane";
 import type { BindingApi } from "@tweakpane/core";
 import type { EditorGraphConfig, EditorNodeConfig, EditorPaletteItem } from "../../node-editor";
 import type { MaterialGraphController } from "./graph/controller";
-import type { GraphNode, ParamDef } from "./graph/types";
+import { nodePorts } from "./graph/registry";
+import {
+  GROUP_INPUT_TYPE,
+  GROUP_OUTPUT_TYPE,
+  GROUP_TYPE,
+  type GraphNode,
+  type ParamDef,
+} from "./graph/types";
 
-const OUTPUT_TYPE = "pbr-output";
+const OUTPUT_TYPE = "material-output";
+// Nodes that can't be deleted from the canvas (terminal output + a subgraph's boundary markers).
+const UNDELETABLE = new Set([OUTPUT_TYPE, GROUP_INPUT_TYPE, GROUP_OUTPUT_TYPE]);
+// Boundary markers live only inside a subgraph — never offered in the add-node palette.
+const PALETTE_HIDDEN = new Set([OUTPUT_TYPE, GROUP_INPUT_TYPE, GROUP_OUTPUT_TYPE]);
 
 // Registry-driven adapter: turns the controller's live MaterialGraphDocument into the generic editor
 // config (material-graph-plan.md). Node ports and Tweakpane controls are generated from each node's
@@ -17,6 +28,9 @@ function bindParam(
   nodeId: string,
   param: ParamDef,
   local: Record<string, unknown>,
+  // For declare-driven nodes, called after a non-live param change so the editor re-renders with the new
+  // ports. Deferred (queueMicrotask) so the canvas rebuild doesn't dispose this Pane mid change-event.
+  onPortsMaybeChanged?: () => void,
 ): void {
   let binding: BindingApi;
   switch (param.type) {
@@ -32,6 +46,10 @@ function bindParam(
     case "bool":
       binding = pane.addBinding(local, param.key, { label: param.label });
       break;
+    case "vec3":
+      // Tweakpane renders an {x,y,z} object as a 3-field vector input.
+      binding = pane.addBinding(local, param.key, { label: param.label });
+      break;
     case "int":
     case "float":
     default:
@@ -43,7 +61,13 @@ function bindParam(
       });
       break;
   }
-  binding.on("change", (ev) => controller.setParam(nodeId, param.key, ev.value));
+  binding.on("change", (ev) => {
+    controller.setParam(nodeId, param.key, ev.value);
+    // Live (float/colour) params never change ports; only the others can drive a declare() change.
+    if (onPortsMaybeChanged && param.type !== "float" && param.type !== "color") {
+      queueMicrotask(onPortsMaybeChanged);
+    }
+  });
 }
 
 function paneMount(build: (pane: Pane) => void): (host: HTMLElement) => () => void {
@@ -55,43 +79,71 @@ function paneMount(build: (pane: Pane) => void): (host: HTMLElement) => () => vo
 }
 
 // Build the editor config for a single graph node (ports, generated controls, toggle, delete).
-function nodeToConfig(controller: MaterialGraphController, node: GraphNode): EditorNodeConfig {
-  const def = controller.getRegistry().get(node.type);
+function nodeToConfig(
+  controller: MaterialGraphController,
+  node: GraphNode,
+  rerender: () => void,
+): EditorNodeConfig {
+  const registry = controller.getRegistry();
+  const def = registry.get(node.type);
+  // A node's effective ports: instance-specific (groups) or the static def. See registry.nodePorts.
+  const ports = nodePorts(node, registry);
   // A local mirror of params (defaults filled in) the Tweakpane controls bind to; changes forward to
   // the controller.
   const local: Record<string, unknown> = {};
-  for (const p of def.params) local[p.key] = node.params[p.key] ?? p.default;
+  for (const p of def.params) {
+    const v = node.params[p.key] ?? p.default;
+    // vec3 is an object Tweakpane mutates in place — copy so edits don't alias node.params pre-commit.
+    local[p.key] = p.type === "vec3" ? { ...(v as object) } : v;
+  }
 
-  const canToggle = def.inputs.length > 0 && node.type !== OUTPUT_TYPE;
+  // Shader + output nodes aren't disable-able: bypassing a Principled/Emission would pass a raw colour
+  // (not a bundle) to Material Output and break the unpack.
+  const canToggle =
+    ports.inputs.length > 0 && def.nodeClass !== "output" && def.nodeClass !== "shader";
 
   return {
     id: node.id,
     title: def.label,
+    nodeClass: def.nodeClass,
     position: node.position,
-    inputs: def.inputs.map((p) => ({ key: p.key, label: p.label ?? p.key, kind: p.kind })),
-    outputs: def.outputs.map((p) => ({ key: p.key, label: p.label ?? p.key, kind: p.kind })),
+    inputs: ports.inputs.map((p) => ({ key: p.key, label: p.label ?? p.key, kind: p.kind })),
+    outputs: ports.outputs.map((p) => ({ key: p.key, label: p.label ?? p.key, kind: p.kind })),
     mountControls:
       def.params.length > 0
         ? paneMount((pane) => {
-            for (const p of def.params) bindParam(pane, controller, node.id, p, local);
+            for (const p of def.params)
+              bindParam(pane, controller, node.id, p, local, def.declare ? rerender : undefined);
           })
         : undefined,
     enabled: node.enabled,
     onToggle: canToggle ? (enabled) => controller.setNodeEnabled(node.id, enabled) : undefined,
-    deletable: node.type !== OUTPUT_TYPE,
+    deletable: !UNDELETABLE.has(node.type),
+    // Group nodes are enterable: double-click descends into the subgraph, then re-render the canvas.
+    onEnter:
+      node.type === GROUP_TYPE
+        ? () => {
+            if (controller.enterGroup(node.id)) rerender();
+          }
+        : undefined,
   };
 }
 
-export function buildMaterialEditorConfig(controller: MaterialGraphController): EditorGraphConfig {
+// `rerender` re-opens the editor with a fresh config — used by group enter/exit navigation, which swaps
+// the active (sub)document. Defaults to a no-op for callers that don't navigate.
+export function buildMaterialEditorConfig(
+  controller: MaterialGraphController,
+  rerender: () => void = () => {},
+): EditorGraphConfig {
   const registry = controller.getRegistry();
-  const doc = controller.document;
+  const doc = controller.activeDocument;
 
-  const nodes: EditorNodeConfig[] = doc.nodes.map((node) => nodeToConfig(controller, node));
+  const nodes: EditorNodeConfig[] = doc.nodes.map((node) => nodeToConfig(controller, node, rerender));
 
-  // Palette: every registered generic node except the terminal output.
+  // Palette: registered nodes except the terminal output and the subgraph boundary markers.
   const palette: EditorPaletteItem[] = registry
     .all()
-    .filter((def) => def.type !== OUTPUT_TYPE)
+    .filter((def) => !PALETTE_HIDDEN.has(def.type))
     .map((def) => ({ type: def.type, label: def.label, category: def.nodeClass }));
 
   const connections = doc.edges.map((e) => ({
@@ -101,10 +153,25 @@ export function buildMaterialEditorConfig(controller: MaterialGraphController): 
     toInput: e.toInput,
   }));
 
+  // Breadcrumb: Material (root) → each entered group; clicking a crumb pops back to that depth.
+  const path = controller.groupPath;
+  const breadcrumb =
+    path.length === 0
+      ? undefined
+      : [
+          { label: "Material", onClick: () => (controller.exitToDepth(0), rerender()) },
+          ...path.map((id, i) => ({
+            label: id,
+            onClick: () => (controller.exitToDepth(i + 1), rerender()),
+          })),
+        ];
+
   return {
     nodes,
     connections,
     palette,
+    breadcrumb,
+    onExit: path.length > 0 ? () => (controller.exitGroup(), rerender()) : undefined,
     // Drawing a wire validates (port kinds) + applies via the controller; false vetoes it (snap back).
     onConnect: (c) =>
       controller.connect({ fromNode: c.from, fromOutput: c.fromOutput, toNode: c.to, toInput: c.toInput }),
@@ -117,8 +184,8 @@ export function buildMaterialEditorConfig(controller: MaterialGraphController): 
       }),
     onAddNode: (type, position) => {
       const id = controller.addNode(type, position);
-      const node = controller.document.nodes.find((n) => n.id === id);
-      return node ? nodeToConfig(controller, node) : null;
+      const node = controller.activeDocument.nodes.find((n) => n.id === id);
+      return node ? nodeToConfig(controller, node, rerender) : null;
     },
     onDeleteNode: (id) => controller.removeNode(id),
   };

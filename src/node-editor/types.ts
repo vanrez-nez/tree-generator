@@ -17,6 +17,8 @@ export type EditorSocketConfig = {
 export type EditorNodeConfig = {
   id: string
   title: string
+  /** Node class — drives the header colour (e.g. Blender's nclass: input/texture/color/…). */
+  nodeClass?: string
   /** Canvas position; the editor lays nodes out from these (no auto-arrange). */
   position?: { x: number; y: number }
   inputs?: EditorSocketConfig[]
@@ -32,6 +34,8 @@ export type EditorNodeConfig = {
   onToggle?: (enabled: boolean) => void
   /** Whether the node shows a delete (×) button. Omit/false for terminal nodes (e.g. the output). */
   deletable?: boolean
+  /** Provide to make the node "enterable" (double-click) — e.g. descend into a group's subgraph. */
+  onEnter?: () => void
 }
 
 /** A node type offered in the editor's add-node palette. */
@@ -67,4 +71,8 @@ export type EditorGraphConfig = {
   onAddNode?: (type: string, position: { x: number; y: number }) => EditorNodeConfig | null
   /** Remove a node from the owner. The canvas removal is handled by the panel. */
   onDeleteNode?: (id: string) => void
+  /** Navigation trail (root → current group). Rendered as a clickable breadcrumb; omit/empty at root. */
+  breadcrumb?: { label: string; onClick: () => void }[]
+  /** Exit one navigation level (bound to Esc). Omit at the root. */
+  onExit?: () => void
 }

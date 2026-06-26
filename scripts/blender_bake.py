@@ -25,13 +25,20 @@ import os
 
 import bpy
 
-# PBR output socket keys, mirroring src/scene/material/graph/types.ts PBR_SOCKETS.
-PBR_SOCKETS = ["baseColor", "normal", "emission", "roughness", "metallic", "ambientOcclusion"]
-# Channels carried as a scalar field on our side (rendered grayscale). Used only for documentation here;
-# Blender auto-broadcasts a float into a Color input the same way our baker does vec3(node).
-FIELD_CHANNELS = {"roughness", "metallic", "ambientOcclusion"}
+# Default channels to bake = the Principled BSDF input keys we compare (mirrors the node's inputs in
+# src/scene/material/graph/nodes/principled-bsdf.ts). Only those actually wired in a config are baked.
+DEFAULT_CHANNELS = ["baseColor", "metallic", "roughness", "normal", "emission"]
+# Scalar (single-float) Principled inputs — baked grayscale; a colour feeding one is converted via RGB
+# to BW to mirror our luminance coercion.
+FIELD_CHANNELS = {
+    "metallic", "roughness", "ior", "alpha", "coat", "coatRoughness",
+    "sheen", "sheenRoughness", "transmission",
+}
 
-PBR_OUTPUT_TYPE = "pbr-output"
+MATERIAL_OUTPUT_TYPE = "material-output"
+# Shader nodes are structural here: we don't translate them to Blender nodes, we read the channel
+# sources from the (single) shader node's input edges. Mirrors plan L1 (no real closure).
+SHADER_TYPES = {"principled-bsdf", "emission"}
 
 
 def srgb_hex_to_linear_rgba(hex_str):
@@ -84,15 +91,21 @@ def build_fbm(nt, n):
     return Built(node, {"coord": node.inputs["Vector"]}, {"field": node.outputs["Fac"]})
 
 
+_VORONOI_METRIC = {"euclidean": "EUCLIDEAN", "manhattan": "MANHATTAN", "chebychev": "CHEBYCHEV"}
+
+
 def build_voronoi(nt, n):
     p = n.get("params", {})
     node = nt.nodes.new("ShaderNodeTexVoronoi")
+    node.voronoi_dimensions = "3D"
     node.feature = "F1"
-    node.distance = "EUCLIDEAN"
+    node.distance = _VORONOI_METRIC.get(str(p.get("metric", "euclidean")), "EUCLIDEAN")
+    if hasattr(node, "normalize"):
+        node.normalize = False
     node.inputs["Scale"].default_value = float(p.get("scale", 1.0))
     if "Randomness" in node.inputs:
-        node.inputs["Randomness"].default_value = float(p.get("jitter", 1.0))
-    return Built(node, {"coord": node.inputs["Vector"]}, {"field": node.outputs["Distance"]})
+        node.inputs["Randomness"].default_value = float(p.get("randomness", 1.0))
+    return Built(node, {"coord": node.inputs["Vector"]}, {"distance": node.outputs["Distance"]})
 
 
 _MATH_OPS = {
@@ -151,18 +164,35 @@ def build_color_ramp(nt, n):
     return Built(node, {"field": node.inputs["Fac"]}, {"color": node.outputs["Color"]})
 
 
+def build_constant_field(nt, n):
+    p = n.get("params", {})
+    node = nt.nodes.new("ShaderNodeValue")
+    node.outputs["Value"].default_value = float(p.get("value", 0.5))
+    return Built(node, {}, {"field": node.outputs["Value"]})
+
+
+def build_constant_color(nt, n):
+    p = n.get("params", {})
+    node = nt.nodes.new("ShaderNodeRGB")
+    node.outputs["Color"].default_value = srgb_hex_to_linear_rgba(p.get("color", "#808080"))
+    return Built(node, {}, {"color": node.outputs["Color"]})
+
+
 NODE_BUILDERS = {
     "fbm": build_fbm,
     "voronoi": build_voronoi,
     "math": build_math,
     "levels": build_levels,
     "color-ramp": build_color_ramp,
+    "constant-field": build_constant_field,
+    "constant-color": build_constant_color,
 }
 
 
 def build_graph(doc):
-    """Create a material whose node tree mirrors the doc. Returns (material, channel_sources) where
-    channel_sources maps a PBR channel -> the bpy output socket feeding it."""
+    """Create a material whose node tree mirrors the doc's value-producing nodes. The shader node
+    (Principled/Emission) and Material Output are structural — not translated — so channel_sources maps
+    a Principled input key -> the bpy output socket feeding it (the value we bake per channel)."""
     mat = bpy.data.materials.new("dual_bake")
     mat.use_nodes = True
     nt = mat.node_tree
@@ -173,10 +203,14 @@ def build_graph(doc):
 
     built = {}
     output_id = None
+    shader_ids = set()
     for n in doc.get("nodes", []):
         t = n["type"]
-        if t == PBR_OUTPUT_TYPE:
+        if t == MATERIAL_OUTPUT_TYPE:
             output_id = n["id"]
+            continue
+        if t in SHADER_TYPES:
+            shader_ids.add(n["id"])  # structural — channels are read from its input edges
             continue
         builder = NODE_BUILDERS.get(t)
         if builder is None:
@@ -187,23 +221,28 @@ def build_graph(doc):
         built[n["id"]] = builder(nt, n)
 
     if output_id is None:
-        raise RuntimeError(f"config has no '{PBR_OUTPUT_TYPE}' node")
+        raise RuntimeError(f"config has no '{MATERIAL_OUTPUT_TYPE}' node")
 
-    channel_sources = {}
+    surface_edge = next(
+        (e for e in doc.get("edges", []) if e["toNode"] == output_id and e["toInput"] == "surface"),
+        None,
+    )
+    if surface_edge is None or surface_edge["fromNode"] not in shader_ids:
+        raise RuntimeError("material-output.surface must be fed by a shader node (Principled/Emission)")
+    shader_id = surface_edge["fromNode"]
+
+    # Wire the value graph (edges between translated nodes); skip edges into the shader/output nodes.
     for e in doc.get("edges", []):
+        if e["toNode"] == output_id or e["toNode"] in shader_ids:
+            continue
         src = built.get(e["fromNode"])
-        if src is None:
+        dst = built.get(e["toNode"])
+        if src is None or dst is None:
             continue
         out_sock = src.outputs.get(e["fromOutput"])
+        in_sock = dst.inputs.get(e["toInput"])
         if out_sock is None:
             raise RuntimeError(f"node {e['fromNode']} has no mapped output '{e['fromOutput']}'")
-        if e["toNode"] == output_id:
-            channel_sources[e["toInput"]] = out_sock
-            continue
-        dst = built.get(e["toNode"])
-        if dst is None:
-            continue
-        in_sock = dst.inputs.get(e["toInput"])
         if in_sock is None:
             raise RuntimeError(f"node {e['toNode']} has no mapped input '{e['toInput']}'")
         nt.links.new(out_sock, in_sock)
@@ -213,6 +252,19 @@ def build_graph(doc):
         coord_in = b.inputs.get("coord")
         if coord_in is not None and not coord_in.is_linked:
             nt.links.new(default_uv, coord_in)
+
+    # Channel sources = the shader node's input edges, keyed by its input (= our PBR channel) name.
+    channel_sources = {}
+    for e in doc.get("edges", []):
+        if e["toNode"] != shader_id:
+            continue
+        src = built.get(e["fromNode"])
+        if src is None:
+            continue
+        out_sock = src.outputs.get(e["fromOutput"])
+        if out_sock is None:
+            raise RuntimeError(f"node {e['fromNode']} has no mapped output '{e['fromOutput']}'")
+        channel_sources[e["toInput"]] = out_sock
 
     return mat, nt, channel_sources
 
@@ -237,16 +289,35 @@ def bake_channel(nt, channel, source_sock, img, filepath):
     """Route the channel's source through an Emission shader and EMIT-bake it into img."""
     # Rebuild a clean Emission -> Output surface each time.
     for n in list(nt.nodes):
-        if n.bl_idname in ("ShaderNodeEmission", "ShaderNodeOutputMaterial"):
+        if n.bl_idname in ("ShaderNodeEmission", "ShaderNodeOutputMaterial", "ShaderNodeRGBToBW"):
             nt.nodes.remove(n)
     emit = nt.nodes.new("ShaderNodeEmission")
     out = nt.nodes.new("ShaderNodeOutputMaterial")
-    nt.links.new(source_sock, emit.inputs["Color"])  # float auto-broadcasts to grey, like vec3(node)
+
+    # Mirror our build-time coercion for scalar channels fed by a colour: our compiler converts
+    # colour -> float via luminance, so emit the grey luminance (RGB to BW) rather than the colour.
+    # (Other implicit conversions on intermediate edges — float->vector broadcast, colour<->vector —
+    #  are applied by Blender natively when the sockets are linked in build_graph.)
+    src = source_sock
+    if channel in FIELD_CHANNELS and source_sock.type == "RGBA":
+        bw = nt.nodes.new("ShaderNodeRGBToBW")
+        nt.links.new(source_sock, bw.inputs["Color"])
+        src = bw.outputs["Val"]
+    nt.links.new(src, emit.inputs["Color"])  # float auto-broadcasts to grey, like vec3(node)
     nt.links.new(emit.outputs["Emission"], out.inputs["Surface"])
 
     bpy.ops.object.bake(type="EMIT", margin=0)
 
+    # Note: the saved PNG has a fixed orientation offset vs our channel-baker (our baker samples
+    # uv=(x/W, 1-y/H); Blender's plane-UV bake lands transposed). This is cosmetic — the authoritative
+    # per-node check is the pure-JS reference cross-check (orientation-aware), not raw image overlay.
+    # Aligning the on-disk orientation here proved fiddly (bottom-up pixels + save vflip) and low-value,
+    # so it's left as-is; see blender-node-alignment-plan.md Phase 4 notes.
     scene = bpy.context.scene
+    # Colour-management convention (plan L5 / Phase 6) — match our baker: colour channels are sRGB-encoded
+    # (Standard view transform), data channels (roughness/metallic/normal/…) stay linear (Raw).
+    is_color = channel in ("baseColor", "emission")
+    scene.view_settings.view_transform = "Standard" if is_color else "Raw"
     img.filepath_raw = filepath
     img.file_format = "PNG"
     img.save_render(filepath, scene=scene)
@@ -259,7 +330,7 @@ def main():
         raise SystemExit("usage: blender_bake.py -- <config.json> <outdir> [size] [channels-csv]")
     config_path, outdir = argv[0], argv[1]
     size = int(argv[2]) if len(argv) > 2 and argv[2] else 1024
-    requested = [c for c in argv[3].split(",") if c] if len(argv) > 3 and argv[3] else PBR_SOCKETS
+    requested = [c for c in argv[3].split(",") if c] if len(argv) > 3 and argv[3] else DEFAULT_CHANNELS
 
     with open(config_path, "r") as f:
         doc = json.load(f)

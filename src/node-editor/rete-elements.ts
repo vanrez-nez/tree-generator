@@ -22,8 +22,10 @@ export class EditorNode extends ClassicPreset.Node {
   height = 0 // auto
   enabled = true
   enableable = false
+  nodeClass?: string
   onToggle?: (enabled: boolean) => void
   onDelete?: () => void
+  onEnter?: () => void
   mountControls?: (host: HTMLElement) => () => void
 }
 
@@ -133,8 +135,19 @@ export class EditorNodeElement extends LitElement {
         </button>`
       : nothing
 
+    const enterable = Boolean(this.data.onEnter)
     return html`
-      <div class="title" data-testid="title">
+      <div
+        class="title ${enterable ? 'enterable' : ''}"
+        data-testid="title"
+        data-class=${this.data.nodeClass ?? nothing}
+        title=${enterable ? 'Double-click to enter group' : nothing}
+        @dblclick=${(e: Event) => {
+          if (!this.data.onEnter) return
+          e.stopPropagation()
+          this.data.onEnter()
+        }}
+      >
         <span class="title-text">${label}</span>
         ${eye}${del}
       </div>
@@ -143,7 +156,7 @@ export class EditorNodeElement extends LitElement {
           output
             ? html`<div class="output" data-testid=${'output-' + key}>
                 <div class="output-title">${output.label}</div>
-                <span class="output-socket">
+                <span class="output-socket" data-kind=${output.socket.name ?? nothing}>
                   <rete-ref
                     .data=${{ type: 'socket', side: 'output', key, nodeId: id, payload: output.socket }}
                     .emit=${this.emit}
@@ -166,7 +179,7 @@ export class EditorNodeElement extends LitElement {
         ${inputs.map(([key, input]) =>
           input
             ? html`<div class="input" data-testid=${'input-' + key}>
-                <span class="input-socket">
+                <span class="input-socket" data-kind=${input.socket.name ?? nothing}>
                   <rete-ref
                     .data=${{ type: 'socket', side: 'input', key, nodeId: id, payload: input.socket }}
                     .emit=${this.emit}

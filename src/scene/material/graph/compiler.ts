@@ -1,17 +1,24 @@
 import * as THREE from "three";
-import { MeshStandardNodeMaterial } from "three/webgpu";
-import { positionWorld, uv, vec3, float, uniform, convertToTexture } from "three/tsl";
+import { MeshStandardNodeMaterial, MeshPhysicalNodeMaterial } from "three/webgpu";
+import { positionWorld, uv, vec3, float, uniform, convertToTexture, luminance } from "three/tsl";
 import {
-  PBR_OUTPUT_TYPE,
+  GROUP_INPUT_TYPE,
+  GROUP_OUTPUT_TYPE,
+  GROUP_TYPE,
+  MATERIAL_OUTPUT_TYPE,
+  coercionFor,
   type BuildCtx,
+  type Coercion,
   type GraphNode,
   type MaterialBackend,
+  type MaterialBundle,
   type MaterialGraphDocument,
   type MaterialNodeDef,
   type MaterialValue,
-  type PbrSocket,
+  type PortDef,
+  type PortKind,
 } from "./types";
-import type { NodeRegistry } from "./registry";
+import { nodePorts, type NodeRegistry } from "./registry";
 
 // Resolution of baked channel textures (convertToTexture render target).
 const BAKE_SIZE = 1024;
@@ -27,59 +34,115 @@ export interface CompileOptions {
 }
 
 export interface CompiledSockets {
-  sockets: Partial<Record<PbrSocket, MaterialValue>>;
+  // The Principled BSDF / Emission bundle feeding Material Output, unpacked by the consumer.
+  bundle: MaterialBundle;
   uniforms: Map<string, Record<string, MaterialValue>>;
 }
 
-// Validate + topo-sort + build every node's TSL outputs, returning the terminal pbr-output node's
-// connected channel nodes (and per-node uniforms). Shared by compileGraph (material) and the channel
+// Validate + topo-sort + build every node's TSL outputs, returning the MaterialBundle the shader node
+// feeds into Material Output (and per-node uniforms). Shared by compileGraph (material) and the channel
 // baker (PNG export / 2D preview).
 export function compileSockets(
   doc: MaterialGraphDocument,
   registry: NodeRegistry,
   opts: CompileOptions,
 ): CompiledSockets {
-  validate(doc, registry);
-  const order = topoSort(doc);
-  const byId = new Map(doc.nodes.map((n) => [n.id, n]));
-
-  // Domain: 3D world position (live, seamless) or a 2D uv slice (baked, tileable into a texture).
+  // Domain: 3D world position (live, seamless) or a 2D uv slice (baked). Shared by every (sub)document.
   const coord: MaterialValue =
     opts.backend === "live" ? positionWorld : vec3(uv().x, uv().y, float(0));
+  const { outputs, uniforms } = compileDocument(doc, registry, opts, coord);
+  return { bundle: resolveBundle(doc, registry, outputs), uniforms };
+}
 
+interface CompiledDocument {
+  outputs: Map<string, Record<string, MaterialValue>>;
+  uniforms: Map<string, Record<string, MaterialValue>>;
+}
+
+// Compile one document's nodes to per-node TSL outputs (topo order). `seededInputs` is present only for
+// a group's subgraph: it supplies the Group Input node's outputs (the external values fed into the
+// group). Group nodes recurse via compileGroup.
+function compileDocument(
+  doc: MaterialGraphDocument,
+  registry: NodeRegistry,
+  opts: CompileOptions,
+  coord: MaterialValue,
+  seededInputs?: Record<string, MaterialValue | undefined>,
+): CompiledDocument {
+  validate(doc, registry, seededInputs !== undefined);
+  const order = topoSort(doc);
+  const byId = new Map(doc.nodes.map((n) => [n.id, n]));
   const outputsByNode = new Map<string, Record<string, MaterialValue>>();
   const uniformsByNode = new Map<string, Record<string, MaterialValue>>();
 
   for (const id of order) {
     const node = byId.get(id);
     if (!node) continue;
-    const def = registry.get(node.type);
-    const inputs = resolveInputs(node, def, doc, outputsByNode);
+    const ports = nodePorts(node, registry);
 
-    // Disabled chain nodes pass their first input through (preserves the on/off bypass semantics).
-    if (!node.enabled && def.inputs.length > 0) {
-      outputsByNode.set(id, bypassOutputs(def, inputs));
+    if (node.type === GROUP_INPUT_TYPE) {
+      // This node's outputs are the external inputs fed into the subgraph (seeded by the parent group).
+      const out: Record<string, MaterialValue> = {};
+      for (const p of ports.outputs) out[p.key] = seededInputs?.[p.key];
+      outputsByNode.set(id, out);
+      continue;
+    }
+    if (node.type === GROUP_TYPE) {
+      const ext = resolveInputs(node, doc, outputsByNode, byId, registry);
+      outputsByNode.set(id, compileGroup(node, registry, opts, coord, ext));
       continue;
     }
 
+    const inputs = resolveInputs(node, doc, outputsByNode, byId, registry);
+    // Disabled chain nodes pass their first input through (preserves the on/off bypass semantics).
+    if (!node.enabled && ports.inputs.length > 0) {
+      outputsByNode.set(id, bypassOutputs(ports, inputs));
+      continue;
+    }
+    const def = registry.get(node.type);
     const uniforms = buildUniforms(def, node);
     uniformsByNode.set(id, uniforms);
     const ctx: BuildCtx = { inputs, uniforms, params: node.params, coord, backend: opts.backend };
     outputsByNode.set(id, def.build(ctx));
   }
 
-  return { sockets: resolveOutputSockets(doc, registry, outputsByNode), uniforms: uniformsByNode };
+  return { outputs: outputsByNode, uniforms: uniformsByNode };
 }
 
-// Compile a document into a MeshStandardNodeMaterial. Feeds the terminal pbr-output node's connected
-// inputs into the material — as live node sockets, or convertToTexture baked maps.
+// Compile a group node: run its subgraph with the group's external inputs seeded into the Group Input
+// node, then read the Group Output node's inputs back as the group's outputs. Recursion handles nesting.
+function compileGroup(
+  groupNode: GraphNode,
+  registry: NodeRegistry,
+  opts: CompileOptions,
+  coord: MaterialValue,
+  externalInputs: Record<string, MaterialValue | undefined>,
+): Record<string, MaterialValue> {
+  const sub = groupNode.subgraph;
+  if (!sub) return {};
+  const { outputs } = compileDocument(sub, registry, opts, coord, externalInputs);
+  const goNode = sub.nodes.find((n) => n.type === GROUP_OUTPUT_TYPE);
+  const result: Record<string, MaterialValue> = {};
+  if (!goNode) return result;
+  const subById = new Map(sub.nodes.map((n) => [n.id, n]));
+  for (const p of nodePorts(goNode, registry).inputs) {
+    const edge = sub.edges.find((e) => e.toNode === goNode.id && e.toInput === p.key);
+    result[p.key] = edge ? resolveEdgeValue(edge, p.kind, outputs, subById, registry) : undefined;
+  }
+  return result;
+}
+
+// Compile a document into a MeshPhysicalNodeMaterial. Resolves the Principled BSDF / Emission bundle
+// feeding Material Output and unpacks it onto the material's channels — as live node sockets, or
+// convertToTexture baked maps. (Physical is a subclass of Standard, so it satisfies the surface
+// material contract used by the mesher; plan L1/L2.)
 export function compileGraph(
   doc: MaterialGraphDocument,
   registry: NodeRegistry,
   opts: CompileOptions,
 ): CompiledMaterial {
-  const { sockets, uniforms: uniformsByNode } = compileSockets(doc, registry, opts);
-  const material = new MeshStandardNodeMaterial({
+  const { bundle, uniforms: uniformsByNode } = compileSockets(doc, registry, opts);
+  const material = new MeshPhysicalNodeMaterial({
     metalness: 0,
     roughness: 0.9,
     side: THREE.DoubleSide,
@@ -94,36 +157,88 @@ export function compileGraph(
   const wrap = (n: MaterialValue): MaterialValue =>
     opts.backend === "baked" ? convertToTexture(n, BAKE_SIZE, BAKE_SIZE) : n;
 
-  if (sockets.baseColor) material.colorNode = wrap(sockets.baseColor);
-  if (sockets.emission) material.emissiveNode = wrap(sockets.emission);
-  if (sockets.roughness) material.roughnessNode = wrap(sockets.roughness);
-  if (sockets.metallic) material.metalnessNode = wrap(sockets.metallic);
-  if (sockets.ambientOcclusion) material.aoNode = wrap(sockets.ambientOcclusion);
-  if (sockets.normal) material.normalNode = sockets.normal;
+  // Core channels (mirror MeshStandard).
+  if (bundle.baseColor) material.colorNode = wrap(bundle.baseColor);
+  if (bundle.emission) material.emissiveNode = wrap(bundle.emission);
+  if (bundle.roughness) material.roughnessNode = wrap(bundle.roughness);
+  if (bundle.metallic) material.metalnessNode = wrap(bundle.metallic);
+  if (bundle.normal) material.normalNode = bundle.normal;
+  // Physical channels — only present when the Principled lobe is active, so unused lobes stay disabled.
+  if (bundle.ior) material.iorNode = bundle.ior;
+  if (bundle.alpha) {
+    material.opacityNode = bundle.alpha;
+    material.transparent = true;
+  }
+  if (bundle.coat) material.clearcoatNode = bundle.coat;
+  if (bundle.coatRoughness) material.clearcoatRoughnessNode = bundle.coatRoughness;
+  if (bundle.sheen) material.sheenNode = bundle.sheen; // float weight; three wraps as vec3 (grey sheen)
+  if (bundle.sheenRoughness) material.sheenRoughnessNode = bundle.sheenRoughness;
+  if (bundle.transmission) material.transmissionNode = bundle.transmission;
 
   return { material, uniforms: uniformsByNode };
 }
 
 function resolveInputs(
   node: GraphNode,
-  def: MaterialNodeDef,
   doc: MaterialGraphDocument,
   outputs: Map<string, Record<string, MaterialValue>>,
+  byId: Map<string, GraphNode>,
+  registry: NodeRegistry,
 ): Record<string, MaterialValue | undefined> {
   const ins: Record<string, MaterialValue | undefined> = {};
-  for (const port of def.inputs) {
+  for (const port of nodePorts(node, registry).inputs) {
     const edge = doc.edges.find((e) => e.toNode === node.id && e.toInput === port.key);
-    ins[port.key] = edge ? outputs.get(edge.fromNode)?.[edge.fromOutput] : undefined;
+    ins[port.key] = edge ? resolveEdgeValue(edge, port.kind, outputs, byId, registry) : undefined;
   }
   return ins;
 }
 
+// Fetch an edge's upstream TSL value, coerced to the target input kind. Permissive linking: when the
+// upstream output kind differs, inject the matching coercion (validate() guarantees one exists). Shared
+// by every typed input — intermediate nodes AND the terminal pbr-output channels. See plan L6.
+function resolveEdgeValue(
+  edge: { fromNode: string; fromOutput: string },
+  targetKind: PortKind,
+  outputs: Map<string, Record<string, MaterialValue>>,
+  byId: Map<string, GraphNode>,
+  registry: NodeRegistry,
+): MaterialValue | undefined {
+  let value = outputs.get(edge.fromNode)?.[edge.fromOutput];
+  if (value === undefined) return undefined;
+  const fromNode = byId.get(edge.fromNode);
+  const outKind = fromNode
+    ? nodePorts(fromNode, registry).outputs.find((p) => p.key === edge.fromOutput)?.kind
+    : undefined;
+  if (outKind && outKind !== targetKind) {
+    const conv = coercionFor(outKind, targetKind);
+    if (conv) value = coerce(value, conv);
+  }
+  return value;
+}
+
+// Apply a port-kind coercion to a TSL value. Mirrors Blender's implicit socket conversions (L6).
+function coerce(value: MaterialValue, conversion: Coercion): MaterialValue {
+  switch (conversion) {
+    case "float-to-vector":
+    case "float-to-color":
+      return vec3(value); // broadcast x -> (x, x, x)
+    case "vector-to-float":
+      return value.x.add(value.y).add(value.z).div(3); // average of components
+    case "color-to-float":
+      return luminance(value); // rgb -> bw
+    case "identity":
+    case "vector-to-color": // both are vec3 — reinterpret channels
+    case "color-to-vector":
+      return value;
+  }
+}
+
 function bypassOutputs(
-  def: MaterialNodeDef,
+  ports: { inputs: PortDef[]; outputs: PortDef[] },
   inputs: Record<string, MaterialValue | undefined>,
 ): Record<string, MaterialValue> {
-  const firstIn = def.inputs[0];
-  const firstOut = def.outputs[0];
+  const firstIn = ports.inputs[0];
+  const firstOut = ports.outputs[0];
   if (firstIn && firstOut && inputs[firstIn.key] !== undefined) {
     return { [firstOut.key]: inputs[firstIn.key] };
   }
@@ -136,6 +251,9 @@ function buildUniforms(def: MaterialNodeDef, node: GraphNode): Record<string, Ma
     const raw = node.params[p.key] ?? p.default;
     if (p.type === "color") {
       out[p.key] = uniform(new THREE.Color(raw as THREE.ColorRepresentation));
+    } else if (p.type === "vec3") {
+      const v = (raw ?? { x: 0, y: 0, z: 0 }) as { x: number; y: number; z: number };
+      out[p.key] = uniform(new THREE.Vector3(v.x, v.y, v.z));
     } else if (p.type === "float" || p.type === "int") {
       out[p.key] = uniform(Number(raw));
     }
@@ -144,20 +262,21 @@ function buildUniforms(def: MaterialNodeDef, node: GraphNode): Record<string, Ma
   return out;
 }
 
-function resolveOutputSockets(
+// The bundle feeding Material Output's Surface input. The shader node (Principled/Emission) emitted a
+// MaterialBundle as its `shader`-kind output; resolveEdgeValue passes it through (shader→shader is
+// identity, never coerced). Returns {} when nothing is wired to Surface.
+function resolveBundle(
   doc: MaterialGraphDocument,
   registry: NodeRegistry,
   outputs: Map<string, Record<string, MaterialValue>>,
-): Partial<Record<PbrSocket, MaterialValue>> {
-  const outNode = doc.nodes.find((n) => n.type === PBR_OUTPUT_TYPE);
-  const sockets: Partial<Record<PbrSocket, MaterialValue>> = {};
-  if (!outNode) return sockets;
-  const def = registry.get(outNode.type);
-  for (const port of def.inputs) {
-    const edge = doc.edges.find((e) => e.toNode === outNode.id && e.toInput === port.key);
-    if (edge) sockets[port.key as PbrSocket] = outputs.get(edge.fromNode)?.[edge.fromOutput];
-  }
-  return sockets;
+): MaterialBundle {
+  const outNode = doc.nodes.find((n) => n.type === MATERIAL_OUTPUT_TYPE);
+  if (!outNode) return {};
+  const edge = doc.edges.find((e) => e.toNode === outNode.id && e.toInput === "surface");
+  if (!edge) return {};
+  const byId = new Map(doc.nodes.map((n) => [n.id, n]));
+  const value = resolveEdgeValue(edge, "shader", outputs, byId, registry);
+  return (value as MaterialBundle | undefined) ?? {};
 }
 
 function topoSort(doc: MaterialGraphDocument): string[] {
@@ -184,10 +303,12 @@ function topoSort(doc: MaterialGraphDocument): string[] {
   return order;
 }
 
-function validate(doc: MaterialGraphDocument, registry: NodeRegistry): void {
-  const outputs = doc.nodes.filter((n) => n.type === PBR_OUTPUT_TYPE);
-  if (outputs.length !== 1) {
-    throw new Error(`Expected exactly one ${PBR_OUTPUT_TYPE} node, found ${outputs.length}`);
+function validate(doc: MaterialGraphDocument, registry: NodeRegistry, isSubgraph = false): void {
+  // The top-level document ends in Material Output; a group's subgraph ends in Group Output.
+  const terminalType = isSubgraph ? GROUP_OUTPUT_TYPE : MATERIAL_OUTPUT_TYPE;
+  const terms = doc.nodes.filter((n) => n.type === terminalType);
+  if (terms.length !== 1) {
+    throw new Error(`Expected exactly one ${terminalType} node, found ${terms.length}`);
   }
   const byId = new Map(doc.nodes.map((n) => [n.id, n]));
   const seenInput = new Set<string>();
@@ -196,13 +317,13 @@ function validate(doc: MaterialGraphDocument, registry: NodeRegistry): void {
     const to = byId.get(e.toNode);
     if (!from) throw new Error(`Edge from unknown node '${e.fromNode}'`);
     if (!to) throw new Error(`Edge to unknown node '${e.toNode}'`);
-    const outPort = registry.get(from.type).outputs.find((p) => p.key === e.fromOutput);
-    const inPort = registry.get(to.type).inputs.find((p) => p.key === e.toInput);
+    const outPort = nodePorts(from, registry).outputs.find((p) => p.key === e.fromOutput);
+    const inPort = nodePorts(to, registry).inputs.find((p) => p.key === e.toInput);
     if (!outPort) throw new Error(`Node '${from.type}' has no output '${e.fromOutput}'`);
     if (!inPort) throw new Error(`Node '${to.type}' has no input '${e.toInput}'`);
-    if (outPort.kind !== inPort.kind) {
+    if (outPort.kind !== inPort.kind && !coercionFor(outPort.kind, inPort.kind)) {
       throw new Error(
-        `Type mismatch: ${from.type}.${e.fromOutput} (${outPort.kind}) -> ${to.type}.${e.toInput} (${inPort.kind})`,
+        `Type mismatch (no coercion): ${from.type}.${e.fromOutput} (${outPort.kind}) -> ${to.type}.${e.toInput} (${inPort.kind})`,
       );
     }
     const inputKey = `${e.toNode}/${e.toInput}`;

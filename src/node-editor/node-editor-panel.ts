@@ -91,6 +91,8 @@ export class NodeEditorPanel {
   // Add-node palette (button + dropdown menu); populated per-config in populatePalette.
   private readonly paletteWrap: HTMLDivElement
   private readonly paletteMenu: HTMLDivElement
+  // Group navigation trail (root → current group); hidden at the root.
+  private readonly breadcrumb: HTMLDivElement
 
   private editor: NodeEditor<Schemes> | null = null
   private area: AreaPlugin<Schemes, AreaExtra> | null = null
@@ -128,6 +130,20 @@ export class NodeEditorPanel {
     title.className = 'ne-header__title'
     title.textContent = 'Material'
     header.appendChild(title)
+
+    // Breadcrumb trail for group navigation (populated per config; hidden at the root).
+    this.breadcrumb = document.createElement('div')
+    this.breadcrumb.className = 'ne-breadcrumb'
+    this.breadcrumb.hidden = true
+    header.appendChild(this.breadcrumb)
+    // Esc exits one group level.
+    document.addEventListener('keydown', (e) => {
+      if (!this.open_ || e.key !== 'Escape' || !this.config?.onExit) return
+      const t = e.target as HTMLElement | null
+      if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return
+      e.preventDefault()
+      this.config.onExit()
+    })
 
     // Add-node palette: a button toggling a menu of node types (filled per config in populatePalette).
     this.paletteWrap = document.createElement('div')
@@ -227,11 +243,12 @@ export class NodeEditorPanel {
     return this.open_
   }
 
-  open(config: EditorGraphConfig, mode: DockMode = 'bottom'): void {
+  open(config: EditorGraphConfig, mode?: DockMode): void {
     this.root.hidden = false
     this.open_ = true
     this.appElement.classList.add('editor-open')
-    this.applyDock(mode)
+    // Keep the current dock when re-opening (e.g. group navigation re-renders); default to bottom.
+    this.applyDock(mode ?? this.mode)
     void this.rebuild(config)
   }
 
@@ -472,6 +489,7 @@ export class NodeEditorPanel {
       byId.set(def.id, node)
     }
     this.populatePalette(config)
+    this.populateBreadcrumb(config)
 
     for (const c of config.connections) {
       const from = byId.get(c.from) as ClassicPreset.Node | undefined
@@ -538,11 +556,13 @@ export class NodeEditorPanel {
     const editor = this.editor!
     const area = this.area!
     const node = new EditorNode(def.title)
+    node.nodeClass = def.nodeClass
     node.enabled = def.enabled ?? true
     node.enableable = Boolean(def.onToggle)
     node.onToggle = def.onToggle
     node.onDelete =
       def.deletable && this.config?.onDeleteNode ? () => void this.deleteNode(def.id, node.id) : undefined
+    node.onEnter = def.onEnter
     node.mountControls = def.mountControls
 
     for (const input of def.inputs ?? []) {
@@ -598,22 +618,60 @@ export class NodeEditorPanel {
     return { x: (rect.width / 2 - x) / k, y: (rect.height / 2 - y) / k }
   }
 
-  // (Re)build the palette menu items from the config. Hidden when no palette/onAddNode is supplied.
+  // (Re)build the group-navigation breadcrumb. Hidden at the root (no trail).
+  private populateBreadcrumb(config: EditorGraphConfig): void {
+    const trail = config.breadcrumb ?? []
+    this.breadcrumb.replaceChildren()
+    this.breadcrumb.hidden = trail.length === 0
+    trail.forEach((crumb, i) => {
+      if (i > 0) {
+        const sep = document.createElement('span')
+        sep.className = 'ne-breadcrumb__sep'
+        sep.textContent = '›'
+        this.breadcrumb.appendChild(sep)
+      }
+      const btn = document.createElement('button')
+      btn.className = 'ne-breadcrumb__crumb'
+      btn.textContent = crumb.label
+      if (i === trail.length - 1) btn.classList.add('current')
+      btn.addEventListener('click', () => crumb.onClick())
+      this.breadcrumb.appendChild(btn)
+    })
+  }
+
+  // (Re)build the palette menu items from the config, grouped by category (the node class) into labelled
+  // sections — mirroring Blender's Add menu. Hidden when no palette/onAddNode is supplied.
   private populatePalette(config: EditorGraphConfig): void {
     const canAdd = Boolean(config.onAddNode && config.palette && config.palette.length > 0)
     this.paletteWrap.hidden = !canAdd
     this.paletteMenu.replaceChildren()
     if (!canAdd) return
+
+    // Group preserving the order categories first appear; uncategorised items fall under "Other".
+    const groups = new Map<string, EditorGraphConfig['palette'] & object>()
     for (const item of config.palette!) {
-      const btn = document.createElement('button')
-      btn.className = 'ne-palette__item'
-      btn.textContent = item.label
-      if (item.category) btn.dataset.category = item.category
-      btn.addEventListener('click', () => {
-        this.paletteMenu.hidden = true
-        void this.addPaletteNode(item.type)
-      })
-      this.paletteMenu.appendChild(btn)
+      const key = item.category ?? 'other'
+      if (!groups.has(key)) groups.set(key, [])
+      groups.get(key)!.push(item)
+    }
+
+    for (const [category, items] of groups) {
+      const heading = document.createElement('div')
+      heading.className = 'ne-palette__group'
+      heading.dataset.category = category
+      heading.textContent = category
+      this.paletteMenu.appendChild(heading)
+      for (const item of items) {
+        const btn = document.createElement('button')
+        btn.className = 'ne-palette__item'
+        btn.textContent = item.label
+        btn.dataset.category = category
+        btn.addEventListener('click', () => {
+          this.paletteMenu.hidden = true
+          void this.addPaletteNode(item.type)
+        })
+        this.paletteMenu.appendChild(btn)
+      }
     }
   }
 
