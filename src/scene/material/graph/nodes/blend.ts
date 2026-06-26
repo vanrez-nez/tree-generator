@@ -5,12 +5,12 @@ import type { MaterialNodeDef } from "../types";
 // old gradient-map.ts hardcoded per-feature (moss / exposed-wood overlays become separate Blend layers).
 export const blendNode: MaterialNodeDef = {
   type: "blend",
-  category: "color",
+  nodeClass: "color",
   label: "Blend",
   inputs: [
     { key: "a", label: "base", kind: "color" },
     { key: "b", label: "over", kind: "color" },
-    { key: "mask", kind: "field" },
+    { key: "mask", kind: "float" },
   ],
   outputs: [{ key: "color", kind: "color" }],
   params: [

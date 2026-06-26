@@ -6,12 +6,12 @@ import type { MaterialNodeDef } from "../types";
 // `octaves` drives a JS-side loop unroll so it is read raw (not as a dynamic uniform).
 export const fbmNode: MaterialNodeDef = {
   type: "fbm",
-  category: "generator",
+  nodeClass: "texture",
   label: "FBM Field",
   // Optional `coord` input lets a Domain Warp (or any vector source) drive the domain; unconnected, it
   // falls back to the global coordinate (positionWorld live / uv-slice baked).
   inputs: [{ key: "coord", kind: "vector" }],
-  outputs: [{ key: "field", kind: "field" }],
+  outputs: [{ key: "field", kind: "float" }],
   params: [
     { key: "scale", label: "scale", type: "float", min: 0.1, max: 8, step: 0.05, default: 1.2 },
     { key: "octaves", label: "octaves", type: "int", min: 1, max: 8, step: 1, default: 4 },

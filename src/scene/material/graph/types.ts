@@ -12,18 +12,30 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type MaterialValue = any;
 
-// Port kinds map onto TSL value types:
-//   field  -> float  (linear scalar: height, masks, roughness, AO, metallic)
-//   color  -> vec3   (sRGB-authored colour: basecolor, emission)
-//   normal -> vec3   (encoded tangent/world normal)
-//   vector -> vec2/vec3 (coordinate domains, warp offsets, flow fields)
-export type PortKind = "field" | "color" | "normal" | "vector";
+// Port kinds map onto TSL value types, mirroring Blender's shader-relevant socket types + colours:
+//   float  -> TSL float    (grey:   scalars — height, masks, roughness, AO, metallic)
+//   vector -> TSL vec2/3   (blue:   coordinate domains, warp offsets, flow fields, normals)
+//   color  -> TSL vec3     (yellow: sRGB-authored colour — basecolor, emission)
+// `field` was renamed to `float`; `normal` was folded into `vector` — Blender has no separate normal
+// socket type, a normal is just a Vector with semantics (blender-node-alignment-plan.md L3).
+export type PortKind = "float" | "vector" | "color";
 
 export interface PortDef {
   key: string;
   label?: string;
   kind: PortKind;
 }
+
+// Blender node classes (nclass). Drives Add-menu grouping and node-header colour (consumed in Phase 1).
+// Grounded subset from blender-node-alignment-plan.md §4.
+export type NodeClass =
+  | "input"
+  | "output"
+  | "shader"
+  | "texture"
+  | "color"
+  | "vector"
+  | "converter";
 
 export type ParamType = "float" | "int" | "bool" | "color" | "select";
 
@@ -56,7 +68,7 @@ export interface BuildCtx {
 
 export interface MaterialNodeDef {
   type: string;
-  category: "generator" | "filter" | "adapter" | "color" | "output";
+  nodeClass: NodeClass;
   label: string;
   inputs: PortDef[];
   outputs: PortDef[];
@@ -99,3 +111,28 @@ export const PBR_SOCKETS = [
   "ambientOcclusion",
 ] as const;
 export type PbrSocket = (typeof PBR_SOCKETS)[number];
+
+// --- Permissive type coercion (Blender-like) -------------------------------------------------------
+// Maps an (output kind → input kind) pair to the conversion injected at build time. Same-kind pairs are
+// "identity"; listed cross-kind pairs are allowed and coerced; unlisted pairs are rejected on connect.
+// Consumed in Phase 2 (controller.connect veto, compiler.validate, build-time injection) — data only
+// for now. `shader`, when added, is intentionally absent here → never coercible. See plan L6.
+export type Coercion =
+  | "identity"
+  | "float-to-vector" // broadcast x → (x, x, x)
+  | "float-to-color" //  broadcast x → (x, x, x)
+  | "vector-to-float" // average of components
+  | "vector-to-color" // reinterpret xyz → rgb
+  | "color-to-float" //  luminance (rgb → bw)
+  | "color-to-vector"; // reinterpret rgb → xyz
+
+export const COERCION_MATRIX: Record<PortKind, Partial<Record<PortKind, Coercion>>> = {
+  float: { float: "identity", vector: "float-to-vector", color: "float-to-color" },
+  vector: { vector: "identity", float: "vector-to-float", color: "vector-to-color" },
+  color: { color: "identity", float: "color-to-float", vector: "color-to-vector" },
+};
+
+// How (or whether) an output kind may feed an input kind. undefined → reject the connection.
+export function coercionFor(from: PortKind, to: PortKind): Coercion | undefined {
+  return COERCION_MATRIX[from]?.[to];
+}

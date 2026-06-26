@@ -5,7 +5,7 @@ import type { MaterialNodeDef } from "../types";
 // any generator's `coord` input; unconnected, it warps the global domain.
 export const domainWarpNode: MaterialNodeDef = {
   type: "domain-warp",
-  category: "filter",
+  nodeClass: "vector",
   label: "Domain Warp",
   inputs: [{ key: "coord", kind: "vector" }],
   outputs: [{ key: "coord", kind: "vector" }],

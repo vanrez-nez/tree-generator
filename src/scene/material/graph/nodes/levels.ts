@@ -5,10 +5,10 @@ import type { MaterialNodeDef } from "../types";
 // roughness/metallic/AO from a shared field (replaces the bespoke roughness.ts math).
 export const levelsNode: MaterialNodeDef = {
   type: "levels",
-  category: "filter",
+  nodeClass: "converter",
   label: "Levels / Remap",
-  inputs: [{ key: "field", kind: "field" }],
-  outputs: [{ key: "field", kind: "field" }],
+  inputs: [{ key: "field", kind: "float" }],
+  outputs: [{ key: "field", kind: "float" }],
   params: [
     { key: "min", label: "out min", type: "float", min: 0, max: 1, step: 0.01, default: 0 },
     { key: "max", label: "out max", type: "float", min: 0, max: 1, step: 0.01, default: 1 },

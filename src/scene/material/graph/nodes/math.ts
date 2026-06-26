@@ -5,13 +5,13 @@ import type { MaterialNodeDef } from "../types";
 // is always the blend amount for `mix`). Used to compose fields — e.g. blend FBM with stripes.
 export const mathNode: MaterialNodeDef = {
   type: "math",
-  category: "filter",
+  nodeClass: "converter",
   label: "Math",
   inputs: [
-    { key: "a", kind: "field" },
-    { key: "b", kind: "field" },
+    { key: "a", kind: "float" },
+    { key: "b", kind: "float" },
   ],
-  outputs: [{ key: "field", kind: "field" }],
+  outputs: [{ key: "field", kind: "float" }],
   params: [
     {
       key: "op",

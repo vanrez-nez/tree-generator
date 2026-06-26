@@ -6,15 +6,15 @@ import type { MaterialNodeDef } from "../types";
 // node's connected inputs directly, so build() returns nothing.
 export const pbrOutputNode: MaterialNodeDef = {
   type: "pbr-output",
-  category: "output",
+  nodeClass: "output",
   label: "PBR Material Output",
   inputs: [
     { key: "baseColor", label: "Albedo / Diffuse", kind: "color" },
-    { key: "normal", label: "Normal", kind: "normal" },
+    { key: "normal", label: "Normal", kind: "vector" },
     { key: "emission", label: "Emission", kind: "color" },
-    { key: "roughness", label: "Roughness", kind: "field" },
-    { key: "metallic", label: "Metallic", kind: "field" },
-    { key: "ambientOcclusion", label: "Ambient Occlusion", kind: "field" },
+    { key: "roughness", label: "Roughness", kind: "float" },
+    { key: "metallic", label: "Metallic", kind: "float" },
+    { key: "ambientOcclusion", label: "Ambient Occlusion", kind: "float" },
   ],
   outputs: [],
   params: [],

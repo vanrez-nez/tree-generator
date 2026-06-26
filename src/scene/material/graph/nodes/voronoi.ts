@@ -5,10 +5,10 @@ import type { MaterialNodeDef } from "../types";
 // cells.ts). Drives plates, cracks, scattered cell masks, etc.
 export const voronoiNode: MaterialNodeDef = {
   type: "voronoi",
-  category: "generator",
+  nodeClass: "texture",
   label: "Voronoi / Cells",
   inputs: [{ key: "coord", kind: "vector" }],
-  outputs: [{ key: "field", kind: "field" }],
+  outputs: [{ key: "field", kind: "float" }],
   params: [
     { key: "scale", label: "scale", type: "float", min: 0.1, max: 8, step: 0.05, default: 1 },
     { key: "jitter", label: "jitter", type: "float", min: 0, max: 1, step: 0.01, default: 1 },

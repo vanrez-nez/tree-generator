@@ -6,9 +6,9 @@ import type { MaterialNodeDef } from "../types";
 // hardcoded shader (the old gradient-map.ts conflated the two).
 export const colorRampNode: MaterialNodeDef = {
   type: "color-ramp",
-  category: "color",
+  nodeClass: "converter",
   label: "Color Ramp",
-  inputs: [{ key: "field", kind: "field" }],
+  inputs: [{ key: "field", kind: "float" }],
   outputs: [{ key: "color", kind: "color" }],
   params: [
     { key: "colorA", label: "low", type: "color", default: "#3f2d1e" },

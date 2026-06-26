@@ -1,9 +1,9 @@
 # Blender Node-Architecture Alignment — Full Plan
 
-Status: **planning / not approved for execution.** This document is the full plan for aligning our
-material graph with Blender's node architecture, grounded in three.js / TSL / WebGPU. Reference
-material lives in `external/blender_nodes/` (master: `blender_node_system.md`; per-tree node docs under
-`docs/shader/`, `docs/compositor/`, `docs/texture/`).
+Status: **testing pipeline built (§5); Phase 0 complete & verified; Phases 1–6 pending.** This document
+is the full plan for aligning our material graph with Blender's node architecture, grounded in
+three.js / TSL / WebGPU. Reference material lives in `external/blender_nodes/` (master:
+`blender_node_system.md`; per-tree node docs under `docs/shader/`, `docs/compositor/`, `docs/texture/`).
 
 ---
 
@@ -18,6 +18,7 @@ Blender-style system:
 - typed ports with connect-time validation — `graph/compiler.ts`, `graph/controller.ts`
 - a decoupled Rete.js editor (`src/node-editor/`) bridged via an adapter — `editor-config.ts`
 - a bake-to-PNG path for output verification — `graph/channel-baker.ts`
+- **a dual-system testing pipeline** (ours vs Blender) for output-driven verification — see §5
 
 What it lacks is Blender's **conceptual organization**: the socket-type/color taxonomy, node-class
 (header) color coding, permissive type coercion, a real BSDF→Output pipeline, faithful procedural
@@ -84,12 +85,13 @@ Our grounded set with Blender's color convention:
 Current `fbm.ts` / `voronoi.ts` use `mx_fractal_noise_float` / MaterialX worley — not Blender's output.
 Decision 2 requires porting Blender's hash/Perlin/Worley to TSL (under `src/scene/material/tsl/`) with
 its multiple Voronoi feature channels. WebGPU caveat: octave counts stay **build-time constants**
-(already handled via `BuildCtx.params`), not uniforms. Each ported node verified by bake-PNG diff.
+(already handled via `BuildCtx.params`), not uniforms. Each ported node verified by bake-PNG diff (§5).
 
 ### L5 — Color management semantics
 Blender Color sockets are scene-linear with a display transform; ours are "sRGB-authored";
 WebGPURenderer does linear workflow with output-space conversion. Pin one convention — **linear
 graph-internal, sRGB authoring widgets** (matching Blender) — affecting ColorRamp, Mix Color, basecolor.
+This is also what makes the §5 *color* channel comparison tighten from "structure only" to "near match".
 
 ### L6 — Permissive coercion needs a real matrix
 Strict kind-match lives in two places today: `compiler.ts` `validate()` (throws) and `controller.ts`
@@ -142,100 +144,207 @@ re-implement where L4 demands faithfulness.
 
 ---
 
-## 5. Phased implementation plan
+## 5. Testing pipeline (built) — ours vs Blender
 
-> Each phase ends with an output-driven check (bake PNG and/or live render). Nothing is "done" until
-> its output is verified. Phases are ordered so the spine changes land before the node ports that
-> depend on them.
+The verification backbone for everything below. **One JSON config** (a `MaterialGraphDocument`, under
+`configs/`) is the single source of truth, driving **both** systems into `bake/<name>/`:
 
-### Phase 0 — Taxonomy & type-system foundation (no visible behavior change)
-- Rename `PortKind` `field`→`float`; fold `normal`→`vector` in `types.ts`. Update every node def and
-  migrate `default-document.ts` + sessionStorage loader.
-- Introduce the **node class** enum (Input/Output/Shader/Texture/Color/Vector/Converter) and attach a
-  class to each existing node def (replacing/aliasing the free `category`).
-- Define the **coercion matrix** type and table in `types.ts`.
-- *Verify:* existing default bark material still compiles and renders unchanged (regression).
+```txt
+bake/<name>/
+  config.json
+  <channel>.ours.png        # our TSL/WebGPU output
+  <channel>.blender.png     # Blender reference
+```
+
+**Our side** (browser/WebGPU — render only runs in a browser). Dev server + bake server running, then
+in the app's dev console:
+```js
+const cfg = await (await fetch('/configs/noise.json')).json();
+await __bakeConfig(cfg, 'noise', 1024);   // loadDocument → bake every connected channel → POST
+```
+- `__bakeConfig` (`src/app.ts`) → `MaterialGraphController.loadDocument()` (`controller.ts`) →
+  `ChannelBaker.readImageData()` → POST to `scripts/bake-server.mjs` (now supports nested `name`).
+
+**Blender side** (headless reference):
+```sh
+npm run bake:blender -- configs/noise.json     # → bake/noise/<channel>.blender.png
+```
+- `scripts/blender-bake.mjs` spawns Blender (`$BLENDER`, else the macOS app path) running
+  `scripts/blender_bake.py`, which rebuilds the graph as a Blender shader tree and EMIT-bakes each
+  connected PBR channel. Translation registry: **`NODE_BUILDERS`** (our `type` → Blender idname + param
+  map). **Unmapped node types error loudly** — extending coverage = adding one `NODE_BUILDERS` entry.
+
+**Comparison bar.** Outputs are **not** pixel-perfect while a node still uses MaterialX noise; this tool
+checks *structure/behavior*. Once a node is a faithful port (Phase 4) and color management is pinned
+(Phase 6), the bar tightens to near-match (remaining diff = color encoding only). Comparison is by
+eyeball today; an optional per-pixel MAE helper (`scripts/bake-diff.mjs`) can be added if/when numeric
+thresholds become useful — not built yet, deliberately not over-engineered.
+
+**Harness must evolve with the port** (tracked per-phase in §6):
+- Phase 2: add `NODE_BUILDERS` for `constant-color` / `constant-field`; map our coercions to Blender's
+  implicit conversions so coerced configs compare.
+- Phase 3: the channel extractor in `blender_bake.py` (currently reads edges into `pbr-output`) must
+  read channels from the **Principled BSDF inputs** once Material Output replaces `pbr-output`; add a
+  `principled-bsdf` builder.
+- Phase 4: replace MaterialX-backed builders with the Blender-native nodes so both sides share the same
+  math reference; add `voronoi` feature-output configs.
+- Phase 5: `blender_bake.py` **inlines groups** before translating (groups are a sugar over the flat
+  graph for the reference side).
+- Phase 6: pin `blender_bake.py` color management (and our PNG encode) so color channels match.
+
+Files: `configs/`, `scripts/blender-bake.mjs`, `scripts/blender_bake.py`, `scripts/bake-server.mjs`,
+`src/app.ts` (`__bakeConfig`), `src/scene/material/graph/controller.ts` (`loadDocument`).
+
+---
+
+## 6. Execution plan (per-phase Steps + Tests)
+
+> Ordering: spine changes (taxonomy, colors, coercion) land before the node ports that depend on them.
+> Each phase lists concrete **Steps** to execute and **Tests** that gate it via §5. Nothing is "done"
+> until its test passes. Author the named `configs/*.json` as part of each phase.
+
+### Phase 0 — Taxonomy & type-system foundation (no visible behavior change) — ✓ DONE
+**Steps (as built)**
+- Renamed `PortKind` `field`→`float`; folded `normal`→`vector` in `types.ts`; updated every node def and
+  `pbr-output` input kinds.
+- **Correction:** no sessionStorage migration was needed. Port *kinds* are not serialized — the stored
+  `MaterialGraphDocument` carries only node `type`/`params`/`position`/`enabled` and edge port *keys*
+  (which are unchanged). `DOC_VERSION` stays at 1; `default-document.ts` needed no change.
+- Added the **`NodeClass`** enum (input/output/shader/texture/color/vector/converter) to `types.ts`;
+  replaced `MaterialNodeDef.category` with `nodeClass` on every node (per-node Blender class). The
+  editor palette (`editor-config.ts`) now feeds `def.nodeClass` into the palette item. (Visibly safe:
+  the Add menu is a flat list today; category was only an unused `data-` attribute.)
+- Defined the **coercion** type + `COERCION_MATRIX` + `coercionFor()` in `types.ts` (data only;
+  consumed in Phase 2).
+
+**Tests (passed)**
+- `npx tsc --noEmit` clean; full `npm run build` (tsc + vite) clean.
+- Runtime: app loads, default doc compiles (`lastError: null`), bakes all connected channels.
+- **Regression (output-level):** baked the default bark at 512 with the new code via `__bakeConfig`
+  and compared to the pre-change 512 baselines — `baseColor`/`normal`/`roughness` **byte-for-byte
+  identical**. (Output identity is also guaranteed by construction: no `build()`/params/edges/coord
+  changed; the compiler reads `.kind` only for equality and never branches on the literal, and never
+  reads `nodeClass`.)
 
 ### Phase 1 — Color coding (two systems)
-- Socket colors by `kind` (grey/blue/yellow/green) — `node-editor.css`, `rete-elements.ts`.
+**Steps**
+- Socket colors by `kind` (grey/blue/yellow/green) — `node-editor.css`, socket rendering in
+  `rete-elements.ts`.
 - Node header colors by class — `editor-config.ts` passes class/color into `EditorNodeConfig`;
   `rete-elements.ts` + CSS render it.
-- Categorized Add menu submenus by class — `node-editor-panel.ts` `populatePalette()`.
-- *Verify:* visual check in app (`npm run dev:proxy` → `http://tree-graph.localhost`); socket/header
-  colors match Blender's conventions.
+- Categorized Add-menu submenus by class — `node-editor-panel.ts` `populatePalette()`.
+
+**Tests** (editor chrome — visual, not the bake harness)
+- App visual check (`npm run dev:proxy` → `http://tree-graph.localhost`): socket dots and node headers
+  match Blender's color conventions; Add menu groups by class. Capture a screenshot for the record.
 
 ### Phase 2 — Permissive linking (coercion)
+**Steps**
 - Replace strict checks in `controller.ts` (`portKindsMatch`/`connect`) and `compiler.ts` (`validate`)
-  with matrix lookups; inject the TSL conversion at build time (reuse `adapters.ts` luminance, add
-  broadcast/swizzle helpers).
-- *Verify:* connect every type-pair in the editor — allowed pairs link + coerce correctly; disallowed
-  pairs veto; shader never coerces. Bake a coerced graph and confirm expected output.
+  with coercion-matrix lookups; inject the TSL conversion at build time (reuse `adapters.ts` luminance;
+  add broadcast/swizzle helpers).
+- Harness: add `NODE_BUILDERS` for `constant-color` / `constant-field`; ensure Blender's implicit
+  conversions mirror ours.
+
+**Tests**
+- Author `configs/coerce-color-to-float.json` (constant-color → roughness) and
+  `configs/coerce-float-to-vector.json`. Bake both sides; confirm the coercion (luminance / broadcast)
+  produces matching structure.
+- Veto check (console): `controller.connect()` on a disallowed pair returns `false`; shader pair never
+  coerces.
 
 ### Phase 3 — BSDF → Output pipeline (L1/L2)
-- Add **Principled BSDF** node mapping inputs to `MeshPhysicalNodeMaterial` channels; switch the
-  compiler target from `MeshStandardNodeMaterial` to `MeshPhysicalNodeMaterial`.
-- Add **Emission** node; rename `pbr-output` → **Material Output** consuming the green Shader marker.
-- Wire the constrained green Shader socket (only Principled/Emission → Material Output).
-- *Verify:* build textures→color/vector→Principled→Output; confirm live render with expected channels;
-  flag partial channels (Subsurface/Anisotropy) explicitly in the node UI.
+**Steps**
+- Add **Principled BSDF** node mapping inputs → `MeshPhysicalNodeMaterial` channels; switch compiler
+  target from `MeshStandardNodeMaterial` → `MeshPhysicalNodeMaterial`.
+- Add **Emission** node; rename `pbr-output` → **Material Output** consuming the green Shader marker;
+  wire the constrained green socket (only Principled/Emission → Material Output).
+- Harness: update `blender_bake.py` channel extractor to read from **Principled inputs** (Material
+  Output replaces `pbr-output`); add a `principled-bsdf` builder.
 
-### Phase 4 — Faithful procedural textures (L4)
-- Port Blender Perlin/Worley math to TSL (`src/scene/material/tsl/`): **Noise**, **Voronoi**
+**Tests**
+- Author `configs/principled-basic.json` (noise → ColorRamp → Base Color; noise → Roughness; →
+  Principled → Material Output). Live smoke: renders on `MeshPhysicalNodeMaterial` in-app.
+- Bake compare baseColor/roughness ours vs Blender Principled.
+- Partial channels (Subsurface/Anisotropy) surfaced explicitly in the node UI (manual check).
+
+### Phase 4 — Faithful procedural textures (L4) — core harness use
+**Steps**
+- Port Blender Perlin/Worley to TSL (`src/scene/material/tsl/`): **Noise** first, then **Voronoi**
   (Distance/Color/Position; F1/F2/Smooth F1/Distance-to-Edge), then **Wave**, **Gradient**.
-- Requires the dynamic-declare form (mode-driven outputs) from Phase 5 prerequisite, or a static
-  superset of outputs as an interim — decide per node, recorded in the registry.
-- *Verify:* bake each node/mode to PNG and diff against a Blender screenshot with identical params.
-  No node ships until it matches.
+- Mode-driven outputs need the dynamic-declare form (Phase 5) or an interim static output superset —
+  decide per node, record in the registry.
+- Harness: swap MaterialX-backed `NODE_BUILDERS` to the Blender-native nodes so both sides share the
+  reference math.
+
+**Tests** (the bar tightens here — faithful ports should *closely* match)
+- Per node/mode: author `configs/noise.json` (exists), `configs/voronoi-f1.json`,
+  `configs/voronoi-smoothf1.json`, etc. Bake ours vs Blender; **expect near-match** (remaining diff =
+  color encoding, fixed in Phase 6). No node ships until its comparison holds.
 
 ### Phase 5 — Dynamic socket declaration + Node Groups (L7)
+**Steps**
 - Extend `MaterialNodeDef` with a `declare(params)` form; reconcile editor ports on change.
 - Nested document model: group node references a sub-document + interface; add Group Input / Group
   Output node types; recursive compile in `compiler.ts`.
 - Editor enter/exit navigation (double-click in, breadcrumb/Esc out) in `node-editor-panel.ts`.
-- *Verify:* group round-trip — a group's output equals its inlined equivalent; serialize/deserialize
-  the nested document; enter/exit works.
+- Harness: `blender_bake.py` inlines groups before translating.
+
+**Tests**
+- Author `configs/group-roundtrip.json` (a group) and `configs/group-inlined.json` (its flattened
+  equivalent). Bake both **ours**; assert byte-identical (recursive compile == inlined).
+- Serialize/deserialize the nested doc; enter/exit works in the editor (manual).
 
 ### Phase 6 — Color management pin (L5)
-- Pin linear graph-internal + sRGB authoring widgets; audit ColorRamp/Mix Color/basecolor wiring.
-- *Verify:* bake a known swatch and compare to a Blender reference swatch.
+**Steps**
+- Pin linear graph-internal + sRGB authoring widgets; audit ColorRamp / Mix Color / basecolor wiring.
+- Harness: align `blender_bake.py` color management and our PNG encode so color channels are comparable.
+
+**Tests**
+- Author `configs/swatch.json` (known constant colors). Bake ours vs Blender; **color channels now
+  match** within encoding tolerance. Re-run Phase 4 color-output configs and confirm they tightened.
 
 ---
 
-## 6. Open per-node fidelity checklist (resolved during implementation, output-checked)
+## 7. Open per-node fidelity checklist (resolved during implementation, output-checked)
 - Voronoi feature outputs & distance metrics — match Blender exactly, bake-compare each mode.
 - Noise dimensionality (Blender 1D–4D) — decide supported dims.
 - ColorRamp interpolation modes (Linear/Ease/B-Spline/Constant) — match Blender.
 - RGB Curves / Map Range — LUT vs analytic; verify monotonicity & clamp.
-- Color space (L5) — pin and verify against a Blender swatch.
+- Color space (L5) — pin and verify against a Blender swatch (Phase 6).
 
 ---
 
-## 7. Verification strategy (methodical, output-driven)
-1. **Per-node bake compare** via `channel-baker.ts` / bake server; visual diff vs Blender screenshot.
-2. **Type/coercion tests:** drive `controller.connect()` across all pairs; assert link+coerce / veto.
+## 8. Verification strategy (methodical, output-driven)
+1. **Per-node bake compare** via the §5 pipeline (`__bakeConfig` + `npm run bake:blender`); eyeball (or
+   optional MAE) ours vs Blender for the same config.
+2. **Type/coercion tests:** drive `controller.connect()` across pairs; assert link+coerce / veto.
 3. **Pipeline smoke:** Principled graph renders on `MeshPhysicalNodeMaterial` live
    (`npm run dev:proxy` → `http://tree-graph.localhost`).
-4. **Group round-trip:** recursive compile == inlined; serialize/deserialize nested doc.
-5. **Regression:** default bark material still compiles/renders after Phase 0 renames.
+4. **Group round-trip:** recursive compile == inlined (bake both ours, assert equal).
+5. **Regression:** default bark material renders unchanged after Phase 0 renames (bake before/after).
 
 ---
 
-## 8. Critical files (extend, don't replace)
+## 9. Critical files (extend, don't replace)
 - `src/scene/material/graph/types.ts` — PortKind taxonomy, coercion-matrix types, group/interface
   model, dynamic-declare extension.
 - `src/scene/material/graph/registry.ts` — node-class categorization, new registrations.
 - `src/scene/material/graph/compiler.ts` — build-time coercion, recursive group compile, Physical target.
-- `src/scene/material/graph/controller.ts` — coercion-aware `connect()`/`portKindsMatch()`.
+- `src/scene/material/graph/controller.ts` — coercion-aware `connect()`/`portKindsMatch()`;
+  `loadDocument()` (built, §5).
 - `src/scene/material/graph/nodes/*` — re-homed/ported nodes; new Principled/Emission/Group nodes.
 - `src/scene/material/tsl/*` — faithful Blender noise/voronoi TSL functions.
 - `src/scene/material/editor-config.ts` — class→color, categorized palette, group-aware adapter.
 - `src/node-editor/node-editor-panel.ts`, `rete-elements.ts`, `node-editor.css` — socket/header colors,
   categorized add-menu, group enter/exit navigation.
 - `src/scene/material/graph/default-document.ts` — migrate to new kinds/names.
+- **Testing pipeline (built):** `configs/`, `scripts/blender-bake.mjs`, `scripts/blender_bake.py`,
+  `scripts/bake-server.mjs`, `src/app.ts` (`__bakeConfig`).
 
 ---
 
-## 9. Explicit non-goals
+## 10. Explicit non-goals
 - Compositor image-post tree; Frame/Reroute layout nodes (not selected).
 - Free BSDF closure networking / true Add-Mix Shader (L1); Volume output (L2).
 - Geometry-nodes tree; datablock sockets (Object/Collection/Image-as-socket); true geometry displacement.

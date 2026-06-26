@@ -6,10 +6,10 @@ import type { MaterialNodeDef } from "../types";
 
 export const luminanceNode: MaterialNodeDef = {
   type: "luminance",
-  category: "adapter",
+  nodeClass: "converter",
   label: "Luminance",
   inputs: [{ key: "color", kind: "color" }],
-  outputs: [{ key: "field", kind: "field" }],
+  outputs: [{ key: "field", kind: "float" }],
   params: [],
   build(ctx) {
     const c = ctx.inputs.color;
@@ -19,13 +19,13 @@ export const luminanceNode: MaterialNodeDef = {
 
 export const splitChannelsNode: MaterialNodeDef = {
   type: "split-channels",
-  category: "adapter",
+  nodeClass: "converter",
   label: "Split Channels",
   inputs: [{ key: "color", kind: "color" }],
   outputs: [
-    { key: "r", kind: "field" },
-    { key: "g", kind: "field" },
-    { key: "b", kind: "field" },
+    { key: "r", kind: "float" },
+    { key: "g", kind: "float" },
+    { key: "b", kind: "float" },
   ],
   params: [],
   build(ctx) {
@@ -37,12 +37,12 @@ export const splitChannelsNode: MaterialNodeDef = {
 
 export const combineChannelsNode: MaterialNodeDef = {
   type: "combine-channels",
-  category: "adapter",
+  nodeClass: "converter",
   label: "Combine Channels",
   inputs: [
-    { key: "r", kind: "field" },
-    { key: "g", kind: "field" },
-    { key: "b", kind: "field" },
+    { key: "r", kind: "float" },
+    { key: "g", kind: "float" },
+    { key: "b", kind: "float" },
   ],
   outputs: [{ key: "color", kind: "color" }],
   params: [],

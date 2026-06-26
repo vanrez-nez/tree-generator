@@ -8,10 +8,10 @@ const TAU = 6.283185307179586;
 // it is equally usable for fluting, corrugation, muscle striation, etc.
 export const anisotropicStripesNode: MaterialNodeDef = {
   type: "anisotropic-stripes",
-  category: "generator",
+  nodeClass: "texture",
   label: "Anisotropic Stripes",
   inputs: [{ key: "coord", kind: "vector" }],
-  outputs: [{ key: "field", kind: "field" }],
+  outputs: [{ key: "field", kind: "float" }],
   params: [
     { key: "count", label: "count", type: "float", min: 1, max: 64, step: 1, default: 22 },
     { key: "sharpness", label: "sharpness", type: "float", min: 0.2, max: 8, step: 0.1, default: 2.2 },

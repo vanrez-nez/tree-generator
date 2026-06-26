@@ -92,7 +92,7 @@ export function buildMaterialEditorConfig(controller: MaterialGraphController): 
   const palette: EditorPaletteItem[] = registry
     .all()
     .filter((def) => def.type !== OUTPUT_TYPE)
-    .map((def) => ({ type: def.type, label: def.label, category: def.category }));
+    .map((def) => ({ type: def.type, label: def.label, category: def.nodeClass }));
 
   const connections = doc.edges.map((e) => ({
     from: e.fromNode,
