@@ -10,6 +10,8 @@ export type EditorSocketConfig = {
   /** Unique-per-node key the connections reference. */
   key: string
   label?: string
+  /** Port type; sockets with different kinds get distinct Socket instances (typed ports). */
+  kind?: string
 }
 
 export type EditorNodeConfig = {
@@ -28,6 +30,15 @@ export type EditorNodeConfig = {
   enabled?: boolean
   /** Provide to render the eye toggle. Omit for nodes that can't be disabled (e.g. a root). */
   onToggle?: (enabled: boolean) => void
+  /** Whether the node shows a delete (×) button. Omit/false for terminal nodes (e.g. the output). */
+  deletable?: boolean
+}
+
+/** A node type offered in the editor's add-node palette. */
+export type EditorPaletteItem = {
+  type: string
+  label: string
+  category?: string
 }
 
 export type EditorConnectionConfig = {
@@ -40,4 +51,20 @@ export type EditorConnectionConfig = {
 export type EditorGraphConfig = {
   nodes: EditorNodeConfig[]
   connections: EditorConnectionConfig[]
+  /**
+   * Called when the user draws a connection in the canvas (config-id terms). Return false to veto it
+   * (e.g. incompatible port kinds); the wire snaps back. Omit to keep the topology read-only.
+   */
+  onConnect?: (connection: EditorConnectionConfig) => boolean
+  /** Called when the user removes a connection in the canvas. */
+  onDisconnect?: (connection: EditorConnectionConfig) => void
+  /** Node types offered in the add-node palette. Omit to hide the palette button. */
+  palette?: EditorPaletteItem[]
+  /**
+   * Create a node of `type` in the owner (e.g. the material controller) at `position`, and return its
+   * editor config so the canvas can render it. Return null to abort.
+   */
+  onAddNode?: (type: string, position: { x: number; y: number }) => EditorNodeConfig | null
+  /** Remove a node from the owner. The canvas removal is handled by the panel. */
+  onDeleteNode?: (id: string) => void
 }

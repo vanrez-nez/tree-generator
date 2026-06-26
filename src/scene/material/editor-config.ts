@@ -1,64 +1,52 @@
-// Adapter: maps the fixed material DAG (MaterialGraph) into the generic node-editor's
-// `EditorGraphConfig`. This is the only module that knows both the material internals and the
-// editor contract, keeping src/node-editor/ reusable. Each node's controls are an embedded
-// Tweakpane Pane bound to that node's `params` — the exact bindings that used to live inline in
-// app.ts's buildTextureLayers, so editing a value flows through the same signature-poll re-bake.
 import { Pane } from "tweakpane";
-import type { EditorGraphConfig, EditorNodeConfig } from "../../node-editor";
-import type { MaterialGraph } from "./material-graph";
-import type { MaterialNode } from "./engine/node";
+import type { BindingApi } from "@tweakpane/core";
+import type { EditorGraphConfig, EditorNodeConfig, EditorPaletteItem } from "../../node-editor";
+import type { MaterialGraphController } from "./graph/controller";
+import type { GraphNode, ParamDef } from "./graph/types";
 
-type Build = (pane: Pane) => void;
+const OUTPUT_TYPE = "pbr-output";
 
-// A node that takes one input and produces one output (the linear chain links).
-function chainNode(
-  id: string,
-  title: string,
-  node: MaterialNode,
-  build: Build,
-  opts: { hasInput?: boolean; enableable?: boolean } = {},
-): EditorNodeConfig {
-  const hasInput = opts.hasInput ?? true;
-  const enableable = opts.enableable ?? true;
-  return {
-    id,
-    title,
-    inputs: hasInput ? [{ key: "in" }] : [],
-    outputs: [{ key: "out" }],
-    enabled: node.enabled,
-    onToggle: enableable
-      ? (enabled) => {
-          node.enabled = enabled;
-        }
-      : undefined,
-    mountControls: paneMount(build),
-  };
+// Registry-driven adapter: turns the controller's live MaterialGraphDocument into the generic editor
+// config (material-graph-plan.md). Node ports and Tweakpane controls are generated from each node's
+// MaterialNodeDef — no hand-written per-node builders. Param/toggle edits flow back into the controller
+// (live uniform update or recompile), so the surface reacts immediately.
+
+function bindParam(
+  pane: Pane,
+  controller: MaterialGraphController,
+  nodeId: string,
+  param: ParamDef,
+  local: Record<string, unknown>,
+): void {
+  let binding: BindingApi;
+  switch (param.type) {
+    case "color":
+      binding = pane.addBinding(local, param.key, { label: param.label, view: "color" });
+      break;
+    case "select":
+      binding = pane.addBinding(local, param.key, {
+        label: param.label,
+        options: Object.fromEntries((param.options ?? []).map((o) => [o, o])),
+      });
+      break;
+    case "bool":
+      binding = pane.addBinding(local, param.key, { label: param.label });
+      break;
+    case "int":
+    case "float":
+    default:
+      binding = pane.addBinding(local, param.key, {
+        label: param.label,
+        min: param.min,
+        max: param.max,
+        step: param.step ?? (param.type === "int" ? 1 : undefined),
+      });
+      break;
+  }
+  binding.on("change", (ev) => controller.setParam(nodeId, param.key, ev.value));
 }
 
-// A channel output node: one input (from cells), no output. Disabling drops its map (handled by
-// MaterialGraph.bakeMaps via node.enabled).
-function channelNode(
-  id: string,
-  title: string,
-  node: MaterialNode,
-  build: Build,
-): EditorNodeConfig {
-  return {
-    id,
-    title,
-    inputs: [{ key: "in" }],
-    outputs: [],
-    enabled: node.enabled,
-    onToggle: (enabled) => {
-      node.enabled = enabled;
-    },
-    mountControls: paneMount(build),
-  };
-}
-
-// Wrap a binding builder into a mountControls hook: create a container-bound Pane, populate it, and
-// return a disposer.
-function paneMount(build: Build): (host: HTMLElement) => () => void {
+function paneMount(build: (pane: Pane) => void): (host: HTMLElement) => () => void {
   return (host) => {
     const pane = new Pane({ container: host });
     build(pane);
@@ -66,65 +54,72 @@ function paneMount(build: Build): (host: HTMLElement) => () => void {
   };
 }
 
-export function buildMaterialEditorConfig(graph: MaterialGraph): EditorGraphConfig {
-  const nodes: EditorNodeConfig[] = [
-    // Height is the root generator — everything derives from it, so it has no input and no toggle.
-    chainNode(
-      "height",
-      "Height — FBM",
-      graph.height,
-      (p) => {
-        p.addBinding(graph.height.params, "seed", { min: 0, max: 9999, step: 1 });
-        p.addBinding(graph.height.params, "tiles", { min: 1, max: 16, step: 1 });
-        p.addBinding(graph.height.params, "octaves", { min: 1, max: 8, step: 1 });
-        p.addBinding(graph.height.params, "gain", { min: 0, max: 1, step: 0.01 });
-      },
-      { hasInput: false, enableable: false },
-    ),
-    chainNode("warp", "Warp (weathering)", graph.warp, (p) => {
-      p.addBinding(graph.warp.params, "intensity", { min: 0, max: 0.5, step: 0.01 });
-      p.addBinding(graph.warp.params, "tiles", { min: 1, max: 12, step: 1 });
-      p.addBinding(graph.warp.params, "octaves", { min: 1, max: 8, step: 1 });
-    }),
-    chainNode("slopeBlur", "Slope Blur (erosion)", graph.slopeBlur, (p) => {
-      p.addBinding(graph.slopeBlur.params, "iterations", { min: 0, max: 16, step: 1 });
-      p.addBinding(graph.slopeBlur.params, "intensity", { min: 1, max: 8, step: 0.5 });
-    }),
-    chainNode("cells", "Cells (JFA plates)", graph.cells, (p) => {
-      p.addBinding(graph.cells.params, "cells", { min: 2, max: 32, step: 1 });
-      p.addBinding(graph.cells.params, "jitter", { min: 0, max: 1, step: 0.01 });
-      p.addBinding(graph.cells.params, "seed", { min: 0, max: 9999, step: 1 });
-      p.addBinding(graph.cells.params, "crackDepth", { label: "crack depth", min: 0, max: 0.5, step: 0.01 });
-      p.addBinding(graph.cells.params, "crackWidth", { label: "crack width", min: 1, max: 6, step: 1 });
-      p.addBinding(graph.cells.params, "plateAmount", { label: "plate var", min: 0, max: 0.5, step: 0.01 });
-    }),
-    channelNode("basecolor", "Basecolor — Gradient Map", graph.basecolor, (p) => {
-      p.addBinding(graph.basecolor.params, "colorA", { view: "color", label: "color A" });
-      p.addBinding(graph.basecolor.params, "colorB", { view: "color", label: "color B" });
-    }),
-    channelNode("normal", "Normal", graph.normal, (p) => {
-      p.addBinding(graph.normal.params, "strength", { min: 0, max: 40, step: 0.5 });
-    }),
-    channelNode("ao", "Ambient Occlusion", graph.ao, (p) => {
-      p.addBinding(graph.ao.params, "radius", { min: 1, max: 32, step: 1 });
-      p.addBinding(graph.ao.params, "strength", { min: 0, max: 12, step: 0.1 });
-    }),
-    channelNode("roughness", "Roughness", graph.roughness, (p) => {
-      p.addBinding(graph.roughness.params, "min", { min: 0, max: 1, step: 0.01 });
-      p.addBinding(graph.roughness.params, "max", { min: 0, max: 1, step: 0.01 });
-      p.addBinding(graph.roughness.params, "invert");
-    }),
-  ];
+// Build the editor config for a single graph node (ports, generated controls, toggle, delete).
+function nodeToConfig(controller: MaterialGraphController, node: GraphNode): EditorNodeConfig {
+  const def = controller.getRegistry().get(node.type);
+  // A local mirror of params (defaults filled in) the Tweakpane controls bind to; changes forward to
+  // the controller.
+  const local: Record<string, unknown> = {};
+  for (const p of def.params) local[p.key] = node.params[p.key] ?? p.default;
 
-  const connections = [
-    { from: "height", fromOutput: "out", to: "warp", toInput: "in" },
-    { from: "warp", fromOutput: "out", to: "slopeBlur", toInput: "in" },
-    { from: "slopeBlur", fromOutput: "out", to: "cells", toInput: "in" },
-    { from: "cells", fromOutput: "out", to: "basecolor", toInput: "in" },
-    { from: "cells", fromOutput: "out", to: "normal", toInput: "in" },
-    { from: "cells", fromOutput: "out", to: "ao", toInput: "in" },
-    { from: "cells", fromOutput: "out", to: "roughness", toInput: "in" },
-  ];
+  const canToggle = def.inputs.length > 0 && node.type !== OUTPUT_TYPE;
 
-  return { nodes, connections };
+  return {
+    id: node.id,
+    title: def.label,
+    position: node.position,
+    inputs: def.inputs.map((p) => ({ key: p.key, label: p.label ?? p.key, kind: p.kind })),
+    outputs: def.outputs.map((p) => ({ key: p.key, label: p.label ?? p.key, kind: p.kind })),
+    mountControls:
+      def.params.length > 0
+        ? paneMount((pane) => {
+            for (const p of def.params) bindParam(pane, controller, node.id, p, local);
+          })
+        : undefined,
+    enabled: node.enabled,
+    onToggle: canToggle ? (enabled) => controller.setNodeEnabled(node.id, enabled) : undefined,
+    deletable: node.type !== OUTPUT_TYPE,
+  };
+}
+
+export function buildMaterialEditorConfig(controller: MaterialGraphController): EditorGraphConfig {
+  const registry = controller.getRegistry();
+  const doc = controller.document;
+
+  const nodes: EditorNodeConfig[] = doc.nodes.map((node) => nodeToConfig(controller, node));
+
+  // Palette: every registered generic node except the terminal output.
+  const palette: EditorPaletteItem[] = registry
+    .all()
+    .filter((def) => def.type !== OUTPUT_TYPE)
+    .map((def) => ({ type: def.type, label: def.label, category: def.category }));
+
+  const connections = doc.edges.map((e) => ({
+    from: e.fromNode,
+    fromOutput: e.fromOutput,
+    to: e.toNode,
+    toInput: e.toInput,
+  }));
+
+  return {
+    nodes,
+    connections,
+    palette,
+    // Drawing a wire validates (port kinds) + applies via the controller; false vetoes it (snap back).
+    onConnect: (c) =>
+      controller.connect({ fromNode: c.from, fromOutput: c.fromOutput, toNode: c.to, toInput: c.toInput }),
+    onDisconnect: (c) =>
+      controller.disconnect({
+        fromNode: c.from,
+        fromOutput: c.fromOutput,
+        toNode: c.to,
+        toInput: c.toInput,
+      }),
+    onAddNode: (type, position) => {
+      const id = controller.addNode(type, position);
+      const node = controller.document.nodes.find((n) => n.id === id);
+      return node ? nodeToConfig(controller, node) : null;
+    },
+    onDeleteNode: (id) => controller.removeNode(id),
+  };
 }

@@ -1,7 +1,10 @@
 import * as THREE from "three";
-import { Line2 } from "three/examples/jsm/lines/Line2.js";
+// WebGPU fat-line classes: the classic Line2/LineMaterial use a shader material the WebGPU
+// NodeBuilder rejects ("Material 'LineMaterial' is not compatible"). The lines/webgpu variants are
+// drop-in and back the same API with Line2NodeMaterial.
+import { Line2 } from "three/examples/jsm/lines/webgpu/Line2.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
-import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
+import { Line2NodeMaterial } from "three/webgpu";
 import { FNV_OFFSET, hashFloat } from "./hash";
 import { applyEnvelope, type LineModifier } from "./modifiers/modifier";
 import { SmoothModifier } from "./modifiers/smooth";
@@ -195,7 +198,7 @@ export class GraphLineVisual {
   private readonly geometry = new LineGeometry();
   // Drawn as an always-visible overlay: depthTest off + a high renderOrder so the line
   // skeleton shows through the surface mesh regardless of camera angle.
-  private readonly material = new LineMaterial({
+  private readonly material = new Line2NodeMaterial({
     color: 0xffffff,
     depthTest: false,
     depthWrite: false,
@@ -223,8 +226,11 @@ export class GraphLineVisual {
     this.material.dashSize = this.lineState.dashSize;
     this.material.gapSize = this.lineState.gapSize;
 
-    if (viewportSize) {
-      this.material.resolution.copy(viewportSize);
+    // Line2NodeMaterial derives the viewport resolution internally (unlike the WebGL LineMaterial,
+    // which needed it set each resize), so this is only applied if the property is present.
+    const mat = this.material as unknown as { resolution?: THREE.Vector2 };
+    if (viewportSize && mat.resolution) {
+      mat.resolution.copy(viewportSize);
     }
 
     this.debugMaterial.color.set(this.lineState.color);

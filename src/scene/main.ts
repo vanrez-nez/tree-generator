@@ -6,7 +6,7 @@ import { DEFAULT_FORM, type TreeForm } from "./tree-code";
 import { RootSystem } from "./root-system";
 import { TreeMesher } from "./mesher/tree-mesher";
 import type { MesherOptions } from "./mesher/welding-mesher";
-import { MaterialGraph } from "./material/material-graph";
+import { MaterialGraphController } from "./material/graph/controller";
 
 // How long graph edits must settle before the (expensive) surface mesh is rebuilt.
 const MESH_REBUILD_DEBOUNCE_MS = 200;
@@ -25,9 +25,8 @@ export class MainScene {
   readonly scene = new THREE.Scene();
   readonly graph = new Graph();
   readonly mesher = new TreeMesher();
-  // Node-graph PBR material baker (src/scene/material/). Owns the GPU bake (app renderer's context)
-  // and exposes channel textures bound onto the surface material. Persists across tree rebuilds.
-  readonly materialGraph: MaterialGraph;
+  // Owns the editable material graph document + the compiled surface material (src/scene/material/graph).
+  readonly materialController = new MaterialGraphController();
 
   selectedLineId = "trunk";
 
@@ -49,26 +48,23 @@ export class MainScene {
   private debugT = 0.5;
   private meshDirty = false;
   private meshRebuildTimer: ReturnType<typeof setTimeout> | undefined;
-  // Last material-graph signature we reacted to; changes when any node's params change, triggering a
-  // re-bake. Undefined until the first frame so the initial material bakes.
-  private lastMaterialSignature: string | undefined;
   // Last graph-geometry signature we reacted to. The graph is the source of truth: whenever its
   // drawn geometry changes (from any source — UI, joints, root system, code), the signature
   // changes and we schedule a rebuild. Undefined until the first frame so the initial mesh builds.
   private lastSignature: number | undefined;
 
-  constructor(renderer: THREE.WebGLRenderer) {
+  constructor() {
     this.scene.background = new THREE.Color(0x111111);
     this.scene.add(this.graph.group);
     this.scene.add(this.mesher.object);
     this.loadTree();
 
-    // Bake the material channels and bind them to the surface. The channel textures are persistent
-    // (each node reuses its render target), so binding once is enough; `update` re-bakes in place
-    // when the graph signature changes.
-    this.materialGraph = new MaterialGraph(renderer);
-    this.mesher.setMaterialMaps(this.materialGraph.bakeMaps());
-    this.lastMaterialSignature = this.materialGraph.signature();
+    // Bind the compiled material graph to the surface, and re-push it whenever the graph recompiles
+    // (topology / backend / structural-param edits from the node editor).
+    this.mesher.setSurfaceMaterial(this.materialController.material);
+    this.materialController.onRecompile(() =>
+      this.mesher.setSurfaceMaterial(this.materialController.material),
+    );
 
     const light = new THREE.DirectionalLight(0xffffff, 3);
     light.position.set(2, 2, 3);
@@ -239,16 +235,6 @@ export class MainScene {
       this.meshStats.vertices = vertices;
       this.meshStats.triangles = triangles;
       this.meshDirty = false;
-    }
-
-    // Re-bake the material when any node's params change. Channel textures are persistent (nodes
-    // reuse their render targets), so most edits update the bound maps in place. Re-bind the maps
-    // each time too: toggling an output node on/off swaps a texture for null (or back), which is a
-    // reference change the surface must pick up.
-    const materialSignature = this.materialGraph.signature();
-    if (materialSignature !== this.lastMaterialSignature) {
-      this.lastMaterialSignature = materialSignature;
-      this.mesher.setMaterialMaps(this.materialGraph.bakeMaps());
     }
   }
 }

@@ -8,4 +8,5 @@ export type {
   EditorNodeConfig,
   EditorConnectionConfig,
   EditorSocketConfig,
+  EditorPaletteItem,
 } from './types'

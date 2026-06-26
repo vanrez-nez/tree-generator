@@ -3,10 +3,12 @@ import type { BakeContext } from "./engine/node";
 import { PassRunner } from "./engine/pass-runner";
 import { downloadChannelPng, renderChannelToImageData } from "./engine/export";
 import { HeightNode } from "./nodes/height";
+import { BarkFibersNode } from "./nodes/wood/bark-fibers";
 import { WarpNode } from "./nodes/warp";
 import { SlopeBlurNode } from "./nodes/slope-blur";
 import { CellsNode } from "./nodes/cells";
-import { GradientMapNode } from "./nodes/gradient-map";
+import { KnotsNode } from "./nodes/wood/knots";
+import { GradientMapNode } from "./nodes/wood/gradient-map";
 import { NormalNode } from "./nodes/normal";
 import { AoNode } from "./nodes/ao";
 import { RoughnessNode } from "./nodes/roughness";
@@ -29,14 +31,16 @@ export class MaterialGraph {
   // Shared substrate: a height field — warped, slope-blurred (eroded), then split into plates by the
   // JFA cell structure. Every channel derives from this same field (coherent). Dependency order.
   readonly height = new HeightNode();
-  readonly warp = new WarpNode(this.height);
+  readonly barkFibers = new BarkFibersNode(this.height);
+  readonly warp = new WarpNode(this.barkFibers);
   readonly slopeBlur = new SlopeBlurNode(this.warp);
   readonly cells = new CellsNode(this.slopeBlur);
+  readonly knots = new KnotsNode(this.cells);
   // Output nodes by channel — public so the UI can edit their params.
-  readonly basecolor = new GradientMapNode(this.cells);
-  readonly normal = new NormalNode(this.cells);
-  readonly ao = new AoNode(this.cells);
-  readonly roughness = new RoughnessNode(this.cells);
+  readonly basecolor = new GradientMapNode(this.knots);
+  readonly normal = new NormalNode(this.knots);
+  readonly ao = new AoNode(this.knots);
+  readonly roughness = new RoughnessNode(this.knots);
 
   private readonly runner: PassRunner;
   private readonly width = MATERIAL_RESOLUTION;
@@ -106,9 +110,11 @@ export class MaterialGraph {
     this.normal.dispose();
     this.ao.dispose();
     this.roughness.dispose();
+    this.knots.dispose();
     this.cells.dispose();
     this.slopeBlur.dispose();
     this.warp.dispose();
+    this.barkFibers.dispose();
     this.height.dispose();
     this.runner.dispose();
   }

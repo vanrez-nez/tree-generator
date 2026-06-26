@@ -22,6 +22,7 @@ import {
   PanelBottom,
   PanelLeft,
   PanelTop,
+  Plus,
   Scan,
   X,
   ZoomIn,
@@ -34,7 +35,7 @@ import {
   type Schemes,
   defineEditorElements,
 } from './rete-elements'
-import type { DockMode, EditorGraphConfig } from './types'
+import type { DockMode, EditorConnectionConfig, EditorGraphConfig, EditorNodeConfig } from './types'
 import './node-editor.css'
 
 type AreaExtra = LitArea2D<Schemes>
@@ -87,6 +88,9 @@ export class NodeEditorPanel {
   private readonly handle: HTMLDivElement
   private readonly appElement: HTMLElement
   private readonly onLayoutChange?: () => void
+  // Add-node palette (button + dropdown menu); populated per-config in populatePalette.
+  private readonly paletteWrap: HTMLDivElement
+  private readonly paletteMenu: HTMLDivElement
 
   private editor: NodeEditor<Schemes> | null = null
   private area: AreaPlugin<Schemes, AreaExtra> | null = null
@@ -96,6 +100,10 @@ export class NodeEditorPanel {
   private layoutArrangement: LayoutArrangement = 'down'
   private storageKey: string | null = null
   private nodeIdsByRuntimeId = new Map<string, string>()
+  // The active config, so the connection pipe can call its onConnect/onDisconnect hooks.
+  private config: EditorGraphConfig | null = null
+  // One Socket instance per port kind (typed ports), reused across rebuilds.
+  private readonly sockets = new Map<string, ClassicPreset.Socket>()
 
   // Docked size in px (width for left, height for top/bottom). Defaults to 50% of the viewport
   // until the user drags the resize handle.
@@ -120,6 +128,28 @@ export class NodeEditorPanel {
     title.className = 'ne-header__title'
     title.textContent = 'Material'
     header.appendChild(title)
+
+    // Add-node palette: a button toggling a menu of node types (filled per config in populatePalette).
+    this.paletteWrap = document.createElement('div')
+    this.paletteWrap.className = 'ne-palette'
+    this.paletteWrap.hidden = true
+    const paletteBtn = document.createElement('button')
+    paletteBtn.className = 'ne-dock__btn'
+    paletteBtn.title = 'Add node'
+    paletteBtn.setAttribute('aria-label', 'Add node')
+    appendLucideIcon(paletteBtn, Plus)
+    this.paletteMenu = document.createElement('div')
+    this.paletteMenu.className = 'ne-palette__menu'
+    this.paletteMenu.hidden = true
+    paletteBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      this.paletteMenu.hidden = !this.paletteMenu.hidden
+    })
+    document.addEventListener('click', () => {
+      this.paletteMenu.hidden = true
+    })
+    this.paletteWrap.append(paletteBtn, this.paletteMenu)
+    header.appendChild(this.paletteWrap)
 
     // Zoom controls: out / fit / in (plain wheel pans; Shift + wheel zooms — see `ensureEditor`).
     const zoom = document.createElement('div')
@@ -395,15 +425,26 @@ export class NodeEditorPanel {
       return context
     })
 
-    // Read-only topology: veto user-initiated connection create/remove (programmatic build sets
-    // `building` so our own additions pass).
-    editor.addPipe((context) => {
-      if (
-        !this.building &&
-        (context.type === 'connectioncreate' || context.type === 'connectionremove')
-      ) {
-        return undefined
+    // User-driven topology edits. Programmatic build sets `building` so our own additions pass through
+    // untouched. A config without onConnect stays read-only (the hooks veto every user edit).
+    editor.addPipe(async (context) => {
+      if (this.building) return context
+
+      if (context.type === 'connectioncreate') {
+        const conn = this.toConfigConnection(context.data)
+        // No hook, or the owner rejects it (e.g. incompatible port kinds) → veto; the wire snaps back.
+        if (!conn || !this.config?.onConnect || !this.config.onConnect(conn)) return undefined
+        // Single input per socket: drop any existing wire into the same input first.
+        await this.removeConnectionsIntoInput(context.data.target, context.data.targetInput, context.data.id)
+        return context
       }
+
+      if (context.type === 'connectionremove') {
+        const conn = this.toConfigConnection(context.data)
+        if (conn) this.config?.onDisconnect?.(conn)
+        return context
+      }
+
       return context
     })
 
@@ -415,8 +456,8 @@ export class NodeEditorPanel {
   private async rebuild(config: EditorGraphConfig): Promise<void> {
     this.ensureEditor()
     const editor = this.editor!
-    const area = this.area!
 
+    this.config = config
     this.building = true
     // Clear any previous graph.
     for (const conn of [...editor.getConnections()]) await editor.removeConnection(conn.id)
@@ -427,29 +468,10 @@ export class NodeEditorPanel {
     this.nodeIdsByRuntimeId.clear()
     const stored = this.loadStoredPositions()
     for (const def of config.nodes) {
-      const node = new EditorNode(def.title)
-      node.enabled = def.enabled ?? true
-      node.enableable = Boolean(def.onToggle)
-      node.onToggle = def.onToggle
-      node.mountControls = def.mountControls
-
-      const socket = new ClassicPreset.Socket('socket')
-      for (const input of def.inputs ?? []) {
-        node.addInput(input.key, new ClassicPreset.Input(socket, input.label, false))
-      }
-      for (const output of def.outputs ?? []) {
-        node.addOutput(output.key, new ClassicPreset.Output(socket, output.label, true))
-      }
-      if (def.mountControls) {
-        node.addControl('params', new PaneControl(def.mountControls))
-      }
-
-      await editor.addNode(node)
-      this.nodeIdsByRuntimeId.set(node.id, def.id)
-      const position = stored?.[def.id] ?? def.position
-      if (position) await area.translate(node.id, position)
+      const node = await this.createNode(def, stored?.[def.id] ?? def.position)
       byId.set(def.id, node)
     }
+    this.populatePalette(config)
 
     for (const c of config.connections) {
       const from = byId.get(c.from) as ClassicPreset.Node | undefined
@@ -465,6 +487,157 @@ export class NodeEditorPanel {
       if (stored) void this.zoomToFit()
       else void this.arrangeGraph()
     })
+  }
+
+  // One reusable Socket per port kind (typed ports). Distinct instances let the UI/connection layer
+  // tell kinds apart; compatibility itself is enforced by the config's onConnect hook.
+  private socketFor(kind?: string): ClassicPreset.Socket {
+    const key = kind ?? 'any'
+    let socket = this.sockets.get(key)
+    if (!socket) {
+      socket = new ClassicPreset.Socket(key)
+      this.sockets.set(key, socket)
+    }
+    return socket
+  }
+
+  // Map a runtime Rete connection to config-id terms (the ids the owner understands).
+  private toConfigConnection(data: {
+    source: string
+    sourceOutput: string
+    target: string
+    targetInput: string
+  }): EditorConnectionConfig | null {
+    const from = this.nodeIdsByRuntimeId.get(data.source)
+    const to = this.nodeIdsByRuntimeId.get(data.target)
+    if (!from || !to) return null
+    return { from, fromOutput: data.sourceOutput, to, toInput: data.targetInput }
+  }
+
+  // Enforce one connection per input socket: remove any wire already feeding this input (other than the
+  // one being created). Runs under `building` so it doesn't re-fire the disconnect hook.
+  private async removeConnectionsIntoInput(
+    target: string,
+    targetInput: string,
+    exceptId: string,
+  ): Promise<void> {
+    const editor = this.editor
+    if (!editor) return
+    const existing = editor
+      .getConnections()
+      .filter((c) => c.target === target && c.targetInput === targetInput && c.id !== exceptId)
+    if (existing.length === 0) return
+    this.building = true
+    for (const c of existing) await editor.removeConnection(c.id)
+    this.building = false
+  }
+
+  // Build + place a single editor node from its config, registering its id mapping. Used by rebuild
+  // and by palette adds. Connections are wired separately (rebuild) — a palette node starts unwired.
+  private async createNode(def: EditorNodeConfig, position?: { x: number; y: number }): Promise<EditorNode> {
+    const editor = this.editor!
+    const area = this.area!
+    const node = new EditorNode(def.title)
+    node.enabled = def.enabled ?? true
+    node.enableable = Boolean(def.onToggle)
+    node.onToggle = def.onToggle
+    node.onDelete =
+      def.deletable && this.config?.onDeleteNode ? () => void this.deleteNode(def.id, node.id) : undefined
+    node.mountControls = def.mountControls
+
+    for (const input of def.inputs ?? []) {
+      node.addInput(input.key, new ClassicPreset.Input(this.socketFor(input.kind), input.label, false))
+    }
+    for (const output of def.outputs ?? []) {
+      node.addOutput(output.key, new ClassicPreset.Output(this.socketFor(output.kind), output.label, true))
+    }
+    if (def.mountControls) {
+      node.addControl('params', new PaneControl(def.mountControls))
+    }
+
+    await editor.addNode(node)
+    this.nodeIdsByRuntimeId.set(node.id, def.id)
+    if (position) await area.translate(node.id, position)
+    return node
+  }
+
+  // Add a node of `type` from the palette: the owner creates it (and returns its editor config), then
+  // it is placed at the current viewport centre.
+  private async addPaletteNode(type: string): Promise<void> {
+    if (!this.config?.onAddNode) return
+    const position = this.viewportCentre()
+    const def = this.config.onAddNode(type, position)
+    if (!def) return
+    this.building = true
+    await this.createNode(def, def.position ?? position)
+    this.building = false
+    this.saveNodePositions()
+  }
+
+  // Remove a node: tell the owner, then drop the node + its connections from the canvas.
+  private async deleteNode(configId: string, runtimeId: string): Promise<void> {
+    const editor = this.editor
+    if (!editor) return
+    this.config?.onDeleteNode?.(configId)
+    this.building = true
+    for (const conn of editor.getConnections().filter((c) => c.source === runtimeId || c.target === runtimeId)) {
+      await editor.removeConnection(conn.id)
+    }
+    await editor.removeNode(runtimeId)
+    this.nodeIdsByRuntimeId.delete(runtimeId)
+    this.building = false
+    this.saveNodePositions()
+  }
+
+  // The graph-space coordinate at the centre of the visible canvas (so new nodes land in view).
+  private viewportCentre(): { x: number; y: number } {
+    const area = this.area
+    if (!area) return { x: 0, y: 0 }
+    const { x, y, k } = area.area.transform
+    const rect = this.canvasHost.getBoundingClientRect()
+    return { x: (rect.width / 2 - x) / k, y: (rect.height / 2 - y) / k }
+  }
+
+  // (Re)build the palette menu items from the config. Hidden when no palette/onAddNode is supplied.
+  private populatePalette(config: EditorGraphConfig): void {
+    const canAdd = Boolean(config.onAddNode && config.palette && config.palette.length > 0)
+    this.paletteWrap.hidden = !canAdd
+    this.paletteMenu.replaceChildren()
+    if (!canAdd) return
+    for (const item of config.palette!) {
+      const btn = document.createElement('button')
+      btn.className = 'ne-palette__item'
+      btn.textContent = item.label
+      if (item.category) btn.dataset.category = item.category
+      btn.addEventListener('click', () => {
+        this.paletteMenu.hidden = true
+        void this.addPaletteNode(item.type)
+      })
+      this.paletteMenu.appendChild(btn)
+    }
+  }
+
+  // DEV/test helper: simulate a user-drawn connection by config ids. Goes through the same
+  // connectioncreate pipe a drag triggers (validation + single-input + onConnect), so it verifies the
+  // edit path without pixel-perfect socket dragging. Returns true if the connection stuck.
+  async simulateConnect(fromId: string, fromOutput: string, toId: string, toInput: string): Promise<boolean> {
+    const editor = this.editor
+    if (!editor) return false
+    const runtimeFrom = [...this.nodeIdsByRuntimeId.entries()].find(([, cid]) => cid === fromId)?.[0]
+    const runtimeTo = [...this.nodeIdsByRuntimeId.entries()].find(([, cid]) => cid === toId)?.[0]
+    if (!runtimeFrom || !runtimeTo) return false
+    const from = editor.getNode(runtimeFrom)
+    const to = editor.getNode(runtimeTo)
+    if (!from || !to) return false
+    const before = editor.getConnections().length
+    try {
+      await editor.addConnection(
+        new ClassicPreset.Connection(from, fromOutput as never, to, toInput as never),
+      )
+    } catch {
+      // A vetoed connection throws inside Rete; treat as "did not stick".
+    }
+    return editor.getConnections().length > before
   }
 
   private async zoomToFit(): Promise<void> {

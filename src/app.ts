@@ -10,6 +10,7 @@ import {
   SwatchBook,
 } from "lucide";
 import * as THREE from "three";
+import { WebGPURenderer } from "three/webgpu";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { FolderApi, Pane } from "tweakpane";
 import { DEFAULT_MESHER_OPTIONS, MainScene } from "./scene/main";
@@ -52,6 +53,8 @@ import {
 } from "./tweak-pane/vertical-tabs-blade";
 import { NodeEditorPanel } from "./node-editor";
 import { buildMaterialEditorConfig } from "./scene/material/editor-config";
+import { ChannelBaker } from "./scene/material/graph/channel-baker";
+import type { PbrSocket } from "./scene/material/graph/types";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -70,13 +73,15 @@ const sceneCanvas = canvas;
 const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
 camera.position.z = 4;
 
-const renderer = new THREE.WebGLRenderer({ canvas: sceneCanvas, antialias: true });
+const renderer = new WebGPURenderer({ canvas: sceneCanvas, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
 const controls = new OrbitControls(camera, sceneCanvas);
 controls.enableDamping = true;
 
-const mainScene = new MainScene(renderer);
+const mainScene = new MainScene();
+// Renders single material-graph channels to 2D for the preview + PNG export (baked backend).
+const channelBaker = new ChannelBaker();
 const rendererSize = new THREE.Vector2();
 
 const pane = new Pane({ container: paneHost, title: "Settings" });
@@ -86,7 +91,7 @@ pane.registerPlugin(LayersPluginBundle);
 pane.registerPlugin(TexturePreviewPluginBundle);
 pane.registerPlugin(VerticalTabsPluginBundle);
 const stats = pane.addBlade({ view: "stats" }) as StatsBladeApi;
-stats.setRenderer(renderer.capabilities.isWebGL2 ? "WebGL2" : "WebGL");
+// Backend label is finalised after renderer.init() at the bottom (WebGPU vs WebGL2 fallback).
 
 // Single source of truth for the tree's form. Every form control binds to this object; the code
 // field is just a serialized view of it. `form` <-> `code` round-trips losslessly (tree-code.ts),
@@ -194,9 +199,25 @@ let scenePanelFolders: Array<{ dispose: () => void }> = [];
 type PreviewChannel = "basecolor" | "normal" | "ao" | "roughness";
 let texturePreview: TexturePreviewBladeApi | null = null;
 const previewState = { channel: "basecolor" as PreviewChannel, seams: false };
-let lastPreviewSignature: string | undefined;
-// Triplanar mapping state (defaults mirror TreeMesher.triUniforms so the UI starts in sync).
+// Maps the preview channel UI options to the graph's PBR output socket keys.
+const PREVIEW_SOCKET: Record<PreviewChannel, PbrSocket> = {
+  basecolor: "baseColor",
+  normal: "normal",
+  ao: "ambientOcclusion",
+  roughness: "roughness",
+};
+// The preview is re-baked (async, one in-flight) when marked dirty — on channel/scale/backend change
+// or a graph recompile — rather than every frame.
+let previewDirty = true;
+let previewBaking = false;
+const markPreviewDirty = (): void => {
+  previewDirty = true;
+};
+mainScene.materialController.onRecompile(markPreviewDirty);
+// Material-graph UI state. `worldPerTile` maps to the FBM generator's scale; `backend` toggles the
+// live procedural vs convertToTexture baked-map compile.
 const triplanarState = { enabled: true, worldPerTile: 1.2, sharpness: 8 };
+const materialState = { backend: "live" as "live" | "baked" };
 
 buildGenerationControls(genPage);
 buildTreeStatsControls(genPage);
@@ -231,7 +252,6 @@ function animate(timestamp?: number): void {
   controls.update();
   renderer.render(mainScene.scene, camera);
   stats.end();
-  requestAnimationFrame(animate);
 }
 
 // Drive the renderer size off the canvas's own box (a ResizeObserver) rather than the window
@@ -239,8 +259,31 @@ function animate(timestamp?: number): void {
 // the canvas) — not just on window resizes.
 const sceneResizeObserver = new ResizeObserver(() => resize());
 sceneResizeObserver.observe(sceneCanvas);
+
+// WebGPURenderer initialises its backend asynchronously (unlike WebGLRenderer). Wait for it before
+// the first render, then drive the loop via setAnimationLoop (the WebGPU-friendly RAF).
+await renderer.init();
+const hasWebGPU = typeof navigator !== "undefined" && "gpu" in navigator;
+stats.setRenderer(hasWebGPU ? "WebGPU" : "WebGL2");
 resize();
-animate();
+renderer.setAnimationLoop(animate);
+
+// Dev-only handles so the app can be driven/inspected from the console (and by automated checks)
+// even when the tab is backgrounded and rAF is throttled. Tree-shaken out of production builds.
+if (import.meta.env.DEV) {
+  Object.assign(window as unknown as Record<string, unknown>, {
+    __scene: mainScene,
+    __renderer: renderer,
+    __camera: camera,
+    __editor: materialEditor,
+    __openEditor: () => materialEditor.open(buildMaterialEditorConfig(mainScene.materialController)),
+    __baker: channelBaker,
+    __frame: () => {
+      mainScene.update(0, camera, rendererSize);
+      renderer.render(mainScene.scene, camera);
+    },
+  });
+}
 
 // Per-line disc-tube controls: radius (max), tip taper, opacity, visibility, and a cubic-Bézier
 // curve that shapes how the radius falls off from the line's start to its tip.
@@ -503,16 +546,24 @@ function rebuildScenePanels(): void {
 // channel selector and a seams overlay. Fed from MainScene's animate loop when the material changes.
 // State is declared earlier (before buildTextureLayers runs).
 function refreshTexturePreview(): void {
-  if (!texturePreview) return;
-  const signature = `${previewState.channel}|${mainScene.materialGraph.signature()}`;
-  if (signature === lastPreviewSignature) return;
-  lastPreviewSignature = signature;
-  texturePreview.setImageData(mainScene.materialGraph.readChannelImageData(previewState.channel));
+  if (!texturePreview || !previewDirty || previewBaking) return;
+  previewDirty = false;
+  previewBaking = true;
+  const socket = PREVIEW_SOCKET[previewState.channel];
+  void channelBaker
+    .readImageData(renderer, mainScene.materialController, socket, 256)
+    .then((image) => {
+      if (image) texturePreview?.setImageData(image);
+    })
+    .catch(() => {
+      /* a transient compile/readback failure just leaves the previous preview in place */
+    })
+    .finally(() => {
+      previewBaking = false;
+    });
 }
 
 function buildTextureLayers(): void {
-  const graph = mainScene.materialGraph;
-
   const previewFolder = texturePage.addFolder({ title: "Preview", expanded: true });
   texturePreview = previewFolder.addBlade({
     view: "texturePreview",
@@ -522,37 +573,44 @@ function buildTextureLayers(): void {
     .addBinding(previewState, "channel", {
       options: { Basecolor: "basecolor", Normal: "normal", AO: "ao", Roughness: "roughness" },
     })
-    .on("change", () => {
-      lastPreviewSignature = undefined; // force a refresh on the next frame
-    });
+    .on("change", () => markPreviewDirty());
   previewFolder
     .addBinding(previewState, "seams")
     .on("change", (event) => texturePreview?.setSeams(event.value));
 
-  // Triplanar mapping: how the baked channels are projected onto the surface. `worldPerTile` is the
-  // single master bark-scale knob; `enabled` A/B-toggles against the legacy tubular-UV mapping.
-  const mappingFolder = texturePage.addFolder({ title: "Mapping — Triplanar", expanded: true });
-  mappingFolder
-    .addBinding(triplanarState, "enabled", { label: "triplanar" })
-    .on("change", (event) => mainScene.mesher.setTriplanarEnabled(event.value));
-  mappingFolder
+  // Material graph controls. The backend toggle switches live procedural shading vs convertToTexture
+  // baked maps; "world / tile" is the master scale, wired to the FBM generator's scale param.
+  const materialFolder = texturePage.addFolder({ title: "Material", expanded: true });
+  materialFolder
+    .addBinding(materialState, "backend", { options: { Live: "live", Baked: "baked" } })
+    .on("change", (event) => mainScene.materialController.setBackend(event.value));
+  materialFolder
     .addBinding(triplanarState, "worldPerTile", { label: "world / tile", min: 0.2, max: 6, step: 0.05 })
-    .on("change", (event) => mainScene.mesher.setTriplanarScale(event.value));
-  mappingFolder
-    .addBinding(triplanarState, "sharpness", { label: "blend sharp", min: 1, max: 16, step: 0.5 })
-    .on("change", (event) => mainScene.mesher.setTriplanarSharpness(event.value));
+    .on("change", (event) => {
+      mainScene.materialController.setParam("fbm", "scale", event.value);
+      markPreviewDirty(); // a live-uniform edit doesn't recompile, so refresh the preview explicitly
+    });
+  materialFolder.addButton({ title: "Reset Graph" }).on("click", () => {
+    mainScene.materialController.reset();
+  });
 
-  // The per-node parameter controls now live inside the dockable node editor (src/node-editor/),
-  // where the pipeline wiring is visible.
+  // The dockable node editor (src/node-editor/) shows the live material graph, generated from the
+  // registry. Param/toggle edits flow into the controller and recompile the surface.
   texturePage
     .addButton({ title: "Open Node Editor" })
-    .on("click", () => materialEditor.open(buildMaterialEditorConfig(graph)));
+    .on("click", () => materialEditor.open(buildMaterialEditorConfig(mainScene.materialController)));
 
+  // Export each PBR channel to a PNG (baked from the graph via convertToTexture readback).
   const exportFolder = texturePage.addFolder({ title: "Export PNG", expanded: false });
   for (const channel of ["basecolor", "normal", "ao", "roughness"] as const) {
-    exportFolder
-      .addButton({ title: `Export ${channel}` })
-      .on("click", () => mainScene.materialGraph.exportChannel(channel));
+    exportFolder.addButton({ title: `Export ${channel}` }).on("click", () => {
+      void channelBaker.downloadPng(
+        renderer,
+        mainScene.materialController,
+        PREVIEW_SOCKET[channel],
+        `material-${channel}.png`,
+      );
+    });
   }
 }
 

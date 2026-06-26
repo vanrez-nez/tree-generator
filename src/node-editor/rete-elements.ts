@@ -11,6 +11,7 @@ import {
   createElement as createLucideElement,
   Eye,
   EyeOff,
+  Trash2,
   type IconNode,
 } from 'lucide'
 
@@ -22,6 +23,7 @@ export class EditorNode extends ClassicPreset.Node {
   enabled = true
   enableable = false
   onToggle?: (enabled: boolean) => void
+  onDelete?: () => void
   mountControls?: (host: HTMLElement) => () => void
 }
 
@@ -117,10 +119,24 @@ export class EditorNodeElement extends LitElement {
           </button>`
         : nothing
 
+    const del = this.data.onDelete
+      ? html`<button
+          class="ne-del"
+          title="Delete node"
+          @pointerdown=${(e: Event) => e.stopPropagation()}
+          @click=${(e: Event) => {
+            e.stopPropagation()
+            this.data.onDelete?.()
+          }}
+        >
+          ${lucideIcon(Trash2)}
+        </button>`
+      : nothing
+
     return html`
       <div class="title" data-testid="title">
         <span class="title-text">${label}</span>
-        ${eye}
+        ${eye}${del}
       </div>
       <div class="ports outputs" @pointerdown=${this.stopDrag}>
         ${outputs.map(([key, output]) =>

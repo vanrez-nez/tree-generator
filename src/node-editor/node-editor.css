@@ -237,6 +237,64 @@ ne-node .eye .lucide-icon {
 ne-node .eye.off {
   opacity: 0.4;
 }
+ne-node .ne-del {
+  display: inline-flex;
+  align-items: center;
+  background: none;
+  border: none;
+  padding: 2px;
+  margin-left: 2px;
+  cursor: pointer;
+  color: #9aa0a8;
+}
+ne-node .ne-del:hover {
+  color: #ff6b6b;
+}
+ne-node .ne-del .lucide-icon {
+  display: block;
+  fill: none;
+  pointer-events: none;
+  stroke: currentColor;
+  stroke-width: 2;
+}
+
+/* Add-node palette (header button + dropdown menu). */
+.ne-palette {
+  position: relative;
+  display: inline-flex;
+}
+.ne-palette__menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 168px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 4px;
+  background: #1c1f24;
+  border: 1px solid #34383f;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+.ne-palette__menu[hidden] {
+  display: none;
+}
+.ne-palette__item {
+  text-align: left;
+  padding: 6px 8px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: #d6d9df;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ne-palette__item:hover {
+  background: #2b2f36;
+}
 ne-node .output,
 ne-node .input {
   display: flex;
@@ -257,11 +315,18 @@ ne-node .input-title {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Connector dots: half the library default (24px), centred on the node's edge border. Driven by the
+   socket component's --socket-size custom property (which pierces its shadow DOM) so the dot's *layout*
+   box actually shrinks — keeping it in sync with Rete's offset-based wire anchoring, which ignores CSS
+   transforms. The centring margin pulls the wrapper out by half the dot plus the socket margin. */
+ne-node {
+  --socket-size: 12px;
+}
 ne-node .output-socket {
-  margin-right: -12px;
+  margin-right: calc(0px - var(--socket-size) - var(--socket-margin, 6px));
 }
 ne-node .input-socket {
-  margin-left: -12px;
+  margin-left: calc(0px - var(--socket-size) - var(--socket-margin, 6px));
 }
 ne-node .controls {
   padding: 0;
