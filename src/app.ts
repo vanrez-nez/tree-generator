@@ -217,7 +217,7 @@ mainScene.materialController.onRecompile(markPreviewDirty);
 // Material-graph UI state. `worldPerTile` maps to the FBM generator's scale; `backend` toggles the
 // live procedural vs convertToTexture baked-map compile.
 const triplanarState = { enabled: true, worldPerTile: 1.2, sharpness: 8 };
-const materialState = { backend: "live" as "live" | "baked" };
+const materialState = { backend: "baked" as "live" | "baked" };
 
 buildGenerationControls(genPage);
 buildTreeStatsControls(genPage);
@@ -736,9 +736,19 @@ function buildGenerationControls(container: ContainerApi): void {
 // on their own after each (debounced) rebuild.
 function buildTreeStatsControls(container: ContainerApi): void {
   const folder = container.addFolder({ title: "Tree", expanded: true });
-  folder.addBinding(mainScene.meshStats, "generationMs", {
+  folder.addBinding(mainScene.meshStats, "geometryMs", {
     readonly: true,
-    label: "gen (ms)",
+    label: "Geometry (ms)",
+    format: (value) => value.toFixed(1),
+  });
+  folder.addBinding(mainScene.meshStats, "textureMs", {
+    readonly: true,
+    label: "Texture (ms)",
+    format: (value) => value.toFixed(1),
+  });
+  folder.addBinding(mainScene.meshStats, "totalMs", {
+    readonly: true,
+    label: "Total (ms)",
     format: (value) => value.toFixed(1),
   });
   folder.addBinding(mainScene.meshStats, "vertices", {

@@ -1,4 +1,25 @@
-import type { MaterialBundle, MaterialNodeDef, MaterialValue } from "../types";
+import type { MaterialBundle, MaterialNodeDef, MaterialValue, ParamDef } from "../types";
+
+// Param definitions, hoisted so build()'s `num()` can fall back to each param's *declared* default when a
+// param is absent from the document (e.g. a Principled with `params: {}`). Falling back to 0 instead
+// would wrongly trip `alpha < 1` and force the whole material onto the (much costlier) transparent path.
+const PARAMS: ParamDef[] = [
+  { key: "baseColor", label: "base color", type: "color", default: "#cccccc" },
+  { key: "metallic", label: "metallic", type: "float", min: 0, max: 1, step: 0.01, default: 0 },
+  { key: "roughness", label: "roughness", type: "float", min: 0, max: 1, step: 0.01, default: 0.5 },
+  { key: "ior", label: "IOR", type: "float", min: 1, max: 2.5, step: 0.01, default: 1.5 },
+  { key: "alpha", label: "alpha", type: "float", min: 0, max: 1, step: 0.01, default: 1 },
+  { key: "coat", label: "coat weight", type: "float", min: 0, max: 1, step: 0.01, default: 0 },
+  { key: "coatRoughness", label: "coat rough", type: "float", min: 0, max: 1, step: 0.01, default: 0.03 },
+  { key: "sheen", label: "sheen weight", type: "float", min: 0, max: 1, step: 0.01, default: 0 },
+  { key: "sheenRoughness", label: "sheen rough", type: "float", min: 0, max: 1, step: 0.01, default: 0.3 },
+  { key: "transmission", label: "transmission", type: "float", min: 0, max: 1, step: 0.01, default: 0 },
+  { key: "emission", label: "emission", type: "color", default: "#000000" },
+  { key: "emissionStrength", label: "emission str", type: "float", min: 0, max: 10, step: 0.1, default: 1 },
+];
+const NUM_DEFAULTS: Record<string, number> = Object.fromEntries(
+  PARAMS.filter((p) => p.type === "float" || p.type === "int").map((p) => [p.key, p.default as number]),
+);
 
 // Principled BSDF — the single grounded BSDF (plan L1/L2). Its typed inputs mirror Blender's Principled
 // and map onto MeshPhysicalNodeMaterial channels; its `bsdf` output is the constrained green Shader
@@ -31,25 +52,13 @@ export const principledBsdfNode: MaterialNodeDef = {
     { key: "emissionStrength", label: "Emission Strength", kind: "float" },
   ],
   outputs: [{ key: "bsdf", kind: "shader" }],
-  params: [
-    { key: "baseColor", label: "base color", type: "color", default: "#cccccc" },
-    { key: "metallic", label: "metallic", type: "float", min: 0, max: 1, step: 0.01, default: 0 },
-    { key: "roughness", label: "roughness", type: "float", min: 0, max: 1, step: 0.01, default: 0.5 },
-    { key: "ior", label: "IOR", type: "float", min: 1, max: 2.5, step: 0.01, default: 1.5 },
-    { key: "alpha", label: "alpha", type: "float", min: 0, max: 1, step: 0.01, default: 1 },
-    { key: "coat", label: "coat weight", type: "float", min: 0, max: 1, step: 0.01, default: 0 },
-    { key: "coatRoughness", label: "coat rough", type: "float", min: 0, max: 1, step: 0.01, default: 0.03 },
-    { key: "sheen", label: "sheen weight", type: "float", min: 0, max: 1, step: 0.01, default: 0 },
-    { key: "sheenRoughness", label: "sheen rough", type: "float", min: 0, max: 1, step: 0.01, default: 0.3 },
-    { key: "transmission", label: "transmission", type: "float", min: 0, max: 1, step: 0.01, default: 0 },
-    { key: "emission", label: "emission", type: "color", default: "#000000" },
-    { key: "emissionStrength", label: "emission str", type: "float", min: 0, max: 10, step: 0.1, default: 1 },
-  ],
+  params: PARAMS,
   build(ctx): Record<string, MaterialValue> {
     const u = ctx.uniforms;
     // Connected input, else the param uniform (Blender's slider fallback).
     const inOr = (k: string): MaterialValue => ctx.inputs[k] ?? u[k];
-    const num = (k: string): number => Number((ctx.params[k] as number) ?? 0);
+    // Numeric param value, falling back to the param's declared default (not 0) when absent.
+    const num = (k: string): number => Number((ctx.params[k] as number) ?? NUM_DEFAULTS[k] ?? 0);
     // A physical lobe: connected input, else the param uniform only when the weight is non-zero.
     const lobe = (k: string): MaterialValue | undefined =>
       ctx.inputs[k] !== undefined ? ctx.inputs[k] : num(k) > 0 ? u[k] : undefined;

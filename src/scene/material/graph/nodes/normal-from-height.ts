@@ -14,6 +14,8 @@ export const normalFromHeightNode: MaterialNodeDef = {
   ],
   build(ctx) {
     const h = ctx.inputs.height ?? float(0.5);
-    return { normal: bumpMap(h, ctx.uniforms.strength) };
+    // In the baked backend, bake the height to a texture first so the (often heavy) procedural height
+    // graph isn't re-evaluated per fragment — the bump then reads a cheap texture fetch. Identity in live.
+    return { normal: bumpMap(ctx.bake(h), ctx.uniforms.strength) };
   },
 };

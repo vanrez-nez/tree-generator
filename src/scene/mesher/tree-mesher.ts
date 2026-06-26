@@ -52,11 +52,24 @@ export class TreeMesher {
   );
   private readonly wireMesh = new THREE.Mesh(this.solidMesh.geometry, this.wireMaterial);
 
+  // The surface starts hidden: its geometry is an empty placeholder until build() runs, and rendering a
+  // TSL node material against geometry with no position/uv attributes spams "attribute not found" warnings
+  // (and, before the needsUpdate fix below, cached a broken pipeline). Shown once real geometry exists.
+  private surfaceVisibleWanted = true;
+
   constructor() {
     this.solidMesh.name = "tree-surface";
     this.wireMesh.name = "tree-wireframe";
+    this.solidMesh.visible = false; // no geometry yet — revealed by build()
     this.wireMesh.visible = false; // wireframe overlay off by default
     this.object.add(this.solidMesh, this.wireMesh);
+  }
+
+  // Visible only when the user wants the surface AND there's geometry to draw (avoids empty-geometry
+  // renders that make the node material warn about missing attributes).
+  private updateSurfaceVisibility(): void {
+    const hasGeometry = (this.solidMesh.geometry.getAttribute("position")?.count ?? 0) > 0;
+    this.solidMesh.visible = this.surfaceVisibleWanted && hasGeometry;
   }
 
   // Swap in a freshly-compiled surface material (from MaterialGraphController). needsUpdate forces a
@@ -82,6 +95,7 @@ export class TreeMesher {
     // placeholder geometry (no `position` attribute); a TSL material's first compile caches a broken
     // WGSL pipeline that would otherwise be reused once the real geometry arrives (invisible surface).
     this.surfaceMaterial.needsUpdate = true;
+    this.updateSurfaceVisibility(); // reveal now that real geometry exists (or hide if the stem is empty)
   }
 
   // Vertex/triangle counts of the current surface geometry, for the stats readout.
@@ -106,7 +120,8 @@ export class TreeMesher {
   }
 
   setSurfaceVisible(visible: boolean): void {
-    this.solidMesh.visible = visible;
+    this.surfaceVisibleWanted = visible;
+    this.updateSurfaceVisibility();
   }
 
   setSurfaceWireframe(wireframe: boolean): void {

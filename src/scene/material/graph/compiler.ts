@@ -25,10 +25,20 @@ import { nodePorts, type NodeRegistry } from "./registry";
 // Resolution of baked channel textures (convertToTexture render target).
 const BAKE_SIZE = 1024;
 
+// The bits of three's RTTNode (convertToTexture result) we drive: `autoUpdate=false` stops the per-frame
+// re-bake; flipping `textureNeedsUpdate=true` re-bakes once on the next render (after a live uniform edit).
+export interface BakedTextureHandle {
+  autoUpdate: boolean;
+  textureNeedsUpdate: boolean;
+}
+
 export interface CompiledMaterial {
   material: MeshStandardNodeMaterial;
   // Per-node param uniforms (nodeId -> { paramKey -> uniform node }), so the editor can live-tweak.
   uniforms: Map<string, Record<string, MaterialValue>>;
+  // Baked backend only: the convertToTexture nodes wrapping each channel. The controller invalidates
+  // these on a live uniform edit so the cached texture re-bakes once (instead of every frame). Empty live.
+  bakedTextures: BakedTextureHandle[];
 }
 
 export interface CompileOptions {
@@ -39,6 +49,25 @@ export interface CompiledSockets {
   // The Principled BSDF / Emission bundle feeding Material Output, unpacked by the consumer.
   bundle: MaterialBundle;
   uniforms: Map<string, Record<string, MaterialValue>>;
+  // Baked RTT handles created via ctx.bake during node build (e.g. normal-from-height's height). The
+  // terminal-channel wraps in compileGraph append to this same list.
+  bakedTextures: BakedTextureHandle[];
+}
+
+// A "baker": wraps a node in a cached convertToTexture (autoUpdate off so it bakes once, not per frame)
+// and records it in `sink` for invalidation. Identity in the live backend. Shared by ctx.bake
+// (intermediate sub-expressions) and compileGraph's terminal-channel wrap.
+function makeBaker(
+  backend: MaterialBackend,
+  sink: BakedTextureHandle[],
+): (n: MaterialValue) => MaterialValue {
+  if (backend !== "baked") return (n) => n;
+  return (n) => {
+    const tex = convertToTexture(n, BAKE_SIZE, BAKE_SIZE) as MaterialValue & BakedTextureHandle;
+    tex.autoUpdate = false;
+    sink.push(tex);
+    return tex;
+  };
 }
 
 // Validate + topo-sort + build every node's TSL outputs, returning the MaterialBundle the shader node
@@ -52,8 +81,10 @@ export function compileSockets(
   // Domain: 3D world position (live, seamless) or a 2D uv slice (baked). Shared by every (sub)document.
   const coord: MaterialValue =
     opts.backend === "live" ? positionWorld : vec3(uv().x, uv().y, float(0));
-  const { outputs, uniforms } = compileDocument(doc, registry, opts, coord);
-  return { bundle: resolveBundle(doc, registry, outputs), uniforms };
+  const bakedTextures: BakedTextureHandle[] = [];
+  const bake = makeBaker(opts.backend, bakedTextures);
+  const { outputs, uniforms } = compileDocument(doc, registry, opts, coord, bake);
+  return { bundle: resolveBundle(doc, registry, outputs), uniforms, bakedTextures };
 }
 
 interface CompiledDocument {
@@ -69,6 +100,7 @@ function compileDocument(
   registry: NodeRegistry,
   opts: CompileOptions,
   coord: MaterialValue,
+  bake: (n: MaterialValue) => MaterialValue,
   seededInputs?: Record<string, MaterialValue | undefined>,
 ): CompiledDocument {
   validate(doc, registry, seededInputs !== undefined);
@@ -91,7 +123,7 @@ function compileDocument(
     }
     if (node.type === GROUP_TYPE) {
       const ext = resolveInputs(node, doc, outputsByNode, byId, registry);
-      outputsByNode.set(id, compileGroup(node, registry, opts, coord, ext));
+      outputsByNode.set(id, compileGroup(node, registry, opts, coord, bake, ext));
       continue;
     }
 
@@ -104,7 +136,7 @@ function compileDocument(
     const def = registry.get(node.type);
     const uniforms = buildUniforms(def, node);
     uniformsByNode.set(id, uniforms);
-    const ctx: BuildCtx = { inputs, uniforms, params: node.params, coord, backend: opts.backend };
+    const ctx: BuildCtx = { inputs, uniforms, params: node.params, coord, backend: opts.backend, bake };
     outputsByNode.set(id, def.build(ctx));
   }
 
@@ -118,11 +150,12 @@ function compileGroup(
   registry: NodeRegistry,
   opts: CompileOptions,
   coord: MaterialValue,
+  bake: (n: MaterialValue) => MaterialValue,
   externalInputs: Record<string, MaterialValue | undefined>,
 ): Record<string, MaterialValue> {
   const sub = groupNode.subgraph;
   if (!sub) return {};
-  const { outputs } = compileDocument(sub, registry, opts, coord, externalInputs);
+  const { outputs } = compileDocument(sub, registry, opts, coord, bake, externalInputs);
   const goNode = sub.nodes.find((n) => n.type === GROUP_OUTPUT_TYPE);
   const result: Record<string, MaterialValue> = {};
   if (!goNode) return result;
@@ -143,7 +176,7 @@ export function compileGraph(
   registry: NodeRegistry,
   opts: CompileOptions,
 ): CompiledMaterial {
-  const { bundle, uniforms: uniformsByNode } = compileSockets(doc, registry, opts);
+  const { bundle, uniforms: uniformsByNode, bakedTextures } = compileSockets(doc, registry, opts);
   const material = new MeshPhysicalNodeMaterial({
     metalness: 0,
     roughness: 0.9,
@@ -154,10 +187,12 @@ export function compileGraph(
   });
 
   // Baked backend wraps each terminal field/colour in convertToTexture (renders the subgraph once into
-  // a texture, then samples it). Normal stays procedural — baking a screen-derivative bump normal does
-  // not round-trip; a dedicated normal bake is Phase 5.
-  const wrap = (n: MaterialValue): MaterialValue =>
-    opts.backend === "baked" ? convertToTexture(n, BAKE_SIZE, BAKE_SIZE) : n;
+  // a texture, then samples it). The screen-derivative bump *normal* itself stays unwrapped (baking the
+  // view-dependent vector doesn't round-trip) — but normal-from-height bakes its HEIGHT via ctx.bake, so
+  // the heavy noise graph driving the bump isn't re-evaluated per fragment.
+  // `wrap` shares the baker with ctx.bake (same bakedTextures sink). autoUpdate=false means each RTT
+  // bakes once (not per frame); the controller re-bakes only when a uniform actually changes.
+  const wrap = makeBaker(opts.backend, bakedTextures);
 
   // Core channels (mirror MeshStandard).
   if (bundle.baseColor) material.colorNode = wrap(bundle.baseColor);
@@ -177,7 +212,7 @@ export function compileGraph(
   if (bundle.sheenRoughness) material.sheenRoughnessNode = bundle.sheenRoughness;
   if (bundle.transmission) material.transmissionNode = bundle.transmission;
 
-  return { material, uniforms: uniformsByNode };
+  return { material, uniforms: uniformsByNode, bakedTextures };
 }
 
 function resolveInputs(

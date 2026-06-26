@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type { MeshStandardNodeMaterial } from "three/webgpu";
-import { compileGraph } from "./compiler";
+import { compileGraph, type BakedTextureHandle } from "./compiler";
 import { defaultRegistry, nodePorts, type NodeRegistry } from "./registry";
 import { createDefaultDocument } from "./default-document";
 import { coercionFor, curveToArray, GROUP_TYPE, GROUP_INPUT_TYPE, GROUP_OUTPUT_TYPE } from "./types";
@@ -60,20 +60,30 @@ function initStarterGroup(node: GraphNode): void {
 // material. Persists to sessionStorage (material-graph-plan.md).
 export class MaterialGraphController {
   private doc: MaterialGraphDocument;
-  private backend: MaterialBackend = "live";
+  private backend: MaterialBackend = "baked";
   private material_: MeshStandardNodeMaterial;
   private uniforms: Map<string, Record<string, MaterialValue>>;
   private readonly listeners = new Set<() => void>();
   private lastError_: string | null = null;
+  // Wall-clock ms of the last compileGraph (the material/texture-graph build). In the baked backend this
+  // includes wrapping every channel in convertToTexture, so it's the CPU cost of generating the baked
+  // texture pipeline; surfaced as "Texture (ms)" in the UI.
+  private compileMs_ = 0;
+  // Baked backend: the convertToTexture handles for the current material (empty in live). Each bakes once
+  // then caches; a live uniform edit flips textureNeedsUpdate so it re-bakes a single frame.
+  private bakedTextures_: BakedTextureHandle[] = [];
   // Group navigation: the chain of group node ids from the root to the document currently being edited.
   // Edits target the active (sub)document; compile/persist always run on the root.
   private path: string[] = [];
 
   constructor(private readonly registry: NodeRegistry = defaultRegistry) {
     this.doc = this.load() ?? createDefaultDocument();
+    const t0 = performance.now();
     const compiled = compileGraph(this.doc, this.registry, { backend: this.backend });
+    this.compileMs_ = performance.now() - t0;
     this.material_ = compiled.material;
     this.uniforms = compiled.uniforms;
+    this.bakedTextures_ = compiled.bakedTextures;
   }
 
   get material(): MeshStandardNodeMaterial {
@@ -211,6 +221,10 @@ export class MaterialGraphController {
   getBackend(): MaterialBackend {
     return this.backend;
   }
+  // Last compileGraph duration in ms (the material / baked-texture graph build).
+  get lastCompileMs(): number {
+    return this.compileMs_;
+  }
   getRegistry(): NodeRegistry {
     return this.registry;
   }
@@ -237,6 +251,7 @@ export class MaterialGraphController {
         const v = value as { x: number; y: number; z: number };
         uniform.value.set(v.x, v.y, v.z);
       } else uniform.value = Number(value);
+      this.invalidateBakedTextures(); // baked maps are cached — re-bake once to reflect the new uniform
       this.persist();
       return;
     }
@@ -246,6 +261,7 @@ export class MaterialGraphController {
       const flat = curveToArray(value as CurveValue);
       const arr = (uniform as unknown as { array: number[] }).array;
       for (let i = 0; i < flat.length; i++) arr[i] = flat[i];
+      this.invalidateBakedTextures();
       this.persist();
       return;
     }
@@ -253,6 +269,12 @@ export class MaterialGraphController {
     // have added/removed sockets — drop any edges that now reference a missing port first.
     if (this.registry.get(node.type).declare) this.pruneDanglingEdges(node);
     this.recompile();
+  }
+
+  // Baked maps don't auto-update (autoUpdate=false stops the per-frame re-bake), so after a live uniform
+  // edit we flag each to re-bake exactly once on the next render. No-op in the live backend.
+  private invalidateBakedTextures(): void {
+    for (const tex of this.bakedTextures_) tex.textureNeedsUpdate = true;
   }
 
   // Remove edges on the active document that reference ports `node` no longer has (after a declare change).
@@ -375,9 +397,12 @@ export class MaterialGraphController {
 
   private recompile(): void {
     try {
+      const t0 = performance.now();
       const compiled = compileGraph(this.doc, this.registry, { backend: this.backend });
+      this.compileMs_ = performance.now() - t0;
       this.material_ = compiled.material;
       this.uniforms = compiled.uniforms;
+      this.bakedTextures_ = compiled.bakedTextures;
       this.lastError_ = null;
     } catch (err) {
       // Keep the previous material so a bad edit doesn't blank the surface; surface the error instead.

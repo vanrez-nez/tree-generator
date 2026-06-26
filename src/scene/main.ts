@@ -31,7 +31,7 @@ export class MainScene {
   selectedLineId = "trunk";
 
   // Last surface generation: build time + geometry size, surfaced in the pane's stats readout.
-  readonly meshStats = { generationMs: 0, vertices: 0, triangles: 0 };
+  readonly meshStats = { geometryMs: 0, textureMs: 0, totalMs: 0, vertices: 0, triangles: 0 };
 
   // The tree's form (everything that shapes the graph) and the mesh resolution. The form
   // round-trips through the reversible tree code; subdivisions is a pure resolution knob.
@@ -230,11 +230,18 @@ export class MainScene {
     if (this.meshDirty) {
       const start = performance.now();
       this.mesher.build(this.graph, this.mesherOptions);
-      this.meshStats.generationMs = performance.now() - start;
+      this.meshStats.geometryMs = performance.now() - start;
       const { vertices, triangles } = this.mesher.getStats();
       this.meshStats.vertices = vertices;
       this.meshStats.triangles = triangles;
       this.meshDirty = false;
     }
+
+    // Texture time = the material-graph compile (baked-texture pipeline build); 0 in the live backend
+    // where no textures are generated. Total = geometry + texture. Refreshed each frame (cheap) so the
+    // read-only monitors pick up both the mesh rebuild and any material recompile.
+    this.meshStats.textureMs =
+      this.materialController.getBackend() === "baked" ? this.materialController.lastCompileMs : 0;
+    this.meshStats.totalMs = this.meshStats.geometryMs + this.meshStats.textureMs;
   }
 }
