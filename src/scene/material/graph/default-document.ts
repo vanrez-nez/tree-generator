@@ -1,35 +1,35 @@
 import type { MaterialGraphDocument } from "./types";
 
-// The default bark material, expressed entirely with GENERIC nodes (no wood-specific nodes):
-//   domain-warp ─▶ fbm (broad grain) ─┐
-//               └▶ anisotropic-stripes ┴▶ math(mix) = height ─▶ color-ramp  → Base Color ┐
-//                                                            ├▶ normal-from-height → Normal ┤
-//                                                            └▶ levels (invert)    → Roughness ┘
+// The default bark material, expressed with GENERIC, TILEABLE nodes (authored for the 2D offline bake so
+// the texture tiles seamlessly under triplanar):
+//   tileable-warp ─▶ tileable-noise (broad grain) ─┐
+//                 └▶ tileable-noise (aspect = fibers) ┴▶ math(mix) = height ─▶ color-ramp → Base Color ┐
+//                                                                          ├▶ normal-from-height → Normal ┤
+//                                                                          └▶ levels (invert)    → Roughness ┘
 //                                                                          → Principled BSDF → Material Output
-// This is the "bark is just a preset" demonstration: swapping stops/counts retargets it to other
-// materials. Node positions seed the editor layout.
+// "bark is just a preset": swapping scale/aspect/stops retargets it. Node positions seed the editor layout.
 export function createDefaultDocument(): MaterialGraphDocument {
   return {
     version: 2,
     nodes: [
       {
         id: "warp",
-        type: "domain-warp",
-        params: { amount: 0.22, scale: 1 },
+        type: "tileable-warp",
+        params: { amount: 0.15, scale: 4 },
         position: { x: 40, y: 220 },
         enabled: true,
       },
       {
-        id: "fbm",
-        type: "fbm",
-        params: { scale: 1.2, octaves: 4, lacunarity: 2, gain: 0.5 },
+        id: "grain",
+        type: "tileable-noise",
+        params: { scale: 5, aspect: 1, octaves: 4, gain: 0.5 },
         position: { x: 300, y: 120 },
         enabled: true,
       },
       {
-        id: "stripes",
-        type: "anisotropic-stripes",
-        params: { count: 22, sharpness: 2.2, waviness: 0.18, contrast: 1 },
+        id: "fiber",
+        type: "tileable-noise",
+        params: { scale: 5, aspect: 4, octaves: 3, gain: 0.5 },
         position: { x: 300, y: 320 },
         enabled: true,
       },
@@ -77,10 +77,10 @@ export function createDefaultDocument(): MaterialGraphDocument {
       },
     ],
     edges: [
-      { fromNode: "warp", fromOutput: "coord", toNode: "fbm", toInput: "coord" },
-      { fromNode: "warp", fromOutput: "coord", toNode: "stripes", toInput: "coord" },
-      { fromNode: "fbm", fromOutput: "field", toNode: "height", toInput: "a" },
-      { fromNode: "stripes", fromOutput: "field", toNode: "height", toInput: "b" },
+      { fromNode: "warp", fromOutput: "coord", toNode: "grain", toInput: "coord" },
+      { fromNode: "warp", fromOutput: "coord", toNode: "fiber", toInput: "coord" },
+      { fromNode: "grain", fromOutput: "field", toNode: "height", toInput: "a" },
+      { fromNode: "fiber", fromOutput: "field", toNode: "height", toInput: "b" },
       { fromNode: "height", fromOutput: "field", toNode: "ramp", toInput: "field" },
       { fromNode: "height", fromOutput: "field", toNode: "normal", toInput: "height" },
       { fromNode: "height", fromOutput: "field", toNode: "rough", toInput: "field" },

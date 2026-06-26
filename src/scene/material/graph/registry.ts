@@ -1,6 +1,8 @@
 import type { GraphNode, MaterialNodeDef, PortDef } from "./types";
 import { fbmNode } from "./nodes/fbm";
 import { domainWarpNode } from "./nodes/domain-warp";
+import { tileableNoiseNode } from "./nodes/tileable-noise";
+import { tileableWarpNode } from "./nodes/tileable-warp";
 import { voronoiNode } from "./nodes/voronoi";
 import { gradientNode } from "./nodes/gradient";
 import { waveNode } from "./nodes/wave";
@@ -71,6 +73,8 @@ export function createDefaultRegistry(): NodeRegistry {
   return new NodeRegistry()
     .register(fbmNode)
     .register(domainWarpNode)
+    .register(tileableNoiseNode)
+    .register(tileableWarpNode)
     .register(voronoiNode)
     .register(gradientNode)
     .register(waveNode)
