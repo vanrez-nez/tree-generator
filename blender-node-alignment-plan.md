@@ -1,11 +1,12 @@
 # Blender Node-Architecture Alignment — Full Plan
 
 Status: **testing pipeline built (§5); Phases 0–3, 6 complete & verified. Phase 4: Noise ✓, Voronoi
-(F1 Distance/Color/Position + Distance-to-Edge) ✓, Gradient ✓, Wave ✓ (F2/Smooth-F1 + Minkowski
-pending). Phase 5: group compile core ✓, editor navigation ✓, declare(params) ✓ (group-interface-edit
+✓ (all features F1 / F2 / Smooth-F1 / Distance-to-Edge, all metrics incl. Minkowski, all outputs
+Distance/Color/Position — verified MAE < 0.0015 vs JS-ref), Gradient ✓, Wave ✓. Phase 5: group compile core ✓, editor navigation ✓, declare(params) ✓ (group-interface-edit
 UI + harness group-inlining pending). Node-family fill-in underway (Texture Coordinate ✓, Mapping ✓
-[+ `vec3` param type], Vector Math ✓, Color family ✓ [Invert / Bright-Contrast / Hue-Sat-Val], Converter cluster ✓
-[Clamp / Separate-Combine XYZ / extended Math]; see §11 for the remaining node inventory).**
+[+ `vec3` param type], Vector Math ✓, Color family ✓ [Invert / Bright-Contrast / Hue-Sat-Val / RGB-Curves (per-channel + canvas curve widget)], Converter cluster ✓
+[Clamp / Separate-Combine XYZ / Math — full Blender 40-op coverage], Normal Map ✓ [Vector family complete]; see §11 for the
+remaining node inventory).**
 This document is the full plan for aligning our material graph with Blender's node architecture, grounded
 in three.js / TSL / WebGPU. Reference material lives in `external/blender_nodes/` (master:
 `blender_node_system.md`; per-tree node docs under `docs/shader/`, `docs/compositor/`, `docs/texture/`).
@@ -391,10 +392,22 @@ distance-to-edge) and a `declare()` so its outputs change with it (see Phase 5).
 F1 distance **0.001**, Distance-to-Edge **0.001**, Color **0.0013** (sRGB-decoded); Position uses the
 same proven argmin loop.
 
-**Remaining (pending):** Voronoi F2 / Smooth F1 features and the Minkowski metric (needs an exponent
-input). The Blender-bake harness builders for Gradient/Wave aren't added (the pure-JS reference
-cross-check is the authoritative verification, and the Voronoi version skew already limits the
-Blender-bake side).
+**Voronoi F2 / Smooth-F1 / Minkowski — ✓ DONE & verified.** Added `voronoiF2` (tracks F1 *and* F2,
+updating from the old state each step), `voronoiSmoothF1` (5×5×5 smooth-minimum blend, `smoothness`
+param), and the Minkowski metric (`exponent` param, build-time-selected `voronoi_distance`). The
+`feature` select now spans f1 / f2 / smooth-f1 / distance-to-edge and `declare()` keeps
+Distance/Color/Position in sync. Cross-check vs pure-JS (size 128, warm pipeline): Minkowski **0.001**,
+F2 distance **0.001**, F2 color **0.0015**, F2 position **0.0004**, Smooth-F1 distance **0.001**,
+Smooth-F1 color **0.0013**, Smooth-F1 position **0.0003**.
+
+  *Two TSL by-reference traps fixed in `voronoiF2` (both produced "F2 == F1"):* (1) assign the F2 vars
+  (`dF2`/`offF2`/`posF2`) **before** the F1 vars, because the F2 update reads the old F1; (2) snapshot
+  the `isF1`/`isF2` comparisons into `.toVar()`s up front, else the later offset/position selects
+  re-read the just-reassigned `dF1`/`dF2`.
+
+**Remaining (pending):** The Blender-bake harness builders for Gradient/Wave/Voronoi aren't added (the
+pure-JS reference cross-check is the authoritative verification, and the Voronoi version skew already
+limits the Blender-bake side).
 
 ### Phase 5 — Dynamic socket declaration + Node Groups (L7) — IN PROGRESS
 **Group compile core — ✓ DONE & verified (byte-identical to inlined).**
@@ -520,18 +533,36 @@ Tracks coverage of the §4.B node families beyond the phase work. ✓ = built & 
   backend — Generated/Object/Normal are mesh-local and live-render-only, collapsing to UV when baking;
   Generated is object-space `positionLocal`, not bbox-normalized. **Missing:** a separate UV-Map node
   (TexCoord.uv covers it).
-- **Texture:** Noise ✓, Voronoi ✓ (F1 Distance/Color/Position + Distance-to-Edge), Gradient ✓, Wave ✓.
-  **Missing:** Voronoi F2 / Smooth-F1 / Minkowski; Brick/Magic/Musgrave/Gabor (out of scope unless needed).
+- **Texture:** Noise ✓, Voronoi ✓ (F1 / F2 / Smooth-F1 / Distance-to-Edge; Euclidean / Manhattan /
+  Chebychev / Minkowski; Distance/Color/Position), Gradient ✓, Wave ✓.
+  **Missing:** Brick/Magic/Musgrave/Gabor (out of scope unless needed).
 - **Vector:** Mapping ✓ (point/texture/vector/normal; uses the `vec3` param type), **Vector Math ✓**
-  (`vector-math`: 22 ops; outputs switch vector↔value via declare; Normalize is one of its ops), Bump ≈
-  `normal-from-height`. **Missing:** Normal Map.
+  (`vector-math`: 22 ops; outputs switch vector↔value via declare; Normalize is one of its ops),
+  **Normal Map ✓** (`normal-map`: TSL `normalMap` → TBN view-space normal, uses the mesh's per-corner
+  tangents; live-only like all normal output), Bump ≈ `normal-from-height`. **Vector family complete.**
 - **Color:** Mix Color ✓ (`blend`), ColorRamp ✓, **Invert ✓**, **Bright/Contrast ✓**,
   **Hue/Saturation/Value ✓** (branchless TSL ports of Blender's rgb_to_hsv/hsv_to_rgb in
-  `tsl/blender-color.ts`). **Missing:** RGB Curves.
-- **Converter:** Math ✓ (now 22 ops: +divide/power/sqrt/abs/sine/cosine/tangent/arctan2/floor/ceil/
-  round/fraction/modulo/greater-than/less-than/sign), Map Range ✓ (`levels`), **Clamp ✓** (minmax/range),
-  **Separate XYZ ✓**, **Combine XYZ ✓**, Separate/Combine Color ✓ (`split`/`combine-channels`),
-  RGB-to-BW ✓ (`luminance`). **Missing:** the remaining ~18 Math ops (hyperbolic/log/compare/smoothmin…).
+  `tsl/blender-color.ts`), **RGB Curves ✓ — now per-channel**: four 5-point Catmull-Rom tone curves
+  (Combined C + R/G/B), C applied to all channels first then per-channel, `Fac` blend (Blender's
+  ShaderNodeCurveRGB order). The 20 control-point y-values are a live `uniformArray` (drag updates the
+  render with no recompile). Edited via a **bespoke canvas curve-editor widget** (`curve-widget.ts`,
+  param type `curve`): channel tabs, draggable points, double-click resets a channel — Tweakpane has no
+  native curve UI, so it mounts custom DOM into the node's pane. Verified vs JS ref: per-channel + Fac
+  MAE ≤ 0.0015, live edit confirmed to change only the edited channel without recompiling. *Grounded
+  deviation:* fixed-x points (drag Y only) + Catmull-Rom, vs Blender's movable 2D handles / variable
+  point count / 256-sample baked LUT; Black/White-Level range-remap inputs omitted. **Color family
+  complete.**
+- **Converter:** Math ✓ — **full Blender op coverage** (all 40 `NODE_MATH_*` ops + our `mix`
+  convenience): functions (add/subtract/multiply/divide/multiply-add/power/logarithm/sqrt/inverse-sqrt/
+  absolute/exponent), comparison (min/max/less-than/greater-than/sign/compare/smooth-min/smooth-max),
+  rounding (round/floor/ceil/truncate/fraction/modulo/floored-modulo/wrap/snap/pingpong), trig
+  (sine/cosine/tangent/arcsine/arccosine/arctangent/arctan2/sinh/cosh/tanh), conversion
+  (radians/degrees). `declare()` shows per-op arity (unary→A, binary→A,B, ternary→A,B,C) with Blender's
+  socket labels; safe_* guards (÷0→0, log/inverse-sqrt/asin/acos domain→0) match Blender's GPU path.
+  Verified vs pure-JS refs (MAE ≤ 0.0013) — `a>1` ops driven through unclamped Mapping (the Gradient Fac
+  output is clamped to [0,1], so it can't feed values >1). Map Range ✓ (`levels`), **Clamp ✓**
+  (minmax/range), **Separate XYZ ✓**, **Combine XYZ ✓**, Separate/Combine Color ✓
+  (`split`/`combine-channels`), RGB-to-BW ✓ (`luminance`).
 - **Shader:** Principled ✓ (Subsurface/Anisotropy/Tangent not exposed — L2), Emission ✓.
   **Output:** Material Output ✓. **Group:** ✓.
 - Non-Blender outliers kept from before: `domain-warp`, `anisotropic-stripes` (no Blender equivalent).

@@ -42,13 +42,35 @@ export type NodeClass =
   | "converter"
   | "group";
 
-export type ParamType = "float" | "int" | "bool" | "color" | "select" | "vec3";
+export type ParamType = "float" | "int" | "bool" | "color" | "select" | "vec3" | "curve";
 
 // A vec3 param value (location/rotation/scale on the Mapping node). Serialized as plain {x,y,z}.
 export interface Vec3Value {
   x: number;
   y: number;
   z: number;
+}
+
+// A `curve` param value: four tone curves (RGB Curves node). Each channel is the list of control-point
+// y-values at fixed x = 0, .25, .5, .75, 1 (curve5). C is the combined curve applied to all channels
+// first, then the per-channel R/G/B curves. Identity default = [0, .25, .5, .75, 1]. Serialized as plain
+// JSON. Drives a `uniformArray` of 20 floats so curve edits update live without recompiling.
+export interface CurveValue {
+  C: number[];
+  R: number[];
+  G: number[];
+  B: number[];
+}
+export const CURVE_IDENTITY: readonly number[] = [0, 0.25, 0.5, 0.75, 1];
+export const CURVE_CHANNELS = ["C", "R", "G", "B"] as const;
+
+// Flatten a curve value to the 20-float uniform-array layout [C0..C4, R0..R4, G0..G4, B0..B4], filling
+// in the identity ramp for any missing/short channel. Used by both the compiler (uniform seed) and the
+// controller's live update so the two never disagree on ordering.
+export function curveToArray(v: CurveValue | undefined): number[] {
+  const ch = (a: number[] | undefined): number[] =>
+    Array.from({ length: 5 }, (_, i) => a?.[i] ?? CURVE_IDENTITY[i]);
+  return [...ch(v?.C), ...ch(v?.R), ...ch(v?.G), ...ch(v?.B)];
 }
 
 export interface ParamDef {

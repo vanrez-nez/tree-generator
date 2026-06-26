@@ -3,10 +3,12 @@ import type { BindingApi } from "@tweakpane/core";
 import type { EditorGraphConfig, EditorNodeConfig, EditorPaletteItem } from "../../node-editor";
 import type { MaterialGraphController } from "./graph/controller";
 import { nodePorts } from "./graph/registry";
+import { mountCurveWidget } from "./curve-widget";
 import {
   GROUP_INPUT_TYPE,
   GROUP_OUTPUT_TYPE,
   GROUP_TYPE,
+  type CurveValue,
   type GraphNode,
   type ParamDef,
 } from "./graph/types";
@@ -32,6 +34,11 @@ function bindParam(
   // ports. Deferred (queueMicrotask) so the canvas rebuild doesn't dispose this Pane mid change-event.
   onPortsMaybeChanged?: () => void,
 ): void {
+  // Curve params render a bespoke canvas editor (not a Tweakpane binding); it writes live via setParam.
+  if (param.type === "curve") {
+    mountCurveWidget(pane.element, controller, nodeId, param.key, local[param.key] as CurveValue);
+    return;
+  }
   let binding: BindingApi;
   switch (param.type) {
     case "color":
@@ -93,8 +100,10 @@ function nodeToConfig(
   const local: Record<string, unknown> = {};
   for (const p of def.params) {
     const v = node.params[p.key] ?? p.default;
-    // vec3 is an object Tweakpane mutates in place — copy so edits don't alias node.params pre-commit.
-    local[p.key] = p.type === "vec3" ? { ...(v as object) } : v;
+    // vec3 / curve are objects mutated in place by their widgets — deep-copy so edits don't alias
+    // node.params before they're committed via setParam.
+    local[p.key] =
+      p.type === "vec3" ? { ...(v as object) } : p.type === "curve" ? structuredClone(v) : v;
   }
 
   // Shader + output nodes aren't disable-able: bypassing a Principled/Emission would pass a raw colour

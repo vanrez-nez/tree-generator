@@ -3,8 +3,9 @@ import type { MeshStandardNodeMaterial } from "three/webgpu";
 import { compileGraph } from "./compiler";
 import { defaultRegistry, nodePorts, type NodeRegistry } from "./registry";
 import { createDefaultDocument } from "./default-document";
-import { coercionFor, GROUP_TYPE, GROUP_INPUT_TYPE, GROUP_OUTPUT_TYPE } from "./types";
+import { coercionFor, curveToArray, GROUP_TYPE, GROUP_INPUT_TYPE, GROUP_OUTPUT_TYPE } from "./types";
 import type {
+  CurveValue,
   GraphEdge,
   GraphNode,
   MaterialBackend,
@@ -149,6 +150,15 @@ export class MaterialGraphController {
         const v = value as { x: number; y: number; z: number };
         uniform.value.set(v.x, v.y, v.z);
       } else uniform.value = Number(value);
+      this.persist();
+      return;
+    }
+    // Curve params drive a live uniformArray: mutate its backing `.array` in place (update() re-uploads
+    // it each frame), so dragging a curve point updates the render without a recompile.
+    if (uniform && param?.type === "curve") {
+      const flat = curveToArray(value as CurveValue);
+      const arr = (uniform as unknown as { array: number[] }).array;
+      for (let i = 0; i < flat.length; i++) arr[i] = flat[i];
       this.persist();
       return;
     }

@@ -1,12 +1,14 @@
 import * as THREE from "three";
 import { MeshStandardNodeMaterial, MeshPhysicalNodeMaterial } from "three/webgpu";
-import { positionWorld, uv, vec3, float, uniform, convertToTexture, luminance } from "three/tsl";
+import { positionWorld, uv, vec3, float, uniform, uniformArray, convertToTexture, luminance } from "three/tsl";
 import {
   GROUP_INPUT_TYPE,
   GROUP_OUTPUT_TYPE,
   GROUP_TYPE,
   MATERIAL_OUTPUT_TYPE,
   coercionFor,
+  curveToArray,
+  type CurveValue,
   type BuildCtx,
   type Coercion,
   type GraphNode,
@@ -256,6 +258,10 @@ function buildUniforms(def: MaterialNodeDef, node: GraphNode): Record<string, Ma
       out[p.key] = uniform(new THREE.Vector3(v.x, v.y, v.z));
     } else if (p.type === "float" || p.type === "int") {
       out[p.key] = uniform(Number(raw));
+    } else if (p.type === "curve") {
+      // 20 floats ([C,R,G,B] × 5 points); build() indexes via .element(). uniformArray.update() copies
+      // its `.array` to the GPU each frame, so the controller can mutate it live (no recompile).
+      out[p.key] = uniformArray(curveToArray(raw as CurveValue | undefined), "float");
     }
     // bool / select: build() reads the raw value via ctx.params.
   }

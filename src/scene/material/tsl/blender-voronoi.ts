@@ -1,23 +1,17 @@
-import { Fn, float, int, vec3, floor } from "three/tsl";
+import { Fn, float, int, vec3, floor, select, max, mix, smoothstep, pow } from "three/tsl";
 import type { MaterialValue } from "../graph/types";
 
-// Faithful TSL port of Blender's Voronoi (F1 feature) — plan L4 / decision 2. Transcribed verbatim from
-// Blender GPU source:
-//   - cell hash: gpu_shader_common_hash.glsl — hash_pcg3d_i (int3 PCG) + hash_int3_to_vec3
-//     (mask & 0x7fffffff, * 1/float(0x7fffffff))
-//   - feature:   gpu_shader_material_voronoi.glsl — voronoi_distance (metric) + voronoi_f1 (3×3×3 loop)
-// Verified against a pure-JS implementation of the same algorithm (the authoritative per-node check),
-// and bake-compared to Blender. Distance metrics: 0=Euclidean, 1=Manhattan, 2=Chebychev (Minkowski
-// needs an exponent input — deferred). Only the F1 Distance output is ported here; F2 / Smooth F1 /
-// Distance-to-Edge and the Color/Position outputs are the remaining Voronoi work.
-
+// Faithful TSL port of Blender's Voronoi — plan L4 / decision 2. Transcribed verbatim from Blender GPU
+// source:
+//   - cell hash: gpu_shader_common_hash.glsl — hash_pcg3d_i (int3 PCG) + hash_int3_to_vec3.
+//   - features:  gpu_shader_material_voronoi.glsl — voronoi_distance (metric), voronoi_f1, voronoi_f2,
+//                voronoi_smooth_f1, voronoi_distance_to_edge.
+// Verified against a pure-JS implementation of the same algorithm (the authoritative per-node check).
+// Metrics: 0 Euclidean, 1 Manhattan, 2 Chebychev, 3 Minkowski (uses the exponent). Features expose
+// Distance/Color/Position (each output re-runs the loop; only connected outputs compile).
 type V = MaterialValue;
+const INV_2147483648 = 1 / 0x80000000; // float(0x7fffffff) rounds to 2147483648 in f32 — match Blender.
 
-// float(0x7fffffff) rounds to 2147483648 in f32 — match Blender's divisor exactly.
-const INV_2147483648 = 1 / 0x80000000;
-
-// hash_pcg3d_i(k) then hash_int3_to_vec3: int3 → vec3 in [0,1]. kx/ky/kz are int nodes. Uses scalar
-// toVar locals (not an ivec3) to make the in-place sequential cross-terms explicit.
 function hashInt3ToVec3(kx: V, ky: V, kz: V): V {
   const x = kx.mul(1664525).add(1013904223).toVar();
   const y = ky.mul(1664525).add(1013904223).toVar();
@@ -39,75 +33,158 @@ function hashInt3ToVec3(kx: V, ky: V, kz: V): V {
   );
 }
 
-// voronoi_distance for one metric (build-time selected). a, b are vec3.
-function voronoiDistance(a: V, b: V, metric: number): V {
-  if (metric === 1) {
-    // Manhattan
-    const d = a.sub(b).abs();
-    return d.x.add(d.y).add(d.z);
+// voronoi_distance for one metric (build-time selected). exponent is used only for Minkowski.
+function voronoiDistance(a: V, b: V, metric: number, exponent: V): V {
+  const d = a.sub(b).abs();
+  if (metric === 1) return d.x.add(d.y).add(d.z); // Manhattan
+  if (metric === 2) return d.x.max(d.y.max(d.z)); // Chebychev
+  if (metric === 3) {
+    // Minkowski: pow(Σ pow(|di|, e), 1/e)
+    const e = exponent;
+    return pow(pow(d.x, e).add(pow(d.y, e)).add(pow(d.z, e)), float(1).div(e));
   }
-  if (metric === 2) {
-    // Chebychev
-    const d = a.sub(b).abs();
-    return d.x.max(d.y.max(d.z));
-  }
-  // Euclidean (default)
-  return a.sub(b).length();
+  return a.sub(b).length(); // Euclidean
 }
 
-// voronoi_f1 for 3D: the 3×3×3 cell search tracking the closest point. `want` selects which output to
-// return — Distance (float), Color (vec3 = hash of the winning cell), or Position (vec3 = winning point
-// in world space). Each output re-runs the loop (called once per connected output). `randomness` is a
-// live uniform; `metric` is build-time.
-type F1Output = "distance" | "color" | "position";
+type Want = "distance" | "color" | "position";
 
-function voronoiF1(coord: V, randomness: V, metric: number, want: F1Output): V {
+// F1: closest point. Tracks the winning offset so it can emit Distance / Color / Position.
+function voronoiF1(coord: V, randomness: V, metric: number, exponent: V, want: Want): V {
   return Fn(() => {
-    const cell = floor(coord) as V; // floor()'s TS return narrows to float; keep vec component access
+    const cell = floor(coord) as V;
     const local = coord.sub(cell);
     const cx = int(cell.x);
     const cy = int(cell.y);
     const cz = int(cell.z);
     const minDist = float(1e10).toVar();
-    const targetOffset = vec3(0, 0, 0).toVar();
-    const targetPosition = vec3(0, 0, 0).toVar();
-    for (let k = -1; k <= 1; k++) {
-      for (let j = -1; j <= 1; j++) {
+    const tOff = vec3(0, 0, 0).toVar();
+    const tPos = vec3(0, 0, 0).toVar();
+    for (let k = -1; k <= 1; k++)
+      for (let j = -1; j <= 1; j++)
         for (let i = -1; i <= 1; i++) {
-          const offset = vec3(i, j, k);
-          const pointPosition = offset.add(
-            hashInt3ToVec3(cx.add(i), cy.add(j), cz.add(k)).mul(randomness),
-          );
-          const d = voronoiDistance(pointPosition, local, metric);
+          const off = vec3(i, j, k);
+          const pp = off.add(hashInt3ToVec3(cx.add(i), cy.add(j), cz.add(k)).mul(randomness));
+          const d = voronoiDistance(pp, local, metric, exponent);
           const closer = d.lessThan(minDist);
           minDist.assign(closer.select(d, minDist));
-          targetOffset.assign(closer.select(offset, targetOffset));
-          targetPosition.assign(closer.select(pointPosition, targetPosition));
+          tOff.assign(closer.select(off, tOff));
+          tPos.assign(closer.select(pp, tPos));
         }
-      }
-    }
-    if (want === "color") {
-      return hashInt3ToVec3(
-        cx.add(int(targetOffset.x)),
-        cy.add(int(targetOffset.y)),
-        cz.add(int(targetOffset.z)),
-      );
-    }
-    if (want === "position") return targetPosition.add(cell);
+    if (want === "color")
+      return hashInt3ToVec3(cx.add(int(tOff.x)), cy.add(int(tOff.y)), cz.add(int(tOff.z)));
+    if (want === "position") return tPos.add(cell);
     return minDist;
   })();
 }
 
-export const blenderVoronoiF1 = (coord: V, randomness: V, metric: number): V =>
-  voronoiF1(coord, randomness, metric, "distance");
-export const blenderVoronoiColor = (coord: V, randomness: V, metric: number): V =>
-  voronoiF1(coord, randomness, metric, "color");
-export const blenderVoronoiPosition = (coord: V, randomness: V, metric: number): V =>
-  voronoiF1(coord, randomness, metric, "position");
+// F2: second-closest point (tracks both F1 and F2; updates from the old state each step).
+function voronoiF2(coord: V, randomness: V, metric: number, exponent: V, want: Want): V {
+  return Fn(() => {
+    const cell = floor(coord) as V;
+    const local = coord.sub(cell);
+    const cx = int(cell.x);
+    const cy = int(cell.y);
+    const cz = int(cell.z);
+    const dF1 = float(1e10).toVar();
+    const dF2 = float(1e10).toVar();
+    const offF1 = vec3(0, 0, 0).toVar();
+    const offF2 = vec3(0, 0, 0).toVar();
+    const posF1 = vec3(0, 0, 0).toVar();
+    const posF2 = vec3(0, 0, 0).toVar();
+    for (let k = -1; k <= 1; k++)
+      for (let j = -1; j <= 1; j++)
+        for (let i = -1; i <= 1; i++) {
+          const off = vec3(i, j, k);
+          const pp = off.add(hashInt3ToVec3(cx.add(i), cy.add(j), cz.add(k)).mul(randomness));
+          const d = voronoiDistance(pp, local, metric, exponent);
+          // Snapshot the comparisons into vars: dF1/dF2 are reassigned below, so an expression-based
+          // isF1/isF2 would re-read the *new* values in the later (offset/position) selects.
+          const isF1 = d.lessThan(dF1).toVar();
+          const isF2 = d.lessThan(dF2).toVar();
+          // Compute next state from the OLD state (F2 inherits the old F1 when a new F1 is found).
+          const nDF2 = select(isF1, dF1, select(isF2, d, dF2));
+          const nOffF2 = select(isF1, offF1, select(isF2, off, offF2));
+          const nPosF2 = select(isF1, posF1, select(isF2, pp, posF2));
+          const nDF1 = select(isF1, d, dF1);
+          const nOffF1 = select(isF1, off, offF1);
+          const nPosF1 = select(isF1, pp, posF1);
+          // Assign F2 first: its new value reads the OLD F1 (TSL vars are by-reference, so updating F1
+          // before F2 would feed the new F1 into F2 — which made F2 track F1).
+          dF2.assign(nDF2);
+          offF2.assign(nOffF2);
+          posF2.assign(nPosF2);
+          dF1.assign(nDF1);
+          offF1.assign(nOffF1);
+          posF1.assign(nPosF1);
+        }
+    if (want === "color")
+      return hashInt3ToVec3(cx.add(int(offF2.x)), cy.add(int(offF2.y)), cz.add(int(offF2.z)));
+    if (want === "position") return posF2.add(cell);
+    return dF2;
+  })();
+}
 
-// voronoi_distance_to_edge for 3D (two passes): find the closest point, then the minimum distance to the
-// perpendicular bisector between it and each neighbour. Uses squared Euclidean (dot), independent of the
-// metric — matching Blender. Transcribed verbatim from gpu_shader_material_voronoi.glsl.
+// Smooth F1: 5×5×5 smooth-minimum blend (smoothness param). Stateful accumulation of distance/color/pos.
+function voronoiSmoothF1(
+  coord: V,
+  randomness: V,
+  metric: number,
+  exponent: V,
+  smoothness: V,
+  want: Want,
+): V {
+  return Fn(() => {
+    const cell = floor(coord) as V;
+    const local = coord.sub(cell);
+    const cx = int(cell.x);
+    const cy = int(cell.y);
+    const cz = int(cell.z);
+    const sm = max(smoothness, float(1e-6)); // guard the /smoothness divide
+    const smoothD = float(0).toVar();
+    const smoothC = vec3(0, 0, 0).toVar();
+    const smoothP = vec3(0, 0, 0).toVar();
+    const h = float(-1).toVar();
+    for (let k = -2; k <= 2; k++)
+      for (let j = -2; j <= 2; j++)
+        for (let i = -2; i <= 2; i++) {
+          const off = vec3(i, j, k);
+          const rnd = hashInt3ToVec3(cx.add(i), cy.add(j), cz.add(k)); // = cell colour
+          const pp = off.add(rnd.mul(randomness));
+          const d = voronoiDistance(pp, local, metric, exponent);
+          h.assign(
+            select(
+              h.equal(-1),
+              float(1),
+              smoothstep(0, 1, float(0.5).add(smoothD.sub(d).mul(0.5).div(sm))),
+            ),
+          );
+          const corr = sm.mul(h).mul(float(1).sub(h)).toVar();
+          smoothD.assign(mix(smoothD, d, h).sub(corr));
+          corr.assign(corr.div(float(1).add(sm.mul(3))));
+          smoothC.assign(mix(smoothC, rnd, h).sub(corr));
+          smoothP.assign(mix(smoothP, pp, h).sub(corr));
+        }
+    if (want === "color") return smoothC;
+    if (want === "position") return smoothP.add(cell);
+    return smoothD;
+  })();
+}
+
+// Public per-feature, per-output accessors (the node calls the ones it needs).
+export const blenderVoronoiF1 = (c: V, r: V, m: number, e: V): V => voronoiF1(c, r, m, e, "distance");
+export const blenderVoronoiF1Color = (c: V, r: V, m: number, e: V): V => voronoiF1(c, r, m, e, "color");
+export const blenderVoronoiF1Pos = (c: V, r: V, m: number, e: V): V => voronoiF1(c, r, m, e, "position");
+export const blenderVoronoiF2 = (c: V, r: V, m: number, e: V): V => voronoiF2(c, r, m, e, "distance");
+export const blenderVoronoiF2Color = (c: V, r: V, m: number, e: V): V => voronoiF2(c, r, m, e, "color");
+export const blenderVoronoiF2Pos = (c: V, r: V, m: number, e: V): V => voronoiF2(c, r, m, e, "position");
+export const blenderVoronoiSmoothF1 = (c: V, r: V, m: number, e: V, s: V): V =>
+  voronoiSmoothF1(c, r, m, e, s, "distance");
+export const blenderVoronoiSmoothF1Color = (c: V, r: V, m: number, e: V, s: V): V =>
+  voronoiSmoothF1(c, r, m, e, s, "color");
+export const blenderVoronoiSmoothF1Pos = (c: V, r: V, m: number, e: V, s: V): V =>
+  voronoiSmoothF1(c, r, m, e, s, "position");
+
+// Distance to Edge (two passes; squared-Euclidean dot, metric-independent — matches Blender).
 export function blenderVoronoiDistanceToEdge(coord: V, randomness: V): V {
   return Fn(() => {
     const cell = floor(coord) as V;
@@ -117,7 +194,6 @@ export function blenderVoronoiDistanceToEdge(coord: V, randomness: V): V {
     const cz = int(cell.z);
     const point = (i: number, j: number, k: number): V =>
       vec3(i, j, k).add(hashInt3ToVec3(cx.add(i), cy.add(j), cz.add(k)).mul(randomness)).sub(local);
-
     const vectorToClosest = vec3(0, 0, 0).toVar();
     const minDist = float(1e10).toVar();
     for (let k = -1; k <= 1; k++)
@@ -129,7 +205,6 @@ export function blenderVoronoiDistanceToEdge(coord: V, randomness: V): V {
           minDist.assign(closer.select(d, minDist));
           vectorToClosest.assign(closer.select(vp, vectorToClosest));
         }
-
     const minEdge = float(1e10).toVar();
     for (let k = -1; k <= 1; k++)
       for (let j = -1; j <= 1; j++)

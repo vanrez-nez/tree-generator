@@ -12,6 +12,7 @@ import { blendNode } from "./nodes/blend";
 import { invertNode } from "./nodes/invert";
 import { brightContrastNode } from "./nodes/bright-contrast";
 import { hueSatValNode } from "./nodes/hue-sat-val";
+import { rgbCurvesNode } from "./nodes/rgb-curves";
 import { luminanceNode, splitChannelsNode, combineChannelsNode } from "./nodes/adapters";
 import { clampNode } from "./nodes/clamp";
 import { separateXyzNode, combineXyzNode } from "./nodes/xyz";
@@ -81,6 +82,7 @@ export function createDefaultRegistry(): NodeRegistry {
     .register(invertNode)
     .register(brightContrastNode)
     .register(hueSatValNode)
+    .register(rgbCurvesNode)
     .register(luminanceNode)
     .register(splitChannelsNode)
     .register(combineChannelsNode)

@@ -458,3 +458,36 @@ ne-node .controls .control {
   min-width: 0;
   width: 100%;
 }
+
+/* RGB Curves canvas editor (curve-widget.ts), embedded inside the node's Tweakpane root. */
+.curve-widget {
+  padding: 4px 6px 6px;
+  user-select: none;
+}
+.curve-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+.curve-tabs button {
+  flex: 1;
+  background: #2a2a2a;
+  border: 1px solid #444;
+  border-radius: 3px;
+  font: 600 11px/1.4 system-ui, sans-serif;
+  padding: 2px 0;
+  cursor: pointer;
+}
+.curve-tabs button.active {
+  background: #3d3d3d;
+  border-color: #6a6a6a;
+}
+.curve-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #1b1b1b;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  touch-action: none;
+}
