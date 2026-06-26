@@ -278,6 +278,7 @@ if (import.meta.env.DEV) {
     __editor: materialEditor,
     __openEditor: () => materialEditor.open(buildMaterialEditorConfig(mainScene.materialController)),
     __baker: channelBaker,
+    __savePng: saveChannelToBake,
     __frame: () => {
       mainScene.update(0, camera, rendererSize);
       renderer.render(mainScene.scene, camera);
@@ -563,6 +564,24 @@ function refreshTexturePreview(): void {
     });
 }
 
+// Dev-only: bake a PBR channel and POST it to the bake server (scripts/bake-server.mjs,
+// `npm run bake:server`), which writes it to ./bake/<channel>.png. Lets a node configuration be saved
+// as a 2D texture on disk for inspection. No-op if the bake server isn't running.
+const BAKE_SERVER = "http://127.0.0.1:8788";
+async function saveChannelToBake(channel: PbrSocket, size = 1024): Promise<void> {
+  const image = await channelBaker.readImageData(renderer, mainScene.materialController, channel, size);
+  if (!image) return;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  canvas.getContext("2d")?.putImageData(image, 0, 0);
+  const blob: Blob | null = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+  if (!blob) return;
+  await fetch(`${BAKE_SERVER}/save?name=${channel}.png`, { method: "POST", body: blob }).catch(() => {
+    console.warn("[bake] POST failed — is `npm run bake:server` running?");
+  });
+}
+
 function buildTextureLayers(): void {
   const previewFolder = texturePage.addFolder({ title: "Preview", expanded: true });
   texturePreview = previewFolder.addBlade({
@@ -611,6 +630,16 @@ function buildTextureLayers(): void {
         `material-${channel}.png`,
       );
     });
+  }
+
+  // Dev-only: save channels straight into ./bake via the bake server (npm run bake:server).
+  if (import.meta.env.DEV) {
+    const bakeFolder = texturePage.addFolder({ title: "Bake → ./bake (dev)", expanded: false });
+    for (const channel of ["basecolor", "normal", "ao", "roughness"] as const) {
+      bakeFolder
+        .addButton({ title: `Save ${channel}` })
+        .on("click", () => void saveChannelToBake(PREVIEW_SOCKET[channel]));
+    }
   }
 }
 
