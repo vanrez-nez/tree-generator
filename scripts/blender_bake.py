@@ -189,6 +189,77 @@ NODE_BUILDERS = {
 }
 
 
+GROUP_TYPE = "group"
+GROUP_INPUT_TYPE = "group-input"
+GROUP_OUTPUT_TYPE = "group-output"
+
+
+def _inline_one_group(doc, gid):
+    """Replace one group node with its subgraph's interior nodes, rewiring the boundary. Mirrors the JS
+    compiler's recursive group handling (graph/compiler.ts), flattened: a group is sugar over a flat
+    network. Interior node ids are prefixed with '<gid>/' to stay unique; Group Input / Output nodes are
+    dropped and their wires spliced through (incl. straight passthrough)."""
+    nodes, edges = doc["nodes"], doc["edges"]
+    group = next(n for n in nodes if n["id"] == gid)
+    sub = group["subgraph"]
+    gi = next(n for n in sub["nodes"] if n["type"] == GROUP_INPUT_TYPE)
+    go = next(n for n in sub["nodes"] if n["type"] == GROUP_OUTPUT_TYPE)
+
+    def P(nid):
+        return gid + "/" + nid
+
+    # External source feeding each group input key (flattened-space socket).
+    src_of_input = {e["toInput"]: (e["fromNode"], e["fromOutput"]) for e in edges if e["toNode"] == gid}
+
+    # Resolve a subgraph socket reference into flattened space: a Group Input output becomes the external
+    # source wired to that group input; any other node is just its prefixed self.
+    def resolve_src(fn, fo):
+        return src_of_input.get(fo) if fn == gi["id"] else (P(fn), fo)
+
+    # What feeds each group output key (the interior node wired to Group Output), resolved to flat space.
+    feeder_of_output = {
+        e["toInput"]: resolve_src(e["fromNode"], e["fromOutput"]) for e in sub["edges"] if e["toNode"] == go["id"]
+    }
+
+    new_nodes = [n for n in nodes if n["id"] != gid]
+    for n in sub["nodes"]:
+        if n["id"] in (gi["id"], go["id"]):
+            continue
+        m = dict(n)
+        m["id"] = P(n["id"])
+        new_nodes.append(m)
+
+    new_edges = [e for e in edges if e["fromNode"] != gid and e["toNode"] != gid]
+    # Interior edges (skip those into Group Output — spliced via feeder_of_output); remap Group Input sources.
+    for e in sub["edges"]:
+        if e["toNode"] == go["id"]:
+            continue
+        src = resolve_src(e["fromNode"], e["fromOutput"])
+        if src is None:  # unconnected group input — drop the dangling interior wire
+            continue
+        new_edges.append({"fromNode": src[0], "fromOutput": src[1], "toNode": P(e["toNode"]), "toInput": e["toInput"]})
+    # External consumers of the group's outputs — rewire to the interior feeder.
+    for e in edges:
+        if e["fromNode"] == gid:
+            f = feeder_of_output.get(e["fromOutput"])
+            if f is not None:
+                new_edges.append({"fromNode": f[0], "fromOutput": f[1], "toNode": e["toNode"], "toInput": e["toInput"]})
+
+    return {"version": doc.get("version", 2), "nodes": new_nodes, "edges": new_edges}
+
+
+def inline_groups(doc):
+    """Flatten all (possibly nested) node groups so build_graph sees a plain network. Idempotent on
+    group-free docs. Interior groups are inlined in later passes since their prefixed nodes keep type
+    'group'."""
+    doc = json.loads(json.dumps(doc))  # deep copy; we mutate the working doc
+    while True:
+        gid = next((n["id"] for n in doc["nodes"] if n["type"] == GROUP_TYPE), None)
+        if gid is None:
+            return doc
+        doc = _inline_one_group(doc, gid)
+
+
 def build_graph(doc):
     """Create a material whose node tree mirrors the doc's value-producing nodes. The shader node
     (Principled/Emission) and Material Output are structural — not translated — so channel_sources maps
@@ -334,6 +405,7 @@ def main():
 
     with open(config_path, "r") as f:
         doc = json.load(f)
+    doc = inline_groups(doc)  # flatten node groups before translating (groups are sugar over a flat graph)
 
     scene = bpy.context.scene
     scene.render.engine = "CYCLES"

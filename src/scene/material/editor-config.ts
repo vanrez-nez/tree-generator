@@ -4,6 +4,7 @@ import type { EditorGraphConfig, EditorNodeConfig, EditorPaletteItem } from "../
 import type { MaterialGraphController } from "./graph/controller";
 import { nodePorts } from "./graph/registry";
 import { mountCurveWidget } from "./curve-widget";
+import { mountInterfaceWidget } from "./interface-widget";
 import {
   GROUP_INPUT_TYPE,
   GROUP_OUTPUT_TYPE,
@@ -11,6 +12,7 @@ import {
   type CurveValue,
   type GraphNode,
   type ParamDef,
+  type PortDef,
 } from "./graph/types";
 
 const OUTPUT_TYPE = "material-output";
@@ -85,6 +87,25 @@ function paneMount(build: (pane: Pane) => void): (host: HTMLElement) => () => vo
   };
 }
 
+// Group Input / Group Output nodes get an interface editor (add/rename/remove exposed sockets) instead
+// of param controls. Returns the mount fn, or undefined for non-boundary nodes (fall back to params).
+function groupBoundaryControls(
+  controller: MaterialGraphController,
+  node: GraphNode,
+  ports: { inputs: PortDef[]; outputs: PortDef[] },
+  rerender: () => void,
+): ((host: HTMLElement) => () => void) | undefined {
+  if (node.type !== GROUP_INPUT_TYPE && node.type !== GROUP_OUTPUT_TYPE) return undefined;
+  // The boundary mirrors the interface on its opposite face: Group Input's *outputs* are the group's
+  // inputs; Group Output's *inputs* are the group's outputs.
+  const side = node.type === GROUP_INPUT_TYPE ? "input" : "output";
+  const sockets = side === "input" ? ports.outputs : ports.inputs;
+  return (host) => {
+    mountInterfaceWidget(host, controller, side, sockets, rerender);
+    return () => {};
+  };
+}
+
 // Build the editor config for a single graph node (ports, generated controls, toggle, delete).
 function nodeToConfig(
   controller: MaterialGraphController,
@@ -118,13 +139,13 @@ function nodeToConfig(
     position: node.position,
     inputs: ports.inputs.map((p) => ({ key: p.key, label: p.label ?? p.key, kind: p.kind })),
     outputs: ports.outputs.map((p) => ({ key: p.key, label: p.label ?? p.key, kind: p.kind })),
-    mountControls:
+    mountControls: groupBoundaryControls(controller, node, ports, rerender) ?? (
       def.params.length > 0
         ? paneMount((pane) => {
             for (const p of def.params)
               bindParam(pane, controller, node.id, p, local, def.declare ? rerender : undefined);
           })
-        : undefined,
+        : undefined),
     enabled: node.enabled,
     onToggle: canToggle ? (enabled) => controller.setNodeEnabled(node.id, enabled) : undefined,
     deletable: !UNDELETABLE.has(node.type),

@@ -491,3 +491,59 @@ ne-node .controls .control {
   border-radius: 3px;
   touch-action: none;
 }
+
+/* Group-interface editor (interface-widget.ts) on Group Input / Group Output nodes. */
+.iface-widget {
+  padding: 4px 6px 6px;
+  user-select: none;
+  font: 11px/1.5 system-ui, sans-serif;
+}
+.iface-title {
+  font-weight: 600;
+  opacity: 0.7;
+  margin-bottom: 4px;
+}
+.iface-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 3px;
+}
+.iface-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: #a1a1a1;
+}
+.iface-dot[data-kind="vector"] { background: #6363c7; }
+.iface-dot[data-kind="color"] { background: #c7c729; }
+.iface-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: #232323;
+  border: 1px solid #3d3d3d;
+  border-radius: 3px;
+  color: inherit;
+  padding: 1px 4px;
+}
+.iface-kind {
+  background: #232323;
+  border: 1px solid #3d3d3d;
+  border-radius: 3px;
+  color: inherit;
+}
+.iface-del,
+.iface-addbtn {
+  flex: 0 0 auto;
+  width: 20px;
+  background: #2a2a2a;
+  border: 1px solid #444;
+  border-radius: 3px;
+  color: inherit;
+  cursor: pointer;
+}
+.iface-addbtn:hover,
+.iface-del:hover {
+  background: #3d3d3d;
+}

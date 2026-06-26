@@ -2,8 +2,8 @@
 
 Status: **testing pipeline built (§5); Phases 0–3, 6 complete & verified. Phase 4: Noise ✓, Voronoi
 ✓ (all features F1 / F2 / Smooth-F1 / Distance-to-Edge, all metrics incl. Minkowski, all outputs
-Distance/Color/Position — verified MAE < 0.0015 vs JS-ref), Gradient ✓, Wave ✓. Phase 5: group compile core ✓, editor navigation ✓, declare(params) ✓ (group-interface-edit
-UI + harness group-inlining pending). Node-family fill-in underway (Texture Coordinate ✓, Mapping ✓
+Distance/Color/Position — verified MAE < 0.0015 vs JS-ref), Gradient ✓, Wave ✓. Phase 5 complete: group compile core ✓, editor navigation ✓, declare(params) ✓, group-interface-edit
+UI ✓, harness group-inlining ✓. Node-family fill-in underway (Texture Coordinate ✓, Mapping ✓
 [+ `vec3` param type], Vector Math ✓, Color family ✓ [Invert / Bright-Contrast / Hue-Sat-Val / RGB-Curves (per-channel + canvas curve widget)], Converter cluster ✓
 [Clamp / Separate-Combine XYZ / Math — full Blender 40-op coverage], Normal Map ✓ [Vector family complete]; see §11 for the
 remaining node inventory).**
@@ -456,10 +456,29 @@ limits the Blender-bake side).
   Distance). **Verified:** switching feature changes the node's ports (3 → 1), prunes the dangling colour
   edge (no compile crash), and the editor re-renders the node with the new output set.
 
-**Remaining (pending):**
-- A UI to edit a group's interface (add/rename exposed sockets) — currently a fixed float passthrough;
-  `declare`/`ports` are the foundation.
-- Harness: `blender_bake.py` should inline groups before translating (groups aren't Blender-bakeable yet).
+**Group-interface editing UI — ✓ DONE & verified.**
+- Controller gained `addGroupSocket` / `renameGroupSocket` / `removeGroupSocket` (`controller.ts`),
+  valid while inside a group. Each keeps the two mirrored copies of the interface in sync — the group
+  node's `ports` (in the parent doc) and the boundary node inside the subgraph (Group Input's outputs ↔
+  group inputs; Group Output's inputs ↔ group outputs). Keys are stable (rename changes only the label,
+  so wires survive); remove prunes the now-dangling edges on both the parent group node and the boundary.
+- Editor: a bespoke widget (`interface-widget.ts`) mounts on the Group Input / Group Output nodes
+  (`editor-config.ts` `groupBoundaryControls`) — lists the side's sockets with rename + delete and an
+  add row (name + kind; shader omitted per L1). Edits call the controller then `rerender` (controller
+  edits don't auto-rebuild the Rete canvas). CSS in `node-editor.css`.
+- **Verified:** add color in/out sockets → both the group node ports and the boundary ports update, and
+  it still compiles; rename updates the label; remove drops the socket. A color-passthrough group built
+  through this interface bakes **byte-identical (maxDiff 0)** to the inlined `constant-color → baseColor`
+  (`#4080c0` → [64,128,192] on both).
+
+**Harness group inlining — ✓ DONE & verified.** `blender_bake.py` gained `inline_groups()` (called on
+the loaded doc before `build_graph`): it flattens all (possibly nested) groups into a plain network —
+prefixing interior ids `<gid>/…`, dropping Group Input/Output, and splicing their wires (incl. straight
+passthrough). Mirrors the JS compiler's recursive group handling. Verified (real module, stubbed `bpy`)
+on passthrough, interior-node, and nested-group docs — all flatten with no group nodes left and the
+expected spliced edges.
+
+**Phase 5 complete.**
 
 ### Phase 6 — Color management pin (L5) — ✓ DONE & verified
 **Convention pinned:** the graph works in **linear** space (TSL/`THREE.Color` with colour management on

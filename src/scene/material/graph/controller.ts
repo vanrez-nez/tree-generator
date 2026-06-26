@@ -118,6 +118,93 @@ export class MaterialGraphController {
   exitToDepth(depth: number): void {
     this.path.length = Math.max(0, Math.min(depth, this.path.length));
   }
+
+  // --- group interface editing (Phase 5) ---------------------------------------------------------
+  // Only valid while inside a group. A group's interface lives in two mirrored places that must stay in
+  // sync: the group node's `ports` (in the parent doc) and the boundary node inside the subgraph
+  // (group-input.outputs ↔ group inputs; group-output.inputs ↔ group outputs). These helpers edit both.
+  private currentGroup(): { group: GraphNode; parent: MaterialGraphDocument } | null {
+    if (this.path.length === 0) return null;
+    let parent = this.doc;
+    for (let i = 0; i < this.path.length - 1; i++) {
+      const g = parent.nodes.find((n) => n.id === this.path[i] && n.type === GROUP_TYPE);
+      if (!g?.subgraph) return null;
+      parent = g.subgraph;
+    }
+    const group = parent.nodes.find((n) => n.id === this.path[this.path.length - 1]);
+    return group?.subgraph ? { group, parent } : null;
+  }
+
+  private boundary(group: GraphNode, side: "input" | "output"): GraphNode | undefined {
+    const type = side === "input" ? GROUP_INPUT_TYPE : GROUP_OUTPUT_TYPE;
+    return group.subgraph!.nodes.find((n) => n.type === type);
+  }
+
+  // The boundary node mirrors the interface on its *opposite* face: group inputs surface as the Group
+  // Input node's outputs, group outputs as the Group Output node's inputs.
+  private static boundaryPorts(b: GraphNode, side: "input" | "output"): PortDef[] {
+    const p = (b.ports ??= { inputs: [], outputs: [] });
+    return side === "input" ? p.outputs : p.inputs;
+  }
+  private static groupPorts(group: GraphNode, side: "input" | "output"): PortDef[] {
+    const p = (group.ports ??= { inputs: [], outputs: [] });
+    return side === "input" ? p.inputs : p.outputs;
+  }
+
+  // Add an exposed socket to the current group. Returns the generated key (stable; rename only changes the
+  // label so existing wires survive).
+  addGroupSocket(side: "input" | "output", label: string, kind: PortKind): string | null {
+    const cur = this.currentGroup();
+    const b = cur && this.boundary(cur.group, side);
+    if (!cur || !b) return null;
+    const existing = MaterialGraphController.groupPorts(cur.group, side);
+    const base = (label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "socket");
+    let key = base;
+    for (let i = 2; existing.some((p) => p.key === key); i++) key = `${base}-${i}`;
+    const port: PortDef = { key, label: label.trim() || key, kind };
+    existing.push(port);
+    MaterialGraphController.boundaryPorts(b, side).push({ ...port });
+    this.recompile();
+    return key;
+  }
+
+  // Rename an exposed socket (label only — the key/identifier stays put, so wires are preserved).
+  renameGroupSocket(side: "input" | "output", key: string, label: string): void {
+    const cur = this.currentGroup();
+    const b = cur && this.boundary(cur.group, side);
+    if (!cur || !b) return;
+    for (const ports of [
+      MaterialGraphController.groupPorts(cur.group, side),
+      MaterialGraphController.boundaryPorts(b, side),
+    ]) {
+      const p = ports.find((p) => p.key === key);
+      if (p) p.label = label.trim() || key;
+    }
+    this.recompile();
+  }
+
+  // Remove an exposed socket and prune the wires it leaves dangling — both in the parent (edges on the
+  // group node) and inside the subgraph (edges on the boundary node).
+  removeGroupSocket(side: "input" | "output", key: string): void {
+    const cur = this.currentGroup();
+    const b = cur && this.boundary(cur.group, side);
+    if (!cur || !b) return;
+    const { group, parent } = cur;
+    const sub = group.subgraph!;
+    const drop = (ports: PortDef[]) => ports.filter((p) => p.key !== key);
+    if (side === "input") {
+      group.ports!.inputs = drop(group.ports!.inputs);
+      b.ports!.outputs = drop(b.ports!.outputs);
+      parent.edges = parent.edges.filter((e) => !(e.toNode === group.id && e.toInput === key));
+      sub.edges = sub.edges.filter((e) => !(e.fromNode === b.id && e.fromOutput === key));
+    } else {
+      group.ports!.outputs = drop(group.ports!.outputs);
+      b.ports!.inputs = drop(b.ports!.inputs);
+      parent.edges = parent.edges.filter((e) => !(e.fromNode === group.id && e.fromOutput === key));
+      sub.edges = sub.edges.filter((e) => !(e.toNode === b.id && e.toInput === key));
+    }
+    this.recompile();
+  }
   get lastError(): string | null {
     return this.lastError_;
   }
