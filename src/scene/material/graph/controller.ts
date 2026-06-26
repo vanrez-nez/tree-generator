@@ -161,6 +161,13 @@ export class MaterialGraphController {
     this.recompile();
   }
 
+  // Replace the whole graph with an externally-supplied document (a saved/test config) and recompile.
+  // Used by the dual-system bake pipeline (__bakeConfig) to drive the graph from a single JSON.
+  loadDocument(doc: MaterialGraphDocument): void {
+    this.doc = doc;
+    this.recompile();
+  }
+
   private recompile(): void {
     try {
       const compiled = compileGraph(this.doc, this.registry, { backend: this.backend });

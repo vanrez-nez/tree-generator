@@ -8,7 +8,8 @@
     "dev:proxy": "bash scripts/devsite.sh",
     "build": "tsc && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "bake:server": "node scripts/bake-server.mjs"
+    "bake:server": "node scripts/bake-server.mjs",
+    "bake:blender": "node scripts/blender-bake.mjs"
   },
   "dependencies": {
     "@atlaskit/pragmatic-drag-and-drop": "^2.0.1",

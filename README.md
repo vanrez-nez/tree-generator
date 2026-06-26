@@ -62,3 +62,43 @@ small local server. Useful for inspecting/testing what a node configuration prod
 Note: channels are baked through the graph's **baked** backend (a 2D uv slice). Nodes authored for the
 3D world-space (live) domain — e.g. the angular `anisotropic-stripes` — can show artifacts/seams when
 baked this way; the bake is faithful to the graph, not necessarily a tileable texture yet.
+
+## Dual-system testing pipeline (ours vs Blender)
+
+While porting Blender's node math (see `blender-node-alignment-plan.md`), we compare our output against
+Blender's for the **same** node configuration. A single JSON config — a `MaterialGraphDocument` (our
+nodes/edges format) — is the source of truth driving **both** systems. Outputs land side by side in
+`bake/<name>/`:
+
+```txt
+bake/noise/
+  config.json
+  baseColor.ours.png    baseColor.blender.png
+  roughness.ours.png    roughness.blender.png
+```
+
+Configs live in `configs/` (e.g. `configs/noise.json`). Per channel, both PNGs show the same socket so
+they can be eyeballed. Outputs are **not** expected to match pixel-for-pixel — our TSL noise and
+Blender's Perlin/Worley differ by construction; this tool checks structure/behavior as the faithful
+ports land.
+
+**1. Our side** (browser/WebGPU). With the dev server and bake server running, in the app's dev console:
+
+```js
+const cfg = await (await fetch('/configs/noise.json')).json();
+await __bakeConfig(cfg, 'noise', 1024); // loads the config, bakes every connected channel, POSTs
+// → bake/noise/config.json + bake/noise/<channel>.ours.png
+```
+
+**2. Blender side** (headless reference). In a terminal:
+
+```sh
+npm run bake:blender -- configs/noise.json
+# → bake/noise/<channel>.blender.png  (and a copy of config.json)
+```
+
+`scripts/blender-bake.mjs` spawns Blender (`$BLENDER`, else the standard macOS app path) running
+`scripts/blender_bake.py`, which rebuilds the graph as a Blender shader tree and EMIT-bakes each
+connected PBR channel. Unmapped node types **error loudly** — add a builder to `NODE_BUILDERS` in
+`blender_bake.py` to support a new node. Color management uses the `Standard` view transform; expect a
+brightness offset on color channels vs our raw render-target bytes (structure is preserved).

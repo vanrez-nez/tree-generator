@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "id": "fbm",
+      "type": "fbm",
+      "params": { "scale": 1.2, "octaves": 4, "lacunarity": 2, "gain": 0.5 },
+      "position": { "x": 80, "y": 120 },
+      "enabled": true
+    },
+    {
+      "id": "ramp",
+      "type": "color-ramp",
+      "params": { "colorA": "#222222", "colorB": "#dddddd", "low": 0.3, "high": 0.75 },
+      "position": { "x": 380, "y": 80 },
+      "enabled": true
+    },
+    {
+      "id": "out",
+      "type": "pbr-output",
+      "params": {},
+      "position": { "x": 700, "y": 160 },
+      "enabled": true
+    }
+  ],
+  "edges": [
+    { "fromNode": "fbm", "fromOutput": "field", "toNode": "ramp", "toInput": "field" },
+    { "fromNode": "ramp", "fromOutput": "color", "toNode": "out", "toInput": "baseColor" },
+    { "fromNode": "fbm", "fromOutput": "field", "toNode": "out", "toInput": "roughness" }
+  ]
+}

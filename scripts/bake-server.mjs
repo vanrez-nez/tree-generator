@@ -33,15 +33,25 @@ createServer((req, res) => {
     res.statusCode = 405;
     return res.end("POST only");
   }
-  const name = (new URL(req.url, "http://x").searchParams.get("name") || "bake.png").replace(
-    /[^a-zA-Z0-9._-]/g,
-    "_",
-  );
+  // `name` may contain `/` to nest under bake/ (e.g. "noise/baseColor.ours.png"). Sanitize each path
+  // segment and resolve under bake/, rejecting any traversal that escapes the bake directory.
+  const rawName = new URL(req.url, "http://x").searchParams.get("name") || "bake.png";
+  const name =
+    rawName
+      .split("/")
+      .map((seg) => seg.replace(/[^a-zA-Z0-9._-]/g, "_"))
+      .filter((seg) => seg && seg !== "." && seg !== "..")
+      .join("/") || "bake.png";
+  const bakeDir = resolve(ROOT, "bake");
+  const out = resolve(bakeDir, name);
+  if (out !== bakeDir && !out.startsWith(bakeDir + "/")) {
+    res.statusCode = 400;
+    return res.end("bad name");
+  }
   const chunks = [];
   req.on("data", (c) => chunks.push(c));
   req.on("end", () => {
     const buf = Buffer.concat(chunks);
-    const out = resolve(ROOT, "bake", name);
     mkdirSync(dirname(out), { recursive: true });
     writeFileSync(out, buf);
     res.setHeader("content-type", "application/json");

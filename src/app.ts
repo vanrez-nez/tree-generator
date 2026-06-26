@@ -54,7 +54,7 @@ import {
 import { NodeEditorPanel } from "./node-editor";
 import { buildMaterialEditorConfig } from "./scene/material/editor-config";
 import { ChannelBaker } from "./scene/material/graph/channel-baker";
-import type { PbrSocket } from "./scene/material/graph/types";
+import { PBR_SOCKETS, type PbrSocket, type MaterialGraphDocument } from "./scene/material/graph/types";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -279,6 +279,7 @@ if (import.meta.env.DEV) {
     __openEditor: () => materialEditor.open(buildMaterialEditorConfig(mainScene.materialController)),
     __baker: channelBaker,
     __savePng: saveChannelToBake,
+    __bakeConfig: bakeConfigToBake,
     __frame: () => {
       mainScene.update(0, camera, rendererSize);
       renderer.render(mainScene.scene, camera);
@@ -580,6 +581,43 @@ async function saveChannelToBake(channel: PbrSocket, size = 1024): Promise<void>
   await fetch(`${BAKE_SERVER}/save?name=${channel}.png`, { method: "POST", body: blob }).catch(() => {
     console.warn("[bake] POST failed — is `npm run bake:server` running?");
   });
+}
+
+// Load a full graph config (a MaterialGraphDocument) into the live material, bake every connected PBR
+// channel, and POST each to the bake-server under bake/<name>/<channel>.ours.png alongside the config
+// JSON. The Blender reference for the SAME config is produced separately by `npm run bake:blender`,
+// landing as bake/<name>/<channel>.blender.png — so the two systems sit side by side for comparison.
+async function bakeConfigToBake(
+  doc: MaterialGraphDocument,
+  name = "config",
+  size = 1024,
+): Promise<void> {
+  const folder = encodeURIComponent(name);
+  mainScene.materialController.loadDocument(doc);
+  if (mainScene.materialController.lastError) {
+    console.warn(`[bake] config compiled with error: ${mainScene.materialController.lastError}`);
+  }
+  const post = (file: string, body: BodyInit) =>
+    fetch(`${BAKE_SERVER}/save?name=${folder}/${file}`, { method: "POST", body }).catch(() => {
+      console.warn("[bake] POST failed — is `npm run bake:server` running?");
+    });
+
+  await post("config.json", new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" }));
+
+  const written: string[] = [];
+  for (const channel of PBR_SOCKETS) {
+    const image = await channelBaker.readImageData(renderer, mainScene.materialController, channel, size);
+    if (!image) continue; // channel unconnected — skip
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    canvas.getContext("2d")?.putImageData(image, 0, 0);
+    const blob: Blob | null = await new Promise((r) => canvas.toBlob(r, "image/png"));
+    if (!blob) continue;
+    await post(`${channel}.ours.png`, blob);
+    written.push(channel);
+  }
+  console.log(`[bake] wrote bake/${name}/ — channels: ${written.join(", ") || "(none connected)"}`);
 }
 
 function buildTextureLayers(): void {
