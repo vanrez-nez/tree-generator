@@ -217,7 +217,7 @@ mainScene.materialController.onRecompile(markPreviewDirty);
 // Material-graph UI state. `worldPerTile` maps to the FBM generator's scale; `backend` toggles the
 // live procedural vs convertToTexture baked-map compile.
 const triplanarState = { enabled: true, worldPerTile: 1.2, sharpness: 8 };
-const materialState = { backend: "baked" as "live" | "baked" };
+const materialState = { backend: "offline" as "live" | "offline" };
 
 buildGenerationControls(genPage);
 buildTreeStatsControls(genPage);
@@ -267,6 +267,9 @@ sceneResizeObserver.observe(sceneCanvas);
 // WebGPURenderer initialises its backend asynchronously (unlike WebGLRenderer). Wait for it before
 // the first render, then drive the loop via setAnimationLoop (the WebGPU-friendly RAF).
 await renderer.init();
+// The offline backend bakes channels to textures, which needs the renderer — hand it over now that it's
+// initialised (triggers the first offline bake + swaps the surface material).
+mainScene.materialController.attachRenderer(renderer);
 const hasWebGPU = typeof navigator !== "undefined" && "gpu" in navigator;
 stats.setRenderer(hasWebGPU ? "WebGPU" : "WebGL2");
 resize();
@@ -639,18 +642,15 @@ function buildTextureLayers(): void {
     .addBinding(previewState, "seams")
     .on("change", (event) => texturePreview?.setSeams(event.value));
 
-  // Material graph controls. The backend toggle switches live procedural shading vs convertToTexture
-  // baked maps; "world / tile" is the master scale, wired to the FBM generator's scale param.
+  // Material graph controls. The backend toggle switches the offline baked-texture surface (default) vs
+  // live procedural shading; "world / tile" is the triplanar projection scale on the offline surface.
   const materialFolder = texturePage.addFolder({ title: "Material", expanded: true });
   materialFolder
-    .addBinding(materialState, "backend", { options: { Live: "live", Baked: "baked" } })
+    .addBinding(materialState, "backend", { options: { Offline: "offline", Live: "live" } })
     .on("change", (event) => mainScene.materialController.setBackend(event.value));
   materialFolder
     .addBinding(triplanarState, "worldPerTile", { label: "world / tile", min: 0.2, max: 6, step: 0.05 })
-    .on("change", (event) => {
-      mainScene.materialController.setParam("fbm", "scale", event.value);
-      markPreviewDirty(); // a live-uniform edit doesn't recompile, so refresh the preview explicitly
-    });
+    .on("change", (event) => mainScene.materialController.setTriplanarScale(event.value));
   materialFolder.addButton({ title: "Reset Graph" }).on("click", () => {
     mainScene.materialController.reset();
   });

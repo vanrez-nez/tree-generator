@@ -237,11 +237,9 @@ export class MainScene {
       this.meshDirty = false;
     }
 
-    // Texture time = the material-graph compile (baked-texture pipeline build); 0 in the live backend
-    // where no textures are generated. Total = geometry + texture. Refreshed each frame (cheap) so the
-    // read-only monitors pick up both the mesh rebuild and any material recompile.
-    this.meshStats.textureMs =
-      this.materialController.getBackend() === "baked" ? this.materialController.lastCompileMs : 0;
+    // Texture time = the offline channel re-bake (render to RTs); 0 in the live backend. Total = geometry
+    // + texture. Refreshed each frame (cheap) so the read-only monitors pick up the latest values.
+    this.meshStats.textureMs = this.materialController.lastBakeMs;
     this.meshStats.totalMs = this.meshStats.geometryMs + this.meshStats.textureMs;
   }
 }

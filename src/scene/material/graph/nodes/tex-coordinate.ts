@@ -22,7 +22,7 @@ export const texCoordNode: MaterialNodeDef = {
   params: [],
   build(ctx) {
     const uvCoord = vec3(uv().x, uv().y, float(0));
-    if (ctx.backend === "baked") {
+    if (ctx.backend === "offline") {
       // No mesh in the uv-quad bake context — all sources collapse to the uv slice.
       return { generated: uvCoord, uv: uvCoord, object: uvCoord, normal: uvCoord };
     }

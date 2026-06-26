@@ -84,7 +84,9 @@ export interface ParamDef {
   default: unknown;
 }
 
-export type MaterialBackend = "live" | "baked";
+// live  = procedural node material over positionWorld (seamless 3D field; a power/debug toggle).
+// offline = the node graph is baked to textures; the surface samples them (triplanar) + stock PBR. Default.
+export type MaterialBackend = "live" | "offline";
 
 export interface BuildCtx {
   // Resolved upstream TSL node-values keyed by this node's input port key (undefined if unconnected).
@@ -95,14 +97,9 @@ export interface BuildCtx {
   // Raw param values, for build-time branching (bool/select) and loop counts (octaves) that cannot be
   // dynamic uniforms.
   params: Record<string, unknown>;
-  // The coordinate domain: positionWorld (live, 3D seamless) or vec3(uv, 0) (baked, 2D tileable).
+  // The coordinate domain: positionWorld (live, 3D seamless) or vec3(uv, 0) (offline, 2D tileable bake).
   coord: MaterialValue;
   backend: MaterialBackend;
-  // Bake an intermediate sub-expression to a cached texture in the baked backend (identity in live). Lets
-  // a node turn an expensive procedural input into a one-time texture fetch — e.g. normal-from-height
-  // bakes its height so the heavy noise graph isn't re-evaluated per fragment. The compiler registers the
-  // result so it re-bakes once on a live uniform edit (never per frame).
-  bake: (node: MaterialValue) => MaterialValue;
 }
 
 export interface MaterialNodeDef {

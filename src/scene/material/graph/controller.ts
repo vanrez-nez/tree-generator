@@ -1,6 +1,7 @@
 import * as THREE from "three";
-import type { MeshStandardNodeMaterial } from "three/webgpu";
-import { compileGraph, type BakedTextureHandle } from "./compiler";
+import type { MeshStandardNodeMaterial, WebGPURenderer } from "three/webgpu";
+import { compileGraph } from "./compiler";
+import { OfflineMaterial } from "./offline-material";
 import { defaultRegistry, nodePorts, type NodeRegistry } from "./registry";
 import { createDefaultDocument } from "./default-document";
 import { coercionFor, curveToArray, GROUP_TYPE, GROUP_INPUT_TYPE, GROUP_OUTPUT_TYPE } from "./types";
@@ -60,30 +61,42 @@ function initStarterGroup(node: GraphNode): void {
 // material. Persists to sessionStorage (material-graph-plan.md).
 export class MaterialGraphController {
   private doc: MaterialGraphDocument;
-  private backend: MaterialBackend = "baked";
+  private backend: MaterialBackend = "offline";
   private material_: MeshStandardNodeMaterial;
   private uniforms: Map<string, Record<string, MaterialValue>>;
   private readonly listeners = new Set<() => void>();
   private lastError_: string | null = null;
-  // Wall-clock ms of the last compileGraph (the material/texture-graph build). In the baked backend this
-  // includes wrapping every channel in convertToTexture, so it's the CPU cost of generating the baked
-  // texture pipeline; surfaced as "Texture (ms)" in the UI.
-  private compileMs_ = 0;
-  // Baked backend: the convertToTexture handles for the current material (empty in live). Each bakes once
-  // then caches; a live uniform edit flips textureNeedsUpdate so it re-bakes a single frame.
-  private bakedTextures_: BakedTextureHandle[] = [];
+  // ms of the last offline texture re-bake (0 in live). Surfaced as "Texture (ms)" in the UI.
+  private bakeMs_ = 0;
+  // Offline backend: bakes the graph to textures and samples them on the surface. Needs a renderer, so it
+  // can't run until attachRenderer() — until then we fall back to the live material so the surface is valid.
+  private readonly offline = new OfflineMaterial();
+  private renderer: WebGPURenderer | null = null;
+  private rebakeTimer: ReturnType<typeof setTimeout> | undefined;
   // Group navigation: the chain of group node ids from the root to the document currently being edited.
   // Edits target the active (sub)document; compile/persist always run on the root.
   private path: string[] = [];
 
   constructor(private readonly registry: NodeRegistry = defaultRegistry) {
     this.doc = this.load() ?? createDefaultDocument();
-    const t0 = performance.now();
-    const compiled = compileGraph(this.doc, this.registry, { backend: this.backend });
-    this.compileMs_ = performance.now() - t0;
+    // No renderer yet → build the live material as a startup fallback; attachRenderer() switches to offline.
+    const compiled = compileGraph(this.doc, this.registry, { backend: "live" });
     this.material_ = compiled.material;
     this.uniforms = compiled.uniforms;
-    this.bakedTextures_ = compiled.bakedTextures;
+  }
+
+  // Give the controller the renderer (offline baking needs it). Called once after renderer.init(); triggers
+  // the first offline bake if the backend is offline.
+  attachRenderer(renderer: WebGPURenderer): void {
+    this.renderer = renderer;
+    this.offline.setScale(this.offline.scaleUniform.value);
+    this.recompile();
+  }
+
+  // Triplanar world scale for the offline surface (the "world / tile" control). Live uniform on the surface
+  // material — no re-bake needed.
+  setTriplanarScale(value: number): void {
+    this.offline.setScale(value);
   }
 
   get material(): MeshStandardNodeMaterial {
@@ -221,9 +234,9 @@ export class MaterialGraphController {
   getBackend(): MaterialBackend {
     return this.backend;
   }
-  // Last compileGraph duration in ms (the material / baked-texture graph build).
-  get lastCompileMs(): number {
-    return this.compileMs_;
+  // ms of the last offline texture re-bake (0 in live). Surfaced as the Tree "Texture (ms)" readout.
+  get lastBakeMs(): number {
+    return this.backend === "offline" ? this.bakeMs_ : 0;
   }
   getRegistry(): NodeRegistry {
     return this.registry;
@@ -240,9 +253,20 @@ export class MaterialGraphController {
     const node = this.active().nodes.find((n) => n.id === nodeId);
     if (!node) return;
     node.params[key] = value;
-
-    // Float/colour params are live uniforms — update in place, no recompile.
     const def = this.registry.get(node.type);
+
+    // Offline: param values are baked into textures (not live uniforms), so any edit needs a re-bake.
+    // Debounced so dragging a slider re-bakes once on settle. Declare-driven port changes still prune.
+    if (this.backend === "offline") {
+      if (def.declare && (def.params.find((p) => p.key === key)?.type ?? "") !== "float") {
+        this.pruneDanglingEdges(node);
+      }
+      this.persist();
+      this.scheduleRebake();
+      return;
+    }
+
+    // Live: float/colour/vec3/curve params are live uniforms — update in place, no recompile.
     const param = def.params.find((p) => p.key === key);
     const uniform = this.uniforms.get(nodeId)?.[key];
     if (uniform && (param?.type === "float" || param?.type === "color" || param?.type === "vec3")) {
@@ -251,30 +275,29 @@ export class MaterialGraphController {
         const v = value as { x: number; y: number; z: number };
         uniform.value.set(v.x, v.y, v.z);
       } else uniform.value = Number(value);
-      this.invalidateBakedTextures(); // baked maps are cached — re-bake once to reflect the new uniform
       this.persist();
       return;
     }
-    // Curve params drive a live uniformArray: mutate its backing `.array` in place (update() re-uploads
-    // it each frame), so dragging a curve point updates the render without a recompile.
     if (uniform && param?.type === "curve") {
       const flat = curveToArray(value as CurveValue);
       const arr = (uniform as unknown as { array: number[] }).array;
       for (let i = 0; i < flat.length; i++) arr[i] = flat[i];
-      this.invalidateBakedTextures();
       this.persist();
       return;
     }
     // int (loop counts), bool, select: recompile. If the node declares dynamic ports, a param change may
     // have added/removed sockets — drop any edges that now reference a missing port first.
-    if (this.registry.get(node.type).declare) this.pruneDanglingEdges(node);
+    if (def.declare) this.pruneDanglingEdges(node);
     this.recompile();
   }
 
-  // Baked maps don't auto-update (autoUpdate=false stops the per-frame re-bake), so after a live uniform
-  // edit we flag each to re-bake exactly once on the next render. No-op in the live backend.
-  private invalidateBakedTextures(): void {
-    for (const tex of this.bakedTextures_) tex.textureNeedsUpdate = true;
+  // Coalesce offline re-bakes from rapid edits (slider drags) into one render on settle.
+  private scheduleRebake(): void {
+    if (this.rebakeTimer !== undefined) clearTimeout(this.rebakeTimer);
+    this.rebakeTimer = setTimeout(() => {
+      this.rebakeTimer = undefined;
+      this.recompile();
+    }, 150);
   }
 
   // Remove edges on the active document that reference ports `node` no longer has (after a declare change).
@@ -397,12 +420,17 @@ export class MaterialGraphController {
 
   private recompile(): void {
     try {
-      const t0 = performance.now();
-      const compiled = compileGraph(this.doc, this.registry, { backend: this.backend });
-      this.compileMs_ = performance.now() - t0;
-      this.material_ = compiled.material;
-      this.uniforms = compiled.uniforms;
-      this.bakedTextures_ = compiled.bakedTextures;
+      if (this.backend === "offline" && this.renderer) {
+        // Bake the graph to textures and present the triplanar sampler material.
+        this.bakeMs_ = this.offline.rebake(this.renderer, this.doc, this.registry);
+        this.material_ = this.offline.material;
+        this.uniforms = new Map(); // offline edits re-bake (textures aren't live uniforms)
+      } else {
+        // live, or offline before the renderer attaches → procedural material so the surface is valid.
+        const compiled = compileGraph(this.doc, this.registry, { backend: "live" });
+        this.material_ = compiled.material;
+        this.uniforms = compiled.uniforms;
+      }
       this.lastError_ = null;
     } catch (err) {
       // Keep the previous material so a bad edit doesn't blank the surface; surface the error instead.

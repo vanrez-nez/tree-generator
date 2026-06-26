@@ -1,8 +1,14 @@
-import { bumpMap, float } from "three/tsl";
-import type { MaterialNodeDef } from "../types";
+import { bumpMap, float, vec3, normalize, dFdx, dFdy, uv } from "three/tsl";
+import type { MaterialNodeDef, MaterialValue } from "../types";
 
-// Derives a perturbed surface normal from a scalar height field via TSL's bumpMap (screen-space
-// derivative bump). Generic replacement for the bespoke normal.ts central-difference pass.
+type V = MaterialValue; // loose TSL value (= any); the three/tsl overloads are stricter than we need.
+
+// Derives a surface normal from a scalar height field — backend-aware:
+//   live    → bumpMap (screen-space derivative bump over positionWorld; a perturbed world normal).
+//   offline → an ENCODED tangent-space normal map: from the height's uv-gradient. Dividing the height
+//             derivative by the uv derivative (dFdx(h)/dFdx(uv.x)) yields dh/du independent of bake
+//             resolution. Baked into the normal RT and sampled on the surface via triplanarNormalMap (and
+//             this is what the exported normal-map PNG contains).
 export const normalFromHeightNode: MaterialNodeDef = {
   type: "normal-from-height",
   nodeClass: "vector",
@@ -14,8 +20,16 @@ export const normalFromHeightNode: MaterialNodeDef = {
   ],
   build(ctx) {
     const h = ctx.inputs.height ?? float(0.5);
-    // In the baked backend, bake the height to a texture first so the (often heavy) procedural height
-    // graph isn't re-evaluated per fragment — the bump then reads a cheap texture fetch. Identity in live.
-    return { normal: bumpMap(ctx.bake(h), ctx.uniforms.strength) };
+    if (ctx.backend === "live") {
+      return { normal: bumpMap(h, ctx.uniforms.strength) };
+    }
+    // offline: tangent-space normal from the resolution-independent uv-gradient of the height.
+    const hv = h as V;
+    const u = uv() as V;
+    const dhdu = dFdx(hv).div(dFdx(u.x)) as V;
+    const dhdv = dFdy(hv).div(dFdy(u.y)) as V;
+    const s = ctx.uniforms.strength as V;
+    const n = normalize(vec3(dhdu.negate().mul(s), dhdv.negate().mul(s), float(1))) as V;
+    return { normal: n.mul(0.5).add(0.5) }; // encode [-1,1] → [0,1] for the normal-map texture
   },
 };
