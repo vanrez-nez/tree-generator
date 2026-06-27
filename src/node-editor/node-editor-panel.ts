@@ -490,6 +490,13 @@ export class NodeEditorPanel {
     this.ensureEditor()
     const editor = this.editor!
 
+    // A same-graph rebuild (e.g. a declare-driven param change adding/removing sockets) keeps the same
+    // node ids → same storage key. In that case preserve the user's pan/zoom instead of refitting; only a
+    // genuinely different graph (preset load, group navigation) should refit. Captured before storageKey
+    // is reassigned below.
+    const prevKey = this.storageKey
+    const prevTransform = this.area ? { ...this.area.area.transform } : null
+
     this.config = config
     this.building = true
     // Clear any previous graph.
@@ -518,9 +525,20 @@ export class NodeEditorPanel {
     this.building = false
 
     requestAnimationFrame(() => {
-      if (stored) void this.zoomToFit()
+      if (prevTransform && prevKey === this.storageKey) void this.restoreTransform(prevTransform)
+      else if (stored) void this.zoomToFit()
       else void this.arrangeGraph()
     })
+  }
+
+  // Reapply an exact area transform (zoom around the origin to set k, then translate to set x/y). Used to
+  // keep the viewport steady across a same-graph rebuild. The emitted zoomed/translated events resync the
+  // grid; the clamp pipe leaves an already-valid transform untouched.
+  private async restoreTransform(t: { k: number; x: number; y: number }): Promise<void> {
+    const area = this.area
+    if (!area) return
+    await area.area.zoom(t.k, 0, 0)
+    await area.area.translate(t.x, t.y)
   }
 
   // One reusable Socket per port kind (typed ports). Distinct instances let the UI/connection layer
