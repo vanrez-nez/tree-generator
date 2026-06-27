@@ -1,0 +1,47 @@
+{
+  "version": 2,
+  "nodes": [
+    { "id": "uv", "type": "tex-coordinate", "params": {}, "position": { "x": -360, "y": -40 }, "enabled": true },
+    { "id": "mapBark", "type": "mapping", "params": { "mappingType": "point", "scale": { "x": 5, "y": 1, "z": 1 } }, "position": { "x": -80, "y": -160 }, "enabled": true },
+    { "id": "waveBark", "type": "wave", "params": { "scale": 1.5, "waveType": "bands", "direction": "x", "profile": "sine", "distortion": 6, "detail": 5, "detailScale": 2, "detailRoughness": 0.6 }, "position": { "x": 240, "y": -160 }, "enabled": true },
+
+    { "id": "nFiber", "type": "tileable-noise", "params": { "scale": 6, "aspect": 5, "octaves": 5, "gain": 0.55 }, "position": { "x": 240, "y": 80 }, "enabled": true },
+    { "id": "nMottle", "type": "tileable-noise", "params": { "scale": 3, "octaves": 4, "gain": 0.5 }, "position": { "x": 240, "y": 300 }, "enabled": true },
+
+    { "id": "fiberScaled", "type": "math", "params": { "op": "multiply", "factor": 0.3 }, "position": { "x": 560, "y": 80 }, "enabled": true },
+    { "id": "hMix", "type": "math", "params": { "op": "add" }, "position": { "x": 820, "y": -60 }, "enabled": true },
+
+    { "id": "crBark", "type": "color-ramp", "params": { "colorA": "#1c1208", "colorB": "#6e4a29", "low": 0.12, "high": 0.82 }, "position": { "x": 1100, "y": -160 }, "enabled": true },
+    { "id": "crMottle", "type": "color-ramp", "params": { "colorA": "#4a3a28", "colorB": "#8a7458", "low": 0.2, "high": 0.8 }, "position": { "x": 560, "y": 300 }, "enabled": true },
+    { "id": "colorMix", "type": "blend", "params": { "mode": "multiply", "opacity": 0.45 }, "position": { "x": 1400, "y": -60 }, "enabled": true },
+
+    { "id": "rough", "type": "math", "params": { "op": "multiply-add", "factor": -0.18, "c": 0.95 }, "position": { "x": 1100, "y": 220 }, "enabled": true },
+    { "id": "nfh", "type": "normal-from-height", "params": { "strength": 0.5 }, "position": { "x": 1100, "y": 420 }, "enabled": true },
+
+    { "id": "pr", "type": "principled-bsdf", "params": { "metallic": 0, "roughness": 0.9 }, "position": { "x": 1700, "y": 60 }, "enabled": true },
+    { "id": "out", "type": "material-output", "params": {}, "position": { "x": 2020, "y": 80 }, "enabled": true }
+  ],
+  "edges": [
+    { "fromNode": "uv", "fromOutput": "uv", "toNode": "mapBark", "toInput": "vector" },
+    { "fromNode": "mapBark", "fromOutput": "vector", "toNode": "waveBark", "toInput": "coord" },
+
+    { "fromNode": "nFiber", "fromOutput": "field", "toNode": "fiberScaled", "toInput": "a" },
+    { "fromNode": "waveBark", "fromOutput": "field", "toNode": "hMix", "toInput": "a" },
+    { "fromNode": "fiberScaled", "fromOutput": "field", "toNode": "hMix", "toInput": "b" },
+
+    { "fromNode": "hMix", "fromOutput": "field", "toNode": "crBark", "toInput": "field" },
+    { "fromNode": "nMottle", "fromOutput": "field", "toNode": "crMottle", "toInput": "field" },
+
+    { "fromNode": "crBark", "fromOutput": "color", "toNode": "colorMix", "toInput": "a" },
+    { "fromNode": "crMottle", "fromOutput": "color", "toNode": "colorMix", "toInput": "b" },
+
+    { "fromNode": "hMix", "fromOutput": "field", "toNode": "rough", "toInput": "a" },
+
+    { "fromNode": "hMix", "fromOutput": "field", "toNode": "nfh", "toInput": "height" },
+
+    { "fromNode": "colorMix", "fromOutput": "color", "toNode": "pr", "toInput": "baseColor" },
+    { "fromNode": "rough", "fromOutput": "field", "toNode": "pr", "toInput": "roughness" },
+    { "fromNode": "nfh", "fromOutput": "normal", "toNode": "pr", "toInput": "normal" },
+    { "fromNode": "pr", "fromOutput": "bsdf", "toNode": "out", "toInput": "surface" }
+  ]
+}
