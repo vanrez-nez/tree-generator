@@ -2,6 +2,7 @@ import type { GraphNode, MaterialNodeDef, PortDef } from "./types";
 import { fbmNode } from "./nodes/texture/fbm";
 import { domainWarpNode } from "./nodes/vector/domain-warp";
 import { tileableNoiseNode } from "./nodes/texture/tileable-noise";
+import { screenNoiseNode } from "./nodes/texture/screen-noise";
 import { tileableWarpNode } from "./nodes/vector/tileable-warp";
 import { voronoiNode } from "./nodes/texture/voronoi";
 import { checkerNode } from "./nodes/texture/checker";
@@ -75,6 +76,7 @@ export function createDefaultRegistry(): NodeRegistry {
     .register(fbmNode)
     .register(domainWarpNode)
     .register(tileableNoiseNode)
+    .register(screenNoiseNode)
     .register(tileableWarpNode)
     .register(voronoiNode)
     .register(checkerNode)
