@@ -16,7 +16,7 @@
     { "id": "colorMix", "type": "blend", "params": { "mode": "multiply", "opacity": 0.45 }, "position": { "x": 1400, "y": -60 }, "enabled": true },
 
     { "id": "rough", "type": "math", "params": { "op": "multiply-add", "factor": -0.18, "c": 0.95 }, "position": { "x": 1100, "y": 220 }, "enabled": true },
-    { "id": "nfh", "type": "normal-from-height", "params": { "strength": 0.5 }, "position": { "x": 1100, "y": 420 }, "enabled": true },
+    { "id": "nfh", "type": "normal-from-height", "params": { "strength": 0.15 }, "position": { "x": 1100, "y": 420 }, "enabled": true },
 
     { "id": "pr", "type": "principled-bsdf", "params": { "metallic": 0, "roughness": 0.9 }, "position": { "x": 1700, "y": 60 }, "enabled": true },
     { "id": "out", "type": "material-output", "params": {}, "position": { "x": 2020, "y": 80 }, "enabled": true }

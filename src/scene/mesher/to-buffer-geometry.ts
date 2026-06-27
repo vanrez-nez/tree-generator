@@ -1,5 +1,6 @@
 import { BufferGeometry, Float32BufferAttribute, Vector3 } from "three";
 import type { WeldMesh } from "./weld-mesh";
+import { computeVertexCavityAo } from "./vertex-ao";
 
 // Convert the welded mesh into a THREE.BufferGeometry.
 //
@@ -40,11 +41,16 @@ export function weldMeshToBufferGeometry(mesh: WeldMesh): BufferGeometry {
   indexed.computeVertexNormals();
   const smoothNormals = indexed.getAttribute("normal").array as Float32Array;
 
+  // Baked per-vertex cavity AO over the same welded topology (form occlusion at the fork crotches /
+  // junctions). Material-independent; expanded per-corner below and multiplied into the surface AO.
+  const vertexAo = computeVertexCavityAo(mesh, sharedPositions, smoothNormals);
+
   // 2. Expand to non-indexed, preserving per-loop UVs and copying the smooth normals per corner.
   const positions: number[] = [];
   const normals: number[] = [];
   const uvs: number[] = [];
   const tangents: number[] = [];
+  const ao: number[] = [];
 
   // Scratch vectors (reused) for the per-triangle tangent basis.
   const p0 = new Vector3();
@@ -71,6 +77,7 @@ export function weldMeshToBufferGeometry(mesh: WeldMesh): BufferGeometry {
     );
     const uv = mesh.uvs[uvIndex];
     uvs.push(uv ? uv.x : 0, uv ? uv.y : 0);
+    ao.push(vertexAo[vertexIndex]);
   };
 
   const pushCornerTangent = (vi: number): void => {
@@ -147,6 +154,8 @@ export function weldMeshToBufferGeometry(mesh: WeldMesh): BufferGeometry {
   // MeshStandardMaterial.aoMap samples the SECOND UV set (`uv1` in r184). We have one UV layout, so
   // duplicate it — the AO map shares the bark UVs.
   geometry.setAttribute("uv1", uvAttribute.clone());
+  // Baked form AO, consumed by the surface material's aoNode (multiplied into any node-graph AO).
+  geometry.setAttribute("vertexAo", new Float32BufferAttribute(ao, 1));
   geometry.computeBoundingSphere();
   return geometry;
 }

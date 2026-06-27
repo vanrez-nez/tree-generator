@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { RenderTarget, type WebGPURenderer, type MeshPhysicalNodeMaterial } from "three/webgpu";
-import { uniform, vec3, normalWorld, texture, normalMap, float } from "three/tsl";
+import { uniform, vec3, normalWorld, texture, normalMap, float, attribute } from "three/tsl";
 import { compileSockets, newSurfaceMaterial } from "./compiler";
 import { encodeChannel, renderColorNodeToTarget, COLOR_CHANNELS } from "./channel-baker";
 import { triplanarColor } from "../tsl/triplanar";
@@ -9,6 +9,9 @@ import type { MaterialGraphDocument, MaterialValue, PbrSocket } from "./types";
 import type { NodeRegistry } from "./registry";
 
 const BAKE_SIZE = 1024;
+// Anisotropic-filter taps for the baked channel textures. 8 is well within every desktop GPU's cap (≥16)
+// and kills the grazing-angle normal-map shimmer; the driver clamps to its own max if lower.
+const MAX_ANISOTROPY = 8;
 // Channels baked for the surface: the four scalar/colour maps + the tangent-space normal map.
 const SURFACE_CHANNELS: PbrSocket[] = ["baseColor", "roughness", "metallic", "ambientOcclusion", "normal"];
 
@@ -21,6 +24,14 @@ export class OfflineMaterial {
   readonly material: MeshPhysicalNodeMaterial = newSurfaceMaterial();
   readonly scaleUniform = uniform(1.2); // triplanar world scale (driven by the "world / tile" control)
   readonly sharpnessUniform = uniform(8); // triplanar blend exponent (higher → narrower wash band on ~45° faces)
+  // Surface-material factors (glTF-style): the scalar roughness/metalness MULTIPLY the baked channel, and
+  // the colour tint multiplies the basecolor. They live as uniforms referenced inside the channel nodes,
+  // so the Texture > Material controls scale the look live without a re-bake or material rebuild. Default
+  // 1 / white = identity (no change on load). A node material ignores `material.roughness` once
+  // `roughnessNode` is set — hence the factor, not the scalar.
+  readonly roughnessFactor = uniform(1);
+  readonly metalnessFactor = uniform(1);
+  readonly colorTint = uniform(new THREE.Color(1, 1, 1));
   lastBakeMs = 0;
 
   private readonly targets = new Map<PbrSocket, RenderTarget>();
@@ -37,6 +48,17 @@ export class OfflineMaterial {
 
   setSharpness(value: number): void {
     this.sharpnessUniform.value = value;
+  }
+
+  // glTF-style factors multiplied into the baked channels (live uniforms — no re-bake / rewire needed).
+  setRoughnessFactor(value: number): void {
+    this.roughnessFactor.value = value;
+  }
+  setMetalnessFactor(value: number): void {
+    this.metalnessFactor.value = value;
+  }
+  setColorTint(hex: string): void {
+    this.colorTint.value.set(hex);
   }
 
   // Toggle world-space triplanar projection vs plain UV sampling of the baked maps. Re-wires the surface.
@@ -86,7 +108,15 @@ export class OfflineMaterial {
       // world coords well outside [0,1].
       t.colorSpace = COLOR_CHANNELS.includes(ch) ? THREE.SRGBColorSpace : THREE.NoColorSpace;
       t.wrapS = t.wrapT = THREE.RepeatWrapping;
-      t.minFilter = t.magFilter = THREE.LinearFilter;
+      // Trilinear + anisotropic filtering. Without mipmaps the high-frequency normal/roughness maps alias
+      // badly at grazing angles and silhouette edges — many texels collapse onto one pixel, so the normal
+      // point-samples wildly between texels and the lighting sparkles/crawls as the camera moves. Mips +
+      // anisotropy resolve to the right LOD; the WebGPU backend regenerates the RT's mip chain after each
+      // bake because `generateMipmaps` is set (WebGPUBackend.finishRender).
+      t.generateMipmaps = true;
+      t.minFilter = THREE.LinearMipmapLinearFilter;
+      t.magFilter = THREE.LinearFilter;
+      t.anisotropy = MAX_ANISOTROPY;
       this.targets.set(ch, rt);
     }
     return rt;
@@ -119,10 +149,14 @@ export class OfflineMaterial {
       m.needsUpdate = true;
       return;
     }
-    m.colorNode = present.has("baseColor") ? sample("baseColor") : null;
-    m.roughnessNode = present.has("roughness") ? sample("roughness").r : null;
-    m.metalnessNode = present.has("metallic") ? sample("metallic").r : null;
-    m.aoNode = present.has("ambientOcclusion") ? sample("ambientOcclusion").r : null;
+    // Channels carry the baked map × the live factor/tint (identity by default — see the factor uniforms).
+    m.colorNode = present.has("baseColor") ? sample("baseColor").mul(this.colorTint) : null;
+    m.roughnessNode = present.has("roughness") ? sample("roughness").r.mul(this.roughnessFactor) : null;
+    m.metalnessNode = present.has("metallic") ? sample("metallic").r.mul(this.metalnessFactor) : null;
+    // Baked per-vertex form AO (always applied), multiplied by the node-graph AO channel when present.
+    // aoNode modulates only the indirect (ambient/IBL) term — exactly ambient occlusion.
+    const vAo = attribute("vertexAo", "float");
+    m.aoNode = present.has("ambientOcclusion") ? sample("ambientOcclusion").r.mul(vAo) : vAo;
     m.normalNode = present.has("normal") ? shadingNormal : null;
     m.emissiveNode = null;
     m.needsUpdate = true;

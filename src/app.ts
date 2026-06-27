@@ -11,8 +11,9 @@ import {
   SwatchBook,
 } from "lucide";
 import * as THREE from "three";
-import { WebGPURenderer } from "three/webgpu";
+import { WebGPURenderer, PMREMGenerator, MeshPhysicalNodeMaterial } from "three/webgpu";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { FolderApi, Pane } from "tweakpane";
 import { DEFAULT_MESHER_OPTIONS, MainScene } from "./scene/main";
 import { DEFAULT_SUBDIVISIONS } from "./scene/tree";
@@ -227,6 +228,65 @@ mainScene.materialController.onRecompile(markPreviewDirty);
 const triplanarState = { enabled: false, worldPerTile: 1.2, sharpness: 8 };
 const materialState = { backend: "offline" as "live" | "offline", debugNormals: false, preset: DEFAULT_PRESET };
 
+// Direct configuration of the THREE surface material (the MeshPhysicalNodeMaterial the controller binds to
+// the tree), exposed in Texture > Material. These are the renderer-side PBR knobs — distinct from the node
+// graph that authors the channel maps. Note: a channel actively driven by the graph (e.g. roughness in the
+// bark preset) overrides its scalar here; the physical lobes (clearcoat / sheen / transmission /
+// iridescence) and envMapIntensity / flatShading are never graph-driven, so they always take effect.
+const surfaceMaterialState = {
+  envMapIntensity: 1,
+  flatShading: false,
+  // Basecolor / roughness / metalness are authored by the node graph and baked into channel maps, which a
+  // node material samples instead of the scalar properties. So these three are exposed as FACTORS that
+  // multiply the baked channel (glTF roughnessFactor-style) — identity at 1 / white. Routed through the
+  // controller's offline factor uniforms, not applySurfaceMaterialState.
+  baseColorTint: "#ffffff",
+  roughnessFactor: 1,
+  metalnessFactor: 1,
+  clearcoat: 0,
+  clearcoatRoughness: 0.03,
+  sheen: 0,
+  sheenRoughness: 0.3,
+  sheenColor: "#ffffff",
+  transmission: 0,
+  thickness: 0.5,
+  ior: 1.5,
+  iridescence: 0,
+  iridescenceIOR: 1.3,
+};
+
+// Push the state onto the controller's current surface material. The offline material instance is stable
+// (so values persist across re-bakes), but the live backend rebuilds a fresh material on recompile — the
+// onRecompile hook below re-applies then. `needsUpdate` forces the node material to re-read the scalars.
+function applySurfaceMaterialState(): void {
+  const m = mainScene.materialController.material as MeshPhysicalNodeMaterial;
+  const s = surfaceMaterialState;
+  m.envMapIntensity = s.envMapIntensity;
+  m.flatShading = s.flatShading;
+  m.clearcoat = s.clearcoat;
+  m.clearcoatRoughness = s.clearcoatRoughness;
+  m.sheen = s.sheen;
+  m.sheenRoughness = s.sheenRoughness;
+  m.sheenColor.set(s.sheenColor);
+  m.transmission = s.transmission;
+  m.thickness = s.thickness;
+  m.ior = s.ior;
+  m.iridescence = s.iridescence;
+  m.iridescenceIOR = s.iridescenceIOR;
+  m.needsUpdate = true;
+}
+
+// The live backend swaps in a new material instance on recompile; re-apply the configured state so the
+// settings survive a graph/backend change. Offline reuses one stable material, so this is a no-op there.
+let lastSurfaceMaterial: unknown = mainScene.materialController.material;
+mainScene.materialController.onRecompile(() => {
+  const m = mainScene.materialController.material;
+  if (m !== lastSurfaceMaterial) {
+    lastSurfaceMaterial = m;
+    applySurfaceMaterialState();
+  }
+});
+
 // Scene tab: tone mapping + lighting. Blender's viewport tone-maps (AgX) by default, so a "None" surface
 // looks blown-out vs the baked albedo — exposing these lets the lit look match the texture.
 const TONE_MAPPING_MODES: Record<string, THREE.ToneMapping> = {
@@ -245,6 +305,7 @@ const sceneState = {
   dirPosition: { ...mainScene.directionalLight.position },
   ambIntensity: mainScene.ambientLight.intensity,
   ambColor: `#${mainScene.ambientLight.color.getHexString()}`,
+  envIntensity: 1,
 };
 
 buildGenerationControls(genPage);
@@ -299,6 +360,21 @@ await renderer.init();
 // The offline backend bakes channels to textures, which needs the renderer — hand it over now that it's
 // initialised (triggers the first offline bake + swaps the surface material).
 mainScene.materialController.attachRenderer(renderer);
+
+// Shared IBL environment: one RoomEnvironment PMREM cubemap drives image-based lighting for every tree
+// (a single shader sample, no per-instance cost), giving soft directional fill + subtle reflections that
+// a flat AmbientLight can't. This is the "fill" half of the fake/baked lighting rig (the baked per-vertex
+// AO is the occlusion half); there are deliberately NO shadow maps. Built once after init.
+try {
+  const pmrem = new PMREMGenerator(renderer);
+  mainScene.scene.environment = pmrem.fromScene(new RoomEnvironment()).texture;
+  mainScene.scene.environmentIntensity = sceneState.envIntensity;
+  pmrem.dispose();
+} catch (err) {
+  // If PMREM generation fails on this backend, fall back to the flat ambient (kept low) so the scene
+  // still lights — surfaced rather than silently flat.
+  console.warn("[env] IBL setup failed; falling back to ambient light only", err);
+}
 const hasWebGPU = typeof navigator !== "undefined" && "gpu" in navigator;
 stats.setRenderer(hasWebGPU ? "WebGPU" : "WebGL2");
 resize();
@@ -696,6 +772,12 @@ function buildSceneControls(container: ContainerApi): void {
   amb
     .addBinding(sceneState, "ambColor", { label: "color", view: "color" })
     .on("change", (e) => mainScene.ambientLight.color.set(e.value));
+
+  // Image-based lighting fill (the shared RoomEnvironment PMREM set up after renderer.init()).
+  const env = container.addFolder({ title: "Environment (IBL)", expanded: true });
+  env
+    .addBinding(sceneState, "envIntensity", { label: "intensity", min: 0, max: 3, step: 0.05 })
+    .on("change", (e) => (mainScene.scene.environmentIntensity = e.value));
 }
 
 function buildTextureLayers(): void {
@@ -737,6 +819,63 @@ function buildTextureLayers(): void {
   // The dockable node editor (src/node-editor/) shows the live material graph, generated from the
   // registry. Param/toggle edits flow into the controller and recompile the surface.
   materialFolder.addButton({ title: "Open Node Editor" }).on("click", () => rebuildEditor());
+
+  // THREE surface-material properties — the renderer-side PBR config for the selected material. Every
+  // control writes straight onto the live MeshPhysicalNodeMaterial via applySurfaceMaterialState.
+  const surface = materialFolder.addFolder({ title: "Surface (PBR)", expanded: true });
+  const onSurface = (): void => applySurfaceMaterialState();
+  surface
+    .addBinding(surfaceMaterialState, "envMapIntensity", { label: "env intensity", min: 0, max: 3, step: 0.05 })
+    .on("change", onSurface);
+  surface.addBinding(surfaceMaterialState, "flatShading", { label: "flat shading" }).on("change", onSurface);
+  // Factors multiplied into the baked channels (the scalar props are ignored once the graph drives them).
+  surface
+    .addBinding(surfaceMaterialState, "baseColorTint", { label: "color tint", view: "color" })
+    .on("change", (e) => mainScene.materialController.setColorTint(e.value));
+  surface
+    .addBinding(surfaceMaterialState, "roughnessFactor", { label: "roughness ×", min: 0, max: 2, step: 0.01 })
+    .on("change", (e) => mainScene.materialController.setRoughnessFactor(e.value));
+  surface
+    .addBinding(surfaceMaterialState, "metalnessFactor", { label: "metalness ×", min: 0, max: 1, step: 0.01 })
+    .on("change", (e) => mainScene.materialController.setMetalnessFactor(e.value));
+
+  const coat = surface.addFolder({ title: "Clearcoat", expanded: false });
+  coat
+    .addBinding(surfaceMaterialState, "clearcoat", { label: "weight", min: 0, max: 1, step: 0.01 })
+    .on("change", onSurface);
+  coat
+    .addBinding(surfaceMaterialState, "clearcoatRoughness", { label: "roughness", min: 0, max: 1, step: 0.01 })
+    .on("change", onSurface);
+
+  const sheen = surface.addFolder({ title: "Sheen", expanded: false });
+  sheen
+    .addBinding(surfaceMaterialState, "sheen", { label: "weight", min: 0, max: 1, step: 0.01 })
+    .on("change", onSurface);
+  sheen
+    .addBinding(surfaceMaterialState, "sheenRoughness", { label: "roughness", min: 0, max: 1, step: 0.01 })
+    .on("change", onSurface);
+  sheen
+    .addBinding(surfaceMaterialState, "sheenColor", { label: "color", view: "color" })
+    .on("change", onSurface);
+
+  const trans = surface.addFolder({ title: "Transmission", expanded: false });
+  trans
+    .addBinding(surfaceMaterialState, "transmission", { label: "weight", min: 0, max: 1, step: 0.01 })
+    .on("change", onSurface);
+  trans
+    .addBinding(surfaceMaterialState, "thickness", { label: "thickness", min: 0, max: 5, step: 0.05 })
+    .on("change", onSurface);
+  trans
+    .addBinding(surfaceMaterialState, "ior", { label: "IOR", min: 1, max: 2.5, step: 0.01 })
+    .on("change", onSurface);
+
+  const irid = surface.addFolder({ title: "Iridescence", expanded: false });
+  irid
+    .addBinding(surfaceMaterialState, "iridescence", { label: "weight", min: 0, max: 1, step: 0.01 })
+    .on("change", onSurface);
+  irid
+    .addBinding(surfaceMaterialState, "iridescenceIOR", { label: "IOR", min: 1, max: 2.5, step: 0.01 })
+    .on("change", onSurface);
 
   // Triplanar projection of the baked maps onto the surface (off → plain UV sampling). Off by default.
   const triplanarFolder = texturePage.addFolder({ title: "Triplanar", expanded: true });

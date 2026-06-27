@@ -32,7 +32,7 @@
     { "id": "finalColor", "type": "blend", "params": { "mode": "mix", "opacity": 1 }, "position": { "x": 1340, "y": 90 }, "enabled": true },
     { "id": "rough", "type": "math", "params": { "op": "multiply-add", "factor": 0.52, "c": 0.2 }, "position": { "x": 1340, "y": 320 }, "enabled": true },
     { "id": "metallic", "type": "math", "params": { "op": "multiply-add", "factor": -1, "c": 1 }, "position": { "x": 1340, "y": 470 }, "enabled": true },
-    { "id": "nfh", "type": "normal-from-height", "params": { "strength": 0.4 }, "position": { "x": 1340, "y": 620 }, "enabled": true },
+    { "id": "nfh", "type": "normal-from-height", "params": { "strength": 0.2 }, "position": { "x": 1340, "y": 620 }, "enabled": true },
 
     { "id": "pr", "type": "principled-bsdf", "params": {}, "position": { "x": 1640, "y": 220 }, "enabled": true },
     { "id": "out", "type": "material-output", "params": {}, "position": { "x": 1960, "y": 240 }, "enabled": true }

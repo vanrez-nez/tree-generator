@@ -13,7 +13,7 @@
     { "id": "blendAgg", "type": "blend", "params": { "mode": "screen", "opacity": 0.7 }, "position": { "x": 940, "y": 40 }, "enabled": true },
 
     { "id": "rough", "type": "math", "params": { "op": "multiply-add", "factor": 0.12, "c": 0.82 }, "position": { "x": 940, "y": 320 }, "enabled": true },
-    { "id": "nfh", "type": "normal-from-height", "params": { "strength": 0.6 }, "position": { "x": 1260, "y": 240 }, "enabled": true },
+    { "id": "nfh", "type": "normal-from-height", "params": { "strength": 0.25 }, "position": { "x": 1260, "y": 240 }, "enabled": true },
 
     { "id": "pr", "type": "principled-bsdf", "params": { "metallic": 0, "roughness": 0.85 }, "position": { "x": 1560, "y": 60 }, "enabled": true },
     { "id": "out", "type": "material-output", "params": {}, "position": { "x": 1880, "y": 80 }, "enabled": true }

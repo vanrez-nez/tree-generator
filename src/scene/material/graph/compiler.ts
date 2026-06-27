@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { MeshStandardNodeMaterial, MeshPhysicalNodeMaterial } from "three/webgpu";
-import { positionWorld, uv, vec3, float, uniform, uniformArray, luminance } from "three/tsl";
+import { positionWorld, uv, vec3, float, uniform, uniformArray, luminance, attribute } from "three/tsl";
 import {
   GROUP_INPUT_TYPE,
   GROUP_OUTPUT_TYPE,
@@ -151,6 +151,9 @@ export function applyBundle(
   material: MeshPhysicalNodeMaterial,
   bundle: MaterialBundle,
 ): void {
+  // Baked per-vertex form AO from the mesh (to-buffer-geometry's `vertexAo`); modulates only the
+  // indirect/IBL term. Geometry-driven, so it applies regardless of the graph's channels.
+  material.aoNode = attribute("vertexAo", "float");
   if (bundle.baseColor) material.colorNode = bundle.baseColor;
   if (bundle.emission) material.emissiveNode = bundle.emission;
   if (bundle.roughness) material.roughnessNode = bundle.roughness;

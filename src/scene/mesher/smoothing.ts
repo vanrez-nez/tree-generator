@@ -14,7 +14,9 @@ function addIndexNoDuplicates(indices: number[], index: number): void {
   indices.push(index);
 }
 
-function getNeighbourhoods(mesh: WeldMesh): number[][] {
+// Per-vertex neighbour lists (edge-adjacent, from the quad polygons). Exported so the cavity-AO pass
+// (vertex-ao.ts) can reuse the exact adjacency the smoother walks.
+export function getNeighbourhoods(mesh: WeldMesh): number[][] {
   const neighbourhood: number[][] = Array.from(
     { length: mesh.vertices.length },
     () => [],

@@ -110,6 +110,20 @@ export class MaterialGraphController {
     this.offline.setTriplanar(on);
   }
 
+  // Surface-material factors for the offline backend: scale the baked roughness/metalness channels and tint
+  // the basecolor. Live uniforms (no re-bake). A node material ignores the plain `material.roughness` scalar
+  // once a roughness channel is baked, so these multipliers are how the Texture > Material sliders take
+  // effect. No-op influence in the live backend (it has no baked channels).
+  setRoughnessFactor(value: number): void {
+    this.offline.setRoughnessFactor(value);
+  }
+  setMetalnessFactor(value: number): void {
+    this.offline.setMetalnessFactor(value);
+  }
+  setColorTint(hex: string): void {
+    this.offline.setColorTint(hex);
+  }
+
   // Debug: paint the offline surface with its shading normal (geometry + normal map) as RGB to verify the
   // normal is actually perturbing the surface. No-op in the live backend.
   setNormalDebug(on: boolean): void {

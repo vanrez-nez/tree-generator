@@ -28,9 +28,11 @@ export class MainScene {
   // Owns the editable material graph document + the compiled surface material (src/scene/material/graph).
   readonly materialController = new MaterialGraphController();
 
-  // Scene lighting, exposed so the Scene panel can drive intensity/colour live.
+  // Scene lighting, exposed so the Scene panel can drive intensity/colour live. The flat ambient is kept
+  // low — a shared IBL environment (scene.environment, set up in app.ts) provides the fill that gives the
+  // tree form, and a strong flat ambient would wash out the baked AO. Directional stays as a cheap key.
   readonly directionalLight = new THREE.DirectionalLight(0xffffff, 3);
-  readonly ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+  readonly ambientLight = new THREE.AmbientLight(0xffffff, 0.15);
 
   selectedLineId = "trunk";
 
