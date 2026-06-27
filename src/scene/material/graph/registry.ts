@@ -1,33 +1,34 @@
 import type { GraphNode, MaterialNodeDef, PortDef } from "./types";
-import { fbmNode } from "./nodes/fbm";
-import { domainWarpNode } from "./nodes/domain-warp";
-import { tileableNoiseNode } from "./nodes/tileable-noise";
-import { tileableWarpNode } from "./nodes/tileable-warp";
-import { voronoiNode } from "./nodes/voronoi";
-import { gradientNode } from "./nodes/gradient";
-import { waveNode } from "./nodes/wave";
-import { anisotropicStripesNode } from "./nodes/anisotropic-stripes";
-import { mathNode } from "./nodes/math";
-import { levelsNode } from "./nodes/levels";
-import { colorRampNode } from "./nodes/color-ramp";
-import { blendNode } from "./nodes/blend";
-import { invertNode } from "./nodes/invert";
-import { brightContrastNode } from "./nodes/bright-contrast";
-import { hueSatValNode } from "./nodes/hue-sat-val";
-import { rgbCurvesNode } from "./nodes/rgb-curves";
-import { luminanceNode, splitChannelsNode, combineChannelsNode } from "./nodes/adapters";
-import { clampNode } from "./nodes/clamp";
-import { separateXyzNode, combineXyzNode } from "./nodes/xyz";
-import { constantFieldNode, constantColorNode } from "./nodes/constant";
-import { texCoordNode } from "./nodes/tex-coordinate";
-import { vectorMathNode } from "./nodes/vector-math";
-import { normalFromHeightNode } from "./nodes/normal-from-height";
-import { normalMapNode } from "./nodes/normal-map";
-import { mappingNode } from "./nodes/mapping";
-import { principledBsdfNode } from "./nodes/principled-bsdf";
-import { emissionNode } from "./nodes/emission";
-import { materialOutputNode } from "./nodes/material-output";
-import { groupNode, groupInputNode, groupOutputNode } from "./nodes/group";
+import { fbmNode } from "./nodes/texture/fbm";
+import { domainWarpNode } from "./nodes/vector/domain-warp";
+import { tileableNoiseNode } from "./nodes/texture/tileable-noise";
+import { tileableWarpNode } from "./nodes/vector/tileable-warp";
+import { voronoiNode } from "./nodes/texture/voronoi";
+import { checkerNode } from "./nodes/texture/checker";
+import { gradientNode } from "./nodes/texture/gradient";
+import { waveNode } from "./nodes/texture/wave";
+import { anisotropicStripesNode } from "./nodes/texture/anisotropic-stripes";
+import { mathNode } from "./nodes/converter/math";
+import { levelsNode } from "./nodes/converter/levels";
+import { colorRampNode } from "./nodes/converter/color-ramp";
+import { blendNode } from "./nodes/color/blend";
+import { invertNode } from "./nodes/color/invert";
+import { brightContrastNode } from "./nodes/color/bright-contrast";
+import { hueSatValNode } from "./nodes/color/hue-sat-val";
+import { rgbCurvesNode } from "./nodes/color/rgb-curves";
+import { luminanceNode, splitChannelsNode, combineChannelsNode } from "./nodes/converter/adapters";
+import { clampNode } from "./nodes/converter/clamp";
+import { separateXyzNode, combineXyzNode } from "./nodes/converter/xyz";
+import { constantFieldNode, constantColorNode } from "./nodes/input/constant";
+import { texCoordNode } from "./nodes/input/tex-coordinate";
+import { vectorMathNode } from "./nodes/vector/vector-math";
+import { normalFromHeightNode } from "./nodes/vector/normal-from-height";
+import { normalMapNode } from "./nodes/vector/normal-map";
+import { mappingNode } from "./nodes/vector/mapping";
+import { principledBsdfNode } from "./nodes/shader/principled-bsdf";
+import { emissionNode } from "./nodes/shader/emission";
+import { materialOutputNode } from "./nodes/output/material-output";
+import { groupNode, groupInputNode, groupOutputNode } from "./nodes/group/group";
 
 // A node's effective ports: instance-specific (group / group-input / group-output carry `ports`), then a
 // mode-driven `declare(params)` interface, else the static MaterialNodeDef. The single lookup used by the
@@ -76,6 +77,7 @@ export function createDefaultRegistry(): NodeRegistry {
     .register(tileableNoiseNode)
     .register(tileableWarpNode)
     .register(voronoiNode)
+    .register(checkerNode)
     .register(gradientNode)
     .register(waveNode)
     .register(anisotropicStripesNode)

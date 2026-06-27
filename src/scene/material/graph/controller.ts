@@ -3,7 +3,7 @@ import type { MeshStandardNodeMaterial, WebGPURenderer } from "three/webgpu";
 import { compileGraph } from "./compiler";
 import { OfflineMaterial } from "./offline-material";
 import { defaultRegistry, nodePorts, type NodeRegistry } from "./registry";
-import { createDefaultDocument } from "./default-document";
+import { createDefaultDocument } from "../presets";
 import { coercionFor, curveToArray, GROUP_TYPE, GROUP_INPUT_TYPE, GROUP_OUTPUT_TYPE } from "./types";
 import type {
   CurveValue,
@@ -97,6 +97,23 @@ export class MaterialGraphController {
   // material — no re-bake needed.
   setTriplanarScale(value: number): void {
     this.offline.setScale(value);
+  }
+
+  // Triplanar blend sharpness for the offline surface — higher narrows the wash band on faces angled
+  // between world axes (very visible on high-contrast patterns). Live uniform; no re-bake.
+  setTriplanarSharpness(value: number): void {
+    this.offline.setSharpness(value);
+  }
+
+  // Enable/disable the triplanar projection step (off → plain UV sampling of the baked maps).
+  setTriplanarEnabled(on: boolean): void {
+    this.offline.setTriplanar(on);
+  }
+
+  // Debug: paint the offline surface with its shading normal (geometry + normal map) as RGB to verify the
+  // normal is actually perturbing the surface. No-op in the live backend.
+  setNormalDebug(on: boolean): void {
+    this.offline.setNormalDebug(on);
   }
 
   get material(): MeshStandardNodeMaterial {

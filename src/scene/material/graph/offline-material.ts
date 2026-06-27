@@ -1,8 +1,9 @@
 import * as THREE from "three";
 import { RenderTarget, type WebGPURenderer, type MeshPhysicalNodeMaterial } from "three/webgpu";
-import { triplanarTexture, texture, positionWorld, normalWorld, uniform } from "three/tsl";
+import { uniform, vec3, normalWorld, texture, normalMap, float } from "three/tsl";
 import { compileSockets, newSurfaceMaterial } from "./compiler";
 import { encodeChannel, renderColorNodeToTarget, COLOR_CHANNELS } from "./channel-baker";
+import { triplanarColor } from "../tsl/triplanar";
 import { triplanarNormalMap } from "../tsl/triplanar-normal";
 import type { MaterialGraphDocument, MaterialValue, PbrSocket } from "./types";
 import type { NodeRegistry } from "./registry";
@@ -19,15 +20,39 @@ const SURFACE_CHANNELS: PbrSocket[] = ["baseColor", "roughness", "metallic", "am
 export class OfflineMaterial {
   readonly material: MeshPhysicalNodeMaterial = newSurfaceMaterial();
   readonly scaleUniform = uniform(1.2); // triplanar world scale (driven by the "world / tile" control)
+  readonly sharpnessUniform = uniform(8); // triplanar blend exponent (higher → narrower wash band on ~45° faces)
   lastBakeMs = 0;
 
   private readonly targets = new Map<PbrSocket, RenderTarget>();
   private wiredSignature = ""; // which channels are currently sampled, to avoid needless material rebuilds
+  private lastPresent = new Set<PbrSocket>();
+  private debugNormals = false;
+  private triplanar = false; // off by default — sample the baked textures by plain mesh UV until enabled
 
   constructor(private readonly size = BAKE_SIZE) {}
 
   setScale(value: number): void {
     this.scaleUniform.value = value;
+  }
+
+  setSharpness(value: number): void {
+    this.sharpnessUniform.value = value;
+  }
+
+  // Toggle world-space triplanar projection vs plain UV sampling of the baked maps. Re-wires the surface.
+  setTriplanar(on: boolean): void {
+    if (on === this.triplanar) return;
+    this.triplanar = on;
+    this.wire(this.lastPresent);
+  }
+
+  // Debug view: paint the surface with its actual shading normal (geometry + the triplanar normal map) as
+  // RGB, unlit. Flat surface → smooth gradient; a working normal map → high-frequency relief on top. The
+  // surest "is my normal map actually perturbing the surface" check.
+  setNormalDebug(on: boolean): void {
+    if (on === this.debugNormals) return;
+    this.debugNormals = on;
+    this.wire(this.lastPresent);
   }
 
   // Compile the graph (offline/uv), render each connected channel into its RT, and (re)wire the surface
@@ -70,18 +95,36 @@ export class OfflineMaterial {
   // Point the surface material's channel nodes at the baked textures (triplanar). Only called when the set
   // of connected channels changes — re-baking re-renders the same texture objects in place.
   private wire(present: Set<PbrSocket>): void {
+    this.lastPresent = present;
     const m = this.material;
     const scale = this.scaleUniform;
-    const tri = (ch: PbrSocket): MaterialValue =>
-      triplanarTexture(texture(this.targets.get(ch)!.texture), null, null, scale, positionWorld, normalWorld);
+    const sharp = this.sharpnessUniform;
+    // Channel sampler: world-space triplanar (projection blend) or plain mesh-UV `texture()`.
+    const sample = (ch: PbrSocket): MaterialValue =>
+      this.triplanar
+        ? triplanarColor(this.targets.get(ch)!.texture, scale, sharp)
+        : texture(this.targets.get(ch)!.texture);
+    // The world-space shading normal: triplanar reorient, or UV normal-map (TBN), else the geometry normal.
+    const shadingNormal: MaterialValue = !present.has("normal")
+      ? normalWorld
+      : this.triplanar
+        ? triplanarNormalMap(this.targets.get("normal")!.texture, scale, sharp)
+        : normalMap(texture(this.targets.get("normal")!.texture).xyz, float(1));
 
-    m.colorNode = present.has("baseColor") ? tri("baseColor") : null;
-    m.roughnessNode = present.has("roughness") ? tri("roughness").r : null;
-    m.metalnessNode = present.has("metallic") ? tri("metallic").r : null;
-    m.aoNode = present.has("ambientOcclusion") ? tri("ambientOcclusion").r : null;
-    m.normalNode = present.has("normal")
-      ? triplanarNormalMap(this.targets.get("normal")!.texture, scale)
-      : null;
+    if (this.debugNormals) {
+      // Unlit normal visualisation: emissive = encoded shading normal, albedo black so lighting can't tint it.
+      m.colorNode = vec3(0, 0, 0);
+      m.emissiveNode = shadingNormal.normalize().mul(0.5).add(0.5);
+      m.roughnessNode = m.metalnessNode = m.aoNode = m.normalNode = null;
+      m.needsUpdate = true;
+      return;
+    }
+    m.colorNode = present.has("baseColor") ? sample("baseColor") : null;
+    m.roughnessNode = present.has("roughness") ? sample("roughness").r : null;
+    m.metalnessNode = present.has("metallic") ? sample("metallic").r : null;
+    m.aoNode = present.has("ambientOcclusion") ? sample("ambientOcclusion").r : null;
+    m.normalNode = present.has("normal") ? shadingNormal : null;
+    m.emissiveNode = null;
     m.needsUpdate = true;
   }
 

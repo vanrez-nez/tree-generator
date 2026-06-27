@@ -54,6 +54,7 @@ import {
 import { NodeEditorPanel } from "./node-editor";
 import { buildMaterialEditorConfig } from "./scene/material/editor-config";
 import { ChannelBaker } from "./scene/material/graph/channel-baker";
+import { MATERIAL_PRESETS, makePreset, DEFAULT_PRESET } from "./scene/material/presets";
 import { PBR_SOCKETS, type PbrSocket, type MaterialGraphDocument } from "./scene/material/graph/types";
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -216,8 +217,8 @@ const markPreviewDirty = (): void => {
 mainScene.materialController.onRecompile(markPreviewDirty);
 // Material-graph UI state. `worldPerTile` maps to the FBM generator's scale; `backend` toggles the
 // live procedural vs convertToTexture baked-map compile.
-const triplanarState = { enabled: true, worldPerTile: 1.2, sharpness: 8 };
-const materialState = { backend: "offline" as "live" | "offline" };
+const triplanarState = { enabled: false, worldPerTile: 1.2, sharpness: 8 };
+const materialState = { backend: "offline" as "live" | "offline", debugNormals: false, preset: DEFAULT_PRESET };
 
 buildGenerationControls(genPage);
 buildTreeStatsControls(genPage);
@@ -643,23 +644,42 @@ function buildTextureLayers(): void {
     .on("change", (event) => texturePreview?.setSeams(event.value));
 
   // Material graph controls. The backend toggle switches the offline baked-texture surface (default) vs
-  // live procedural shading; "world / tile" is the triplanar projection scale on the offline surface.
+  // live procedural shading.
   const materialFolder = texturePage.addFolder({ title: "Material", expanded: true });
   materialFolder
     .addBinding(materialState, "backend", { options: { Offline: "offline", Live: "live" } })
     .on("change", (event) => mainScene.materialController.setBackend(event.value));
+  // Preset graph selector — loads a named starter document (configs are authored here; future presets too).
   materialFolder
-    .addBinding(triplanarState, "worldPerTile", { label: "world / tile", min: 0.2, max: 6, step: 0.05 })
-    .on("change", (event) => mainScene.materialController.setTriplanarScale(event.value));
-  materialFolder.addButton({ title: "Reset Graph" }).on("click", () => {
-    mainScene.materialController.reset();
-  });
-
+    .addBinding(materialState, "preset", {
+      label: "preset",
+      options: Object.fromEntries(MATERIAL_PRESETS.map((p) => [p.label, p.key])),
+    })
+    .on("change", (event) => {
+      mainScene.materialController.loadDocument(makePreset(event.value));
+      rebuildEditor();
+    });
+  // Debug: paint the offline surface with its shading normal (geometry + normal map) as RGB — relief
+  // visible = the normal map is perturbing the surface.
+  materialFolder
+    .addBinding(materialState, "debugNormals", { label: "debug normals" })
+    .on("change", (event) => mainScene.materialController.setNormalDebug(event.value));
   // The dockable node editor (src/node-editor/) shows the live material graph, generated from the
   // registry. Param/toggle edits flow into the controller and recompile the surface.
-  texturePage
-    .addButton({ title: "Open Node Editor" })
-    .on("click", () => rebuildEditor());
+  materialFolder.addButton({ title: "Open Node Editor" }).on("click", () => rebuildEditor());
+
+  // Triplanar projection of the baked maps onto the surface (off → plain UV sampling). Off by default.
+  const triplanarFolder = texturePage.addFolder({ title: "Triplanar", expanded: true });
+  triplanarFolder
+    .addBinding(triplanarState, "enabled", { label: "enabled" })
+    .on("change", (event) => mainScene.materialController.setTriplanarEnabled(event.value));
+  triplanarFolder
+    .addBinding(triplanarState, "worldPerTile", { label: "world / tile", min: 0.2, max: 6, step: 0.05 })
+    .on("change", (event) => mainScene.materialController.setTriplanarScale(event.value));
+  triplanarFolder
+    .addBinding(triplanarState, "sharpness", { label: "sharpness", min: 1, max: 24, step: 0.5 })
+    .on("change", (event) => mainScene.materialController.setTriplanarSharpness(event.value));
+
 
   // Export each PBR channel to a PNG (baked from the graph via convertToTexture readback).
   const exportFolder = texturePage.addFolder({ title: "Export PNG", expanded: false });

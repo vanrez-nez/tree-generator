@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "nodes": [
+    { "id": "uv", "type": "tex-coordinate", "params": {}, "position": { "x": 40, "y": 160 }, "enabled": true },
+    {
+      "id": "checker",
+      "type": "checker",
+      "params": { "color1": "#c4201e", "color2": "#18b6b6", "scale": 4 },
+      "position": { "x": 320, "y": 160 },
+      "enabled": true
+    },
+    { "id": "pr", "type": "principled-bsdf", "params": {}, "position": { "x": 640, "y": 160 }, "enabled": true },
+    { "id": "out", "type": "material-output", "params": {}, "position": { "x": 960, "y": 180 }, "enabled": true }
+  ],
+  "edges": [
+    { "fromNode": "uv", "fromOutput": "uv", "toNode": "checker", "toInput": "coord" },
+    { "fromNode": "checker", "fromOutput": "color", "toNode": "pr", "toInput": "baseColor" },
+    { "fromNode": "pr", "fromOutput": "bsdf", "toNode": "out", "toInput": "surface" }
+  ]
+}

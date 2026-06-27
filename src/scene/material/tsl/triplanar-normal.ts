@@ -1,6 +1,7 @@
 import { Fn, vec3, texture, positionWorld, normalWorld } from "three/tsl";
 import type { Texture } from "three/webgpu";
 import type { MaterialValue } from "../graph/types";
+import { triplanarBlendWeights } from "./triplanar";
 
 // Triplanar sampling for a TANGENT-SPACE normal map (the offline backend's baked normal). TSL's built-in
 // `triplanarTexture` only value-blends, which is wrong for normals — each plane's tangent-space normal must
@@ -12,11 +13,10 @@ import type { MaterialValue } from "../graph/types";
 // Weights are |worldNormal| normalized, same as triplanarTexture.
 type V = MaterialValue;
 
-export function triplanarNormalMap(map: Texture, scale: V): V {
+export function triplanarNormalMap(map: Texture, scale: V, sharpness: V): V {
   return Fn(() => {
     const p = positionWorld.mul(scale);
-    let bf = normalWorld.abs().normalize() as V;
-    bf = bf.div(bf.dot(vec3(1, 1, 1)));
+    const bf = triplanarBlendWeights(sharpness); // sharpened weights (shared with the colour sampler)
     const s = normalWorld.sign();
 
     // Decode each plane's tangent-space normal to [-1, 1].
