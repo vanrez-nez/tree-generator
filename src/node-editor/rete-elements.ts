@@ -141,12 +141,7 @@ export class EditorNodeElement extends LitElement {
         class="title ${enterable ? 'enterable' : ''}"
         data-testid="title"
         data-class=${this.data.nodeClass ?? nothing}
-        title=${enterable ? 'Double-click to enter group' : nothing}
-        @dblclick=${(e: Event) => {
-          if (!this.data.onEnter) return
-          e.stopPropagation()
-          this.data.onEnter()
-        }}
+        title=${enterable ? 'Double-click to enter group' : 'Double-click to zoom to node'}
       >
         <span class="title-text">${label}</span>
         ${eye}${del}

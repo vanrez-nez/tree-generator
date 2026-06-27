@@ -68,8 +68,8 @@ const EDGE_MARGIN = 120
 const MIN_CONTROL_VIEWPORT = 220
 const DEFAULT_FRACTION = 0.5 // docked panels default to 50% of the viewport
 
-// Zoom is via the header buttons or Shift + wheel. Clamped to this range; each step
-// multiplies/divides by ZOOM_STEP.
+// Zoom is via the header buttons or the mouse wheel (toward the cursor). Clamped to this range; each
+// header step multiplies/divides by ZOOM_STEP.
 const MIN_ZOOM = 0.1
 const MAX_ZOOM = 2.5
 const ZOOM_STEP = 1.2
@@ -83,6 +83,10 @@ const GRID_SIZE = 22
 // Empty breathing room kept around the node graph (in rem), so connectors never sit flush against
 // the panel edges. Baked into the content bounds used for panning + centring, and into the fit gap.
 const CONTENT_PADDING_REM = 5
+// Minimum px of the (padded) content bounds kept on screen when panning/zooming. A loose guard so the
+// graph can't be scrolled fully into the void — but it never force-centres, so zoom-to-cursor is preserved.
+const CONTENT_KEEP_PX = 96
+const NODE_FALLBACK_SIZE = 288 // node element size fallback when offsetWidth/Height isn't measured yet
 const FIT_SCALE = 0.8 // zoomAt gap to the viewport border on "fit" (lower = more margin)
 const STORAGE_PREFIX = 'tree-graph:node-editor:positions:v1'
 
@@ -228,7 +232,7 @@ export class NodeEditorPanel {
     this.canvasHost.className = 'ne-canvas'
     const tip = document.createElement('div')
     tip.className = 'ne-canvas__tip'
-    tip.textContent = 'Shift + Scroll to Zoom'
+    tip.textContent = 'Scroll to zoom · Shift + scroll to pan · Double-click a title to focus'
     this.canvasHost.appendChild(tip)
 
     // Drag handle on the panel's inner edge (repositioned per dock mode in `applyDock`).
@@ -280,6 +284,10 @@ export class NodeEditorPanel {
 
   dispose(): void {
     this.canvasHost.removeEventListener('wheel', this.onWheelPan, { capture: true } as EventListenerOptions)
+    window.removeEventListener('pointerdown', this.onTitlePointerDown, {
+      capture: true,
+    } as EventListenerOptions)
+    window.removeEventListener('mousedown', this.onTitleDblClick, { capture: true } as EventListenerOptions)
     this.area?.destroy()
     this.area = null
     this.arrange = null
@@ -426,11 +434,18 @@ export class NodeEditorPanel {
     area.use(render)
     area.use(arrange as never)
 
-    // Plain wheel pans. Shift + wheel zooms through our handler, so disable Rete's built-in wheel zoom.
-    // Capture phase so the canvas claims the wheel before any node input / Tweakpane control (which would
-    // otherwise consume it), making zoom/pan work everywhere over the graph.
+    // Plain wheel zooms toward the cursor; Shift + wheel pans. We handle both, so disable Rete's built-in
+    // wheel zoom. Capture phase so the canvas claims the wheel before any node input / Tweakpane control
+    // (which would otherwise consume it), making zoom/pan work everywhere over the graph.
     area.area.setZoomHandler(null)
     this.canvasHost.addEventListener('wheel', this.onWheelPan, { passive: false, capture: true })
+    // Double-click on a node title → focus it. Rete's drag handle suppresses the browser's click/dblclick
+    // on titles (they never fire — verified), so there's no `dblclick` to listen to. We use the events that
+    // DO fire: `pointerdown` carries the real title target; the paired `mousedown` carries the browser's
+    // native consecutive-click count in `event.detail` (governed by the OS double-click speed). detail===2
+    // on a title = an OS double-click. Window + capture so nothing upstream can stop it.
+    window.addEventListener('pointerdown', this.onTitlePointerDown, { capture: true })
+    window.addEventListener('mousedown', this.onTitleDblClick, { capture: true })
 
     // Clamp zoom to range, and keep any pan (wheel or background drag) within the content
     // bounds. The wheel handler pre-clamps, so this mainly catches drag-pan; the `clamping` flag
@@ -785,48 +800,91 @@ export class NodeEditorPanel {
     await this.zoomByAt(factor, this.canvasHost.clientWidth / 2, this.canvasHost.clientHeight / 2)
   }
 
+  // Zoom toward the screen point (originX, originY): keep the world point under it fixed. Rete's
+  // area.zoom(k, ox, oy) does NOT pivot around (ox, oy) (it just offsets the pan), so we set the zoom and
+  // compute the cursor-anchored pan ourselves.
   private async zoomByAt(factor: number, originX: number, originY: number): Promise<void> {
     const area = this.area
     if (!area) return
-    const k = clamp(area.area.transform.k * factor, MIN_ZOOM, MAX_ZOOM)
-    if (k === area.area.transform.k) return
-    await area.area.zoom(k, originX, originY)
-    this.clampPan()
+    const t = area.area.transform
+    const k = clamp(t.k * factor, MIN_ZOOM, MAX_ZOOM)
+    if (k === t.k) return
+    const ratio = k / t.k
+    const x = originX - (originX - t.x) * ratio
+    const y = originY - (originY - t.y) * ratio
+    await area.area.zoom(k, 0, 0) // ox=oy=0 → sets the zoom without shifting the pan
+    const c = this.clampedXY(x, y)
+    await area.area.translate(c.x, c.y)
   }
 
+  // Double-click on a node's title bar: snap to 100% zoom and centre the node (a fixed zoom, not relative
+  // to the node's size — large nodes shouldn't stay zoomed out nor small ones blow up).
+  private async zoomToNode(runtimeId: string): Promise<void> {
+    const area = this.area
+    if (!area) return
+    const view = area.nodeViews.get(runtimeId)
+    if (!view) return
+    const w = view.element.offsetWidth || NODE_FALLBACK_SIZE
+    const h = view.element.offsetHeight || NODE_FALLBACK_SIZE
+    const cx = view.position.x + w / 2
+    const cy = view.position.y + h / 2
+    const k = 1 // 100% zoom
+    await area.area.zoom(k, 0, 0) // set the zoom (origin 0,0), then place the pan to centre the node
+    await area.area.translate(this.canvasHost.clientWidth / 2 - cx * k, this.canvasHost.clientHeight / 2 - cy * k)
+    this.clampPan()
+    this.syncBackground()
+  }
+
+  // Plain wheel zooms toward the cursor (Figma/Blender-style); Shift + wheel pans for those who prefer
+  // scroll-to-pan. Capture phase, so it works over node inputs / Tweakpane controls too.
   private readonly onWheelPan = (event: WheelEvent): void => {
-    if (this.shouldHandleWheelZoom(event)) {
+    if (!this.isCanvasWheelEvent(event)) return
+
+    if (event.shiftKey) {
+      const dx = normalizedWheelDelta(event.deltaX, event.deltaMode)
+      const dy = normalizedWheelDelta(event.deltaY, event.deltaMode)
+      if (!Number.isFinite(dx) || !Number.isFinite(dy) || (dx === 0 && dy === 0)) return
       event.preventDefault()
-      event.stopPropagation() // capture phase: claim it before the node input / Tweakpane control
-      void this.zoomByWheel(event)
+      event.stopPropagation()
+      // Scroll down/right reveals lower/right content, i.e. translate the content the opposite way.
+      this.panBy(-dx, -dy)
       return
     }
 
-    if (event.shiftKey || !this.shouldHandleWheelPan(event)) {
-      return
-    }
-
+    const deltaY = normalizedWheelDelta(event.deltaY, event.deltaMode)
+    if (event.altKey || event.metaKey || !Number.isFinite(deltaY) || deltaY === 0) return
     event.preventDefault()
     event.stopPropagation()
-    const dx = normalizedWheelDelta(event.deltaX, event.deltaMode)
-    const dy = normalizedWheelDelta(event.deltaY, event.deltaMode)
-    // Scroll down/right reveals lower/right content, i.e. translate the content the opposite way.
-    this.panBy(-dx, -dy)
+    void this.zoomByWheel(event)
   }
 
-  private shouldHandleWheelZoom(event: WheelEvent): boolean {
-    if (!this.isCanvasWheelEvent(event)) return false
-    if (!event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return false
-    const deltaY = normalizedWheelDelta(event.deltaY, event.deltaMode)
-    return Number.isFinite(deltaY) && deltaY !== 0
+  // The node whose title the most recent pointerdown landed on (null if not a title). Recorded on
+  // pointerdown because its target is reliable, unlike the paired mousedown's (retargeted by Rete's drag).
+  private dblTitleNode: string | null = null
+  private readonly onTitlePointerDown = (event: PointerEvent): void => {
+    this.dblTitleNode = null
+    const area = this.area
+    if (!area || !this.open_) return
+    const title = (event.target as HTMLElement | null)?.closest('.title')
+    if (!title) return
+    for (const [runtimeId, view] of area.nodeViews) {
+      if (view.element.contains(title)) {
+        this.dblTitleNode = runtimeId
+        return
+      }
+    }
   }
 
-  private shouldHandleWheelPan(event: WheelEvent): boolean {
-    if (!this.isCanvasWheelEvent(event)) return false
-    if (event.altKey || event.ctrlKey || event.metaKey) return false
-    const dx = normalizedWheelDelta(event.deltaX, event.deltaMode)
-    const dy = normalizedWheelDelta(event.deltaY, event.deltaMode)
-    return Number.isFinite(dx) && Number.isFinite(dy) && (dx !== 0 || dy !== 0)
+  // Second press of an OS double-click (mousedown.detail === 2) on a title: groups enter their subgraph,
+  // every other node zooms + centres. `detail` is the browser's native, OS-speed-governed click counter.
+  private readonly onTitleDblClick = (event: MouseEvent): void => {
+    if (event.detail !== 2) return
+    const id = this.dblTitleNode
+    const editor = this.editor
+    if (!id || !editor) return
+    const node = editor.getNode(id) as EditorNode | undefined
+    if (node?.onEnter) node.onEnter()
+    else void this.zoomToNode(id)
   }
 
   private isCanvasWheelEvent(event: WheelEvent): boolean {
@@ -894,18 +952,21 @@ export class NodeEditorPanel {
     return { x0: x0 - pad, y0: y0 - pad, x1: x1 + pad, y1: y1 + pad }
   }
 
-  // Clamp a desired pan offset so the content can't be scrolled into empty space. An axis whose
-  // content fits the viewport (minus PAN_MARGIN) locks to centre — i.e. "no pan if nothing to pan".
+  // Clamp a desired pan offset so the content can't be scrolled fully into empty space, while keeping the
+  // view free to sit off-centre (so zoom-to-cursor isn't undone). At least CONTENT_KEEP_PX of the padded
+  // content stays on screen on each axis; within that, any position is allowed.
   private clampedXY(x: number, y: number): { x: number; y: number } {
     const area = this.area
     const bounds = this.contentBounds()
     if (!area || !bounds) return { x, y }
     const k = area.area.transform.k
     const axis = (value: number, lo: number, hi: number, viewport: number): number => {
-      // `lo`/`hi` already include CONTENT_PADDING_REM. Padded content fits → lock to centre (no pan).
-      if ((hi - lo) * k <= viewport) return (viewport - (lo + hi) * k) / 2
-      // Padded content overflows → scroll until the padded edge meets the viewport edge.
-      return clamp(value, viewport - hi * k, -lo * k)
+      // `lo`/`hi` already include CONTENT_PADDING_REM. Keep `keep` px of content overlapping the viewport
+      // (capped at the content's own on-screen size so small graphs aren't over-constrained).
+      const keep = Math.min(CONTENT_KEEP_PX, (hi - lo) * k)
+      const min = keep - hi * k // content pushed left until only `keep` px remain at the right edge
+      const max = viewport - keep - lo * k // pushed right until only `keep` px remain at the left edge
+      return clamp(value, Math.min(min, max), Math.max(min, max))
     }
     return {
       x: axis(x, bounds.x0, bounds.x1, this.canvasHost.clientWidth),
