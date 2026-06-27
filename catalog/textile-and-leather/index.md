@@ -1,0 +1,15 @@
+# Textile and Leather
+
+- [Plain Cotton](./plain-cotton.md)
+- [Coarse Linen](./coarse-linen.md)
+- [Wool](./wool.md)
+- [Felt](./felt.md)
+- [Burlap](./burlap.md)
+- [Denim](./denim.md)
+- [Canvas](./canvas.md)
+- [Velvet](./velvet.md)
+- [Silk](./silk.md)
+- [Woven Carpet](./woven-carpet.md)
+- [Braided Rope](./braided-rope.md)
+- [Cracked Leather](./cracked-leather.md)
+- [Suede](./suede.md)

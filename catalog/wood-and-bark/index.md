@@ -1,0 +1,17 @@
+# Wood and Bark
+
+- [Oak](./oak.md)
+- [Pine](./pine.md)
+- [Walnut](./walnut.md)
+- [Birch](./birch.md)
+- [Mahogany](./mahogany.md)
+- [Bamboo](./bamboo.md)
+- [Plywood](./plywood.md)
+- [End Grain](./end-grain.md)
+- [Painted Wood](./painted-wood.md)
+- [Charred Wood](./charred-wood.md)
+- [Wet Wood](./wet-wood.md)
+- [Rotten Wood](./rotten-wood.md)
+- [Cork](./cork.md)
+- [Rough Bark](./rough-bark.md)
+- [Peeling Bark](./peeling-bark.md)

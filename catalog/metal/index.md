@@ -1,0 +1,15 @@
+# Metal
+
+- [Polished Iron](./polished-iron.md)
+- [Brushed Steel](./brushed-steel.md)
+- [Galvanized Steel](./galvanized-steel.md)
+- [Cast Iron](./cast-iron.md)
+- [Copper](./copper.md)
+- [Oxidized Copper](./oxidized-copper.md)
+- [Bronze](./bronze.md)
+- [Brass](./brass.md)
+- [Gold](./gold.md)
+- [Aluminum](./aluminum.md)
+- [Rusted Metal](./rusted-metal.md)
+- [Painted Chipped Metal](./painted-chipped-metal.md)
+- [Gunmetal](./gunmetal.md)
