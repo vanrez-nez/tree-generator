@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "blender": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "./scripts/blender-official-mcp-server.mjs"
+      ],
+      "env": {}
+    }
+  }
+}

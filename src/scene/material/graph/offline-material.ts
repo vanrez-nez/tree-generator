@@ -64,7 +64,7 @@ export class OfflineMaterial {
     for (const ch of SURFACE_CHANNELS) {
       const node = (bundle as Partial<Record<string, MaterialValue>>)[ch];
       if (!node) continue;
-      renderColorNodeToTarget(renderer, encodeChannel(node, ch), this.ensureTarget(ch));
+      renderColorNodeToTarget(renderer, encodeChannel(node, ch), this.ensureTarget(ch), ch === "normal");
       present.push(ch);
     }
     const signature = present.join(",");

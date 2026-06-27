@@ -26,17 +26,23 @@ export const waveNode: MaterialNodeDef = {
     { key: "detailRoughness", label: "detail rough", type: "float", min: 0, max: 1, step: 0.01, default: 0.5 },
   ],
   build(ctx) {
-    const p = (ctx.inputs.coord ?? ctx.coord).mul(ctx.uniforms.scale);
+    // blenderWave receives the raw (mapped) coord + scale uniform: the live path scales internally; the
+    // offline path snaps the band frequency to integers (build-time scaleNum) for seamless tiling.
+    const coord = ctx.inputs.coord ?? ctx.coord;
     const opts = {
       waveType: Math.max(0, WAVE_TYPES.indexOf(ctx.params.waveType as string)),
       dir: Math.max(0, DIRS.indexOf(ctx.params.direction as string)),
       profile: Math.max(0, PROFILES.indexOf(ctx.params.profile as string)),
       withDistortion: Number(ctx.params.distortion ?? 0) > 0,
       detail: (ctx.params.detail as number) ?? 2,
+      tileable: ctx.backend === "offline",
+      scaleNum: Number(ctx.params.scale ?? 1),
+      detailScaleNum: Number(ctx.params.detailScale ?? 1),
     };
     return {
       field: blenderWave(
-        p,
+        coord,
+        ctx.uniforms.scale,
         ctx.uniforms.phase,
         ctx.uniforms.distortion,
         ctx.uniforms.detailScale,

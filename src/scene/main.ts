@@ -28,6 +28,10 @@ export class MainScene {
   // Owns the editable material graph document + the compiled surface material (src/scene/material/graph).
   readonly materialController = new MaterialGraphController();
 
+  // Scene lighting, exposed so the Scene panel can drive intensity/colour live.
+  readonly directionalLight = new THREE.DirectionalLight(0xffffff, 3);
+  readonly ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+
   selectedLineId = "trunk";
 
   // Last surface generation: build time + geometry size, surfaced in the pane's stats readout.
@@ -66,10 +70,9 @@ export class MainScene {
       this.mesher.setSurfaceMaterial(this.materialController.material),
     );
 
-    const light = new THREE.DirectionalLight(0xffffff, 3);
-    light.position.set(2, 2, 3);
-    this.scene.add(light);
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+    this.directionalLight.position.set(2, 2, 3);
+    this.scene.add(this.directionalLight);
+    this.scene.add(this.ambientLight);
 
     this.addDebugInstrumentation();
   }

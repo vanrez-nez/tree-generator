@@ -1,4 +1,4 @@
-import { mix, smoothstep, float } from "three/tsl";
+import { mix, clamp, float } from "three/tsl";
 import type { MaterialNodeDef } from "../../types";
 
 // Pure field -> colour lookup (two-stop for v1; Phase 3 widens to a multi-stop ramp). Decouples
@@ -18,7 +18,11 @@ export const colorRampNode: MaterialNodeDef = {
   ],
   build(ctx) {
     const f = ctx.inputs.field ?? float(0.5);
-    const t = smoothstep(ctx.uniforms.low, ctx.uniforms.high, f);
+    // Linear interpolation between the two stops (Blender ColorRamp's default), clamped outside [low,high].
+    // (Was smoothstep, which softened the ramp differently from Blender.)
+    const lo = ctx.uniforms.low;
+    const hi = ctx.uniforms.high;
+    const t = clamp(f.sub(lo).div(hi.sub(lo).max(1e-5)), 0, 1);
     return { color: mix(ctx.uniforms.colorA, ctx.uniforms.colorB, t) };
   },
 };

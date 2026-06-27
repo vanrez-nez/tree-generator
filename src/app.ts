@@ -7,6 +7,7 @@ import {
   GitBranch,
   SlidersVertical,
   Sprout,
+  Sun,
   SwatchBook,
 } from "lucide";
 import * as THREE from "three";
@@ -168,6 +169,12 @@ const mainTabs = pane.addBlade({
       color: "#f59e0b",
     },
     {
+      title: "Scene",
+      tooltip: "Scene (lighting + tone mapping)",
+      icon: Sun,
+      color: "#fbbf24",
+    },
+    {
       title: "Debug",
       tooltip: "Debug",
       icon: SlidersVertical,
@@ -175,7 +182,7 @@ const mainTabs = pane.addBlade({
     },
   ],
 }) as VerticalTabsApi;
-const [genPage, graphPage, meshPage, texturePage, debugPage] = mainTabs.pages;
+const [genPage, graphPage, meshPage, texturePage, scenePage, debugPage] = mainTabs.pages;
 
 const graphTabs = graphPage.addTab({
   pages: [
@@ -220,11 +227,32 @@ mainScene.materialController.onRecompile(markPreviewDirty);
 const triplanarState = { enabled: false, worldPerTile: 1.2, sharpness: 8 };
 const materialState = { backend: "offline" as "live" | "offline", debugNormals: false, preset: DEFAULT_PRESET };
 
+// Scene tab: tone mapping + lighting. Blender's viewport tone-maps (AgX) by default, so a "None" surface
+// looks blown-out vs the baked albedo — exposing these lets the lit look match the texture.
+const TONE_MAPPING_MODES: Record<string, THREE.ToneMapping> = {
+  None: THREE.NoToneMapping,
+  AgX: THREE.AgXToneMapping,
+  "ACES Filmic": THREE.ACESFilmicToneMapping,
+  Neutral: THREE.NeutralToneMapping,
+  Reinhard: THREE.ReinhardToneMapping,
+  Cineon: THREE.CineonToneMapping,
+};
+const sceneState = {
+  toneMapping: renderer.toneMapping as THREE.ToneMapping,
+  exposure: renderer.toneMappingExposure,
+  dirIntensity: mainScene.directionalLight.intensity,
+  dirColor: `#${mainScene.directionalLight.color.getHexString()}`,
+  dirPosition: { ...mainScene.directionalLight.position },
+  ambIntensity: mainScene.ambientLight.intensity,
+  ambColor: `#${mainScene.ambientLight.color.getHexString()}`,
+};
+
 buildGenerationControls(genPage);
 buildTreeStatsControls(genPage);
 buildMeshControls(meshPage);
 buildRootControls(graphRootsPage);
 buildDebugFolder(debugPage);
+buildSceneControls(scenePage);
 buildScenePanels();
 // Built once: the mixer persists across tree regeneration and is topology-independent, so its panel
 // must NOT be part of the scenePanelFolders rebuild cycle.
@@ -626,6 +654,48 @@ async function bakeConfigToBake(
     written.push(channel);
   }
   console.log(`[bake] wrote bake/${name}/ — channels: ${written.join(", ") || "(none connected)"}`);
+}
+
+// Apply a tone-mapping mode: set it on the renderer and force every scene material to recompile (the tone
+// curve is baked into each node material's output, so a mode change needs a rebuild — exposure is a live
+// uniform and doesn't).
+function setToneMapping(mode: THREE.ToneMapping): void {
+  renderer.toneMapping = mode;
+  mainScene.scene.traverse((obj) => {
+    const material = (obj as THREE.Mesh).material;
+    if (!material) return;
+    for (const m of Array.isArray(material) ? material : [material]) m.needsUpdate = true;
+  });
+}
+
+// Scene tab: tone mapping + lighting, one folder per group. Drives the renderer and the lights live.
+function buildSceneControls(container: ContainerApi): void {
+  const tone = container.addFolder({ title: "Tone Mapping", expanded: true });
+  tone
+    .addBinding(sceneState, "toneMapping", { label: "mode", options: TONE_MAPPING_MODES })
+    .on("change", (e) => setToneMapping(e.value));
+  tone
+    .addBinding(sceneState, "exposure", { label: "exposure", min: 0, max: 3, step: 0.01 })
+    .on("change", (e) => (renderer.toneMappingExposure = e.value));
+
+  const dir = container.addFolder({ title: "Directional Light", expanded: true });
+  dir
+    .addBinding(sceneState, "dirIntensity", { label: "intensity", min: 0, max: 10, step: 0.1 })
+    .on("change", (e) => (mainScene.directionalLight.intensity = e.value));
+  dir
+    .addBinding(sceneState, "dirColor", { label: "color", view: "color" })
+    .on("change", (e) => mainScene.directionalLight.color.set(e.value));
+  dir
+    .addBinding(sceneState, "dirPosition", { label: "direction" })
+    .on("change", (e) => mainScene.directionalLight.position.set(e.value.x, e.value.y, e.value.z));
+
+  const amb = container.addFolder({ title: "Ambient Light", expanded: true });
+  amb
+    .addBinding(sceneState, "ambIntensity", { label: "intensity", min: 0, max: 3, step: 0.05 })
+    .on("change", (e) => (mainScene.ambientLight.intensity = e.value));
+  amb
+    .addBinding(sceneState, "ambColor", { label: "color", view: "color" })
+    .on("change", (e) => mainScene.ambientLight.color.set(e.value));
 }
 
 function buildTextureLayers(): void {
