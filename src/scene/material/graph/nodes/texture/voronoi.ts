@@ -48,31 +48,35 @@ export const voronoiNode: MaterialNodeDef = {
     return { inputs: COORD_INPUT, outputs: feature === "distance-to-edge" ? EDGE_OUTPUTS : FULL_OUTPUTS };
   },
   build(ctx) {
-    const p = (ctx.inputs.coord ?? ctx.coord).mul(ctx.uniforms.scale);
+    // Offline bakes a 2D uv tile: scale by an INTEGER period and wrap the cell hash to that period so the
+    // cells repeat seamlessly across the tile edge. Live is a seamless 3D field (positionWorld) — no tiling
+    // needed, so period 0 keeps the faithful Blender path and the live `scale` uniform stays tweakable.
+    const period = ctx.backend === "offline" ? Math.max(1, Math.round(Number(ctx.params.scale ?? 1))) : 0;
+    const p = (ctx.inputs.coord ?? ctx.coord).mul(period > 0 ? period : ctx.uniforms.scale);
     const m = Math.max(0, METRICS.indexOf(ctx.params.metric as string));
     const r = ctx.uniforms.randomness;
     const e = ctx.uniforms.exponent;
     const s = ctx.uniforms.smoothness;
     switch ((ctx.params.feature as string) ?? "f1") {
       case "distance-to-edge":
-        return { distance: blenderVoronoiDistanceToEdge(p, r) };
+        return { distance: blenderVoronoiDistanceToEdge(p, r, period) };
       case "f2":
         return {
-          distance: blenderVoronoiF2(p, r, m, e),
-          color: blenderVoronoiF2Color(p, r, m, e),
-          position: blenderVoronoiF2Pos(p, r, m, e),
+          distance: blenderVoronoiF2(p, r, m, e, period),
+          color: blenderVoronoiF2Color(p, r, m, e, period),
+          position: blenderVoronoiF2Pos(p, r, m, e, period),
         };
       case "smooth-f1":
         return {
-          distance: blenderVoronoiSmoothF1(p, r, m, e, s),
-          color: blenderVoronoiSmoothF1Color(p, r, m, e, s),
-          position: blenderVoronoiSmoothF1Pos(p, r, m, e, s),
+          distance: blenderVoronoiSmoothF1(p, r, m, e, s, period),
+          color: blenderVoronoiSmoothF1Color(p, r, m, e, s, period),
+          position: blenderVoronoiSmoothF1Pos(p, r, m, e, s, period),
         };
       default:
         return {
-          distance: blenderVoronoiF1(p, r, m, e),
-          color: blenderVoronoiF1Color(p, r, m, e),
-          position: blenderVoronoiF1Pos(p, r, m, e),
+          distance: blenderVoronoiF1(p, r, m, e, period),
+          color: blenderVoronoiF1Color(p, r, m, e, period),
+          position: blenderVoronoiF1Pos(p, r, m, e, period),
         };
     }
   },

@@ -1,6 +1,7 @@
 import type { MaterialGraphDocument } from "../graph/types";
 import defaultDoc from "./default.json";
 import checkersDoc from "./checkers.json";
+import voronoiCellsDoc from "./voronoi-cells.json";
 
 // Material preset registry. Each preset is a plain JSON MaterialGraphDocument under presets/. Add a new
 // `<name>.json` and one entry here to surface it in the Material panel's preset selector.
@@ -13,6 +14,7 @@ interface Preset {
 export const MATERIAL_PRESETS: Preset[] = [
   { key: "empty", label: "Empty", doc: defaultDoc as MaterialGraphDocument },
   { key: "checkers", label: "Checkers", doc: checkersDoc as MaterialGraphDocument },
+  { key: "voronoi-cells", label: "Voronoi Cells", doc: voronoiCellsDoc as MaterialGraphDocument },
 ];
 export const DEFAULT_PRESET = "empty"; // presets/default.json — the document loaded on a fresh session
 

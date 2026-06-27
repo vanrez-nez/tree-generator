@@ -33,6 +33,19 @@ function hashInt3ToVec3(kx: V, ky: V, kz: V): V {
   );
 }
 
+// Floored modulo of an integer cell coordinate into [0, period). Wrapping the PCG-hash input makes the
+// random feature points periodic, so a Voronoi cell at index `period` matches index 0 — the offline tile
+// edge becomes seamless. (The neighbour offset i/j/k stays unwrapped, so distances are unaffected.)
+function wrapCell(v: V, period: number): V {
+  return v.sub(int(floor(float(v).div(period))).mul(int(period)));
+}
+
+// Hash a cell, optionally wrapped to `period` for seamless tiling (period <= 0 → faithful, non-tiling 3D).
+function cellHash(ix: V, iy: V, iz: V, period: number): V {
+  if (period <= 0) return hashInt3ToVec3(ix, iy, iz);
+  return hashInt3ToVec3(wrapCell(ix, period), wrapCell(iy, period), wrapCell(iz, period));
+}
+
 // voronoi_distance for one metric (build-time selected). exponent is used only for Minkowski.
 function voronoiDistance(a: V, b: V, metric: number, exponent: V): V {
   const d = a.sub(b).abs();
@@ -49,7 +62,7 @@ function voronoiDistance(a: V, b: V, metric: number, exponent: V): V {
 type Want = "distance" | "color" | "position";
 
 // F1: closest point. Tracks the winning offset so it can emit Distance / Color / Position.
-function voronoiF1(coord: V, randomness: V, metric: number, exponent: V, want: Want): V {
+function voronoiF1(coord: V, randomness: V, metric: number, exponent: V, want: Want, period: number): V {
   return Fn(() => {
     const cell = floor(coord) as V;
     const local = coord.sub(cell);
@@ -63,7 +76,7 @@ function voronoiF1(coord: V, randomness: V, metric: number, exponent: V, want: W
       for (let j = -1; j <= 1; j++)
         for (let i = -1; i <= 1; i++) {
           const off = vec3(i, j, k);
-          const pp = off.add(hashInt3ToVec3(cx.add(i), cy.add(j), cz.add(k)).mul(randomness));
+          const pp = off.add(cellHash(cx.add(i), cy.add(j), cz.add(k), period).mul(randomness));
           const d = voronoiDistance(pp, local, metric, exponent);
           const closer = d.lessThan(minDist);
           minDist.assign(closer.select(d, minDist));
@@ -71,14 +84,14 @@ function voronoiF1(coord: V, randomness: V, metric: number, exponent: V, want: W
           tPos.assign(closer.select(pp, tPos));
         }
     if (want === "color")
-      return hashInt3ToVec3(cx.add(int(tOff.x)), cy.add(int(tOff.y)), cz.add(int(tOff.z)));
+      return cellHash(cx.add(int(tOff.x)), cy.add(int(tOff.y)), cz.add(int(tOff.z)), period);
     if (want === "position") return tPos.add(cell);
     return minDist;
   })();
 }
 
 // F2: second-closest point (tracks both F1 and F2; updates from the old state each step).
-function voronoiF2(coord: V, randomness: V, metric: number, exponent: V, want: Want): V {
+function voronoiF2(coord: V, randomness: V, metric: number, exponent: V, want: Want, period: number): V {
   return Fn(() => {
     const cell = floor(coord) as V;
     const local = coord.sub(cell);
@@ -95,7 +108,7 @@ function voronoiF2(coord: V, randomness: V, metric: number, exponent: V, want: W
       for (let j = -1; j <= 1; j++)
         for (let i = -1; i <= 1; i++) {
           const off = vec3(i, j, k);
-          const pp = off.add(hashInt3ToVec3(cx.add(i), cy.add(j), cz.add(k)).mul(randomness));
+          const pp = off.add(cellHash(cx.add(i), cy.add(j), cz.add(k), period).mul(randomness));
           const d = voronoiDistance(pp, local, metric, exponent);
           // Snapshot the comparisons into vars: dF1/dF2 are reassigned below, so an expression-based
           // isF1/isF2 would re-read the *new* values in the later (offset/position) selects.
@@ -118,7 +131,7 @@ function voronoiF2(coord: V, randomness: V, metric: number, exponent: V, want: W
           posF1.assign(nPosF1);
         }
     if (want === "color")
-      return hashInt3ToVec3(cx.add(int(offF2.x)), cy.add(int(offF2.y)), cz.add(int(offF2.z)));
+      return cellHash(cx.add(int(offF2.x)), cy.add(int(offF2.y)), cz.add(int(offF2.z)), period);
     if (want === "position") return posF2.add(cell);
     return dF2;
   })();
@@ -132,6 +145,7 @@ function voronoiSmoothF1(
   exponent: V,
   smoothness: V,
   want: Want,
+  period: number,
 ): V {
   return Fn(() => {
     const cell = floor(coord) as V;
@@ -148,7 +162,7 @@ function voronoiSmoothF1(
       for (let j = -2; j <= 2; j++)
         for (let i = -2; i <= 2; i++) {
           const off = vec3(i, j, k);
-          const rnd = hashInt3ToVec3(cx.add(i), cy.add(j), cz.add(k)); // = cell colour
+          const rnd = cellHash(cx.add(i), cy.add(j), cz.add(k), period); // = cell colour
           const pp = off.add(rnd.mul(randomness));
           const d = voronoiDistance(pp, local, metric, exponent);
           h.assign(
@@ -170,22 +184,29 @@ function voronoiSmoothF1(
   })();
 }
 
-// Public per-feature, per-output accessors (the node calls the ones it needs).
-export const blenderVoronoiF1 = (c: V, r: V, m: number, e: V): V => voronoiF1(c, r, m, e, "distance");
-export const blenderVoronoiF1Color = (c: V, r: V, m: number, e: V): V => voronoiF1(c, r, m, e, "color");
-export const blenderVoronoiF1Pos = (c: V, r: V, m: number, e: V): V => voronoiF1(c, r, m, e, "position");
-export const blenderVoronoiF2 = (c: V, r: V, m: number, e: V): V => voronoiF2(c, r, m, e, "distance");
-export const blenderVoronoiF2Color = (c: V, r: V, m: number, e: V): V => voronoiF2(c, r, m, e, "color");
-export const blenderVoronoiF2Pos = (c: V, r: V, m: number, e: V): V => voronoiF2(c, r, m, e, "position");
-export const blenderVoronoiSmoothF1 = (c: V, r: V, m: number, e: V, s: V): V =>
-  voronoiSmoothF1(c, r, m, e, s, "distance");
-export const blenderVoronoiSmoothF1Color = (c: V, r: V, m: number, e: V, s: V): V =>
-  voronoiSmoothF1(c, r, m, e, s, "color");
-export const blenderVoronoiSmoothF1Pos = (c: V, r: V, m: number, e: V, s: V): V =>
-  voronoiSmoothF1(c, r, m, e, s, "position");
+// Public per-feature, per-output accessors (the node calls the ones it needs). `period` > 0 wraps the cell
+// hash for seamless tiling over a [0, period) tile (the offline bake); 0 keeps the faithful, non-tiling 3D.
+export const blenderVoronoiF1 = (c: V, r: V, m: number, e: V, period = 0): V =>
+  voronoiF1(c, r, m, e, "distance", period);
+export const blenderVoronoiF1Color = (c: V, r: V, m: number, e: V, period = 0): V =>
+  voronoiF1(c, r, m, e, "color", period);
+export const blenderVoronoiF1Pos = (c: V, r: V, m: number, e: V, period = 0): V =>
+  voronoiF1(c, r, m, e, "position", period);
+export const blenderVoronoiF2 = (c: V, r: V, m: number, e: V, period = 0): V =>
+  voronoiF2(c, r, m, e, "distance", period);
+export const blenderVoronoiF2Color = (c: V, r: V, m: number, e: V, period = 0): V =>
+  voronoiF2(c, r, m, e, "color", period);
+export const blenderVoronoiF2Pos = (c: V, r: V, m: number, e: V, period = 0): V =>
+  voronoiF2(c, r, m, e, "position", period);
+export const blenderVoronoiSmoothF1 = (c: V, r: V, m: number, e: V, s: V, period = 0): V =>
+  voronoiSmoothF1(c, r, m, e, s, "distance", period);
+export const blenderVoronoiSmoothF1Color = (c: V, r: V, m: number, e: V, s: V, period = 0): V =>
+  voronoiSmoothF1(c, r, m, e, s, "color", period);
+export const blenderVoronoiSmoothF1Pos = (c: V, r: V, m: number, e: V, s: V, period = 0): V =>
+  voronoiSmoothF1(c, r, m, e, s, "position", period);
 
 // Distance to Edge (two passes; squared-Euclidean dot, metric-independent — matches Blender).
-export function blenderVoronoiDistanceToEdge(coord: V, randomness: V): V {
+export function blenderVoronoiDistanceToEdge(coord: V, randomness: V, period = 0): V {
   return Fn(() => {
     const cell = floor(coord) as V;
     const local = coord.sub(cell);
@@ -193,7 +214,7 @@ export function blenderVoronoiDistanceToEdge(coord: V, randomness: V): V {
     const cy = int(cell.y);
     const cz = int(cell.z);
     const point = (i: number, j: number, k: number): V =>
-      vec3(i, j, k).add(hashInt3ToVec3(cx.add(i), cy.add(j), cz.add(k)).mul(randomness)).sub(local);
+      vec3(i, j, k).add(cellHash(cx.add(i), cy.add(j), cz.add(k), period).mul(randomness)).sub(local);
     const vectorToClosest = vec3(0, 0, 0).toVar();
     const minDist = float(1e10).toVar();
     for (let k = -1; k <= 1; k++)
