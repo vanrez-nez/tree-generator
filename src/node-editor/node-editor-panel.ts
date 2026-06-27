@@ -7,6 +7,7 @@ import { NodeEditor, ClassicPreset, type GetSchemes } from 'rete'
 import { AreaPlugin, AreaExtensions } from 'rete-area-plugin'
 import { ConnectionPlugin, Presets as ConnectionPresets } from 'rete-connection-plugin'
 import { LitPlugin, Presets as LitPresets, type LitArea2D } from '@retejs/lit-plugin'
+import { getDOMSocketPosition } from 'rete-render-utils'
 import {
   AutoArrangePlugin,
   Presets as ArrangePresets,
@@ -76,6 +77,9 @@ const WHEEL_LINE_DELTA_PX = 16
 const WHEEL_PAGE_DELTA_PX = 100
 const WHEEL_ZOOM_BASE = 0.95
 const WHEEL_ZOOM_SPEED = 1
+// Dot-grid tile size in px at zoom 1 (matches the .ne-canvas CSS background-size). syncBackground scales
+// and pans this with the area transform so the grid tracks the nodes.
+const GRID_SIZE = 22
 // Empty breathing room kept around the node graph (in rem), so connectors never sit flush against
 // the panel edges. Baked into the content bounds used for panning + centring, and into the fit gap.
 const CONTENT_PADDING_REM = 5
@@ -275,7 +279,7 @@ export class NodeEditorPanel {
   }
 
   dispose(): void {
-    this.canvasHost.removeEventListener('wheel', this.onWheelPan)
+    this.canvasHost.removeEventListener('wheel', this.onWheelPan, { capture: true } as EventListenerOptions)
     this.area?.destroy()
     this.area = null
     this.arrange = null
@@ -387,6 +391,13 @@ export class NodeEditorPanel {
 
     render.addPreset(
       LitPresets.classic.setup({
+        // Rete's default DOMSocketPosition pushes the wire anchor ±12px outward from the socket
+        // centre (it assumes the library's 24px sockets). Our dots are 12px and centred on the node
+        // border, so that offset leaves a visible gap between the dot and the wire. getElementCenter
+        // already returns the socket host's centre (= our dot), so anchor there directly (identity).
+        socketPositionWatcher: getDOMSocketPosition({
+          offset: (position) => ({ x: position.x, y: position.y }),
+        }),
         customize: {
           node: (context) => {
             const payload = context.payload as EditorNode
@@ -416,8 +427,10 @@ export class NodeEditorPanel {
     area.use(arrange as never)
 
     // Plain wheel pans. Shift + wheel zooms through our handler, so disable Rete's built-in wheel zoom.
+    // Capture phase so the canvas claims the wheel before any node input / Tweakpane control (which would
+    // otherwise consume it), making zoom/pan work everywhere over the graph.
     area.area.setZoomHandler(null)
-    this.canvasHost.addEventListener('wheel', this.onWheelPan, { passive: false })
+    this.canvasHost.addEventListener('wheel', this.onWheelPan, { passive: false, capture: true })
 
     // Clamp zoom to range, and keep any pan (wheel or background drag) within the content
     // bounds. The wheel handler pre-clamps, so this mainly catches drag-pan; the `clamping` flag
@@ -439,6 +452,8 @@ export class NodeEditorPanel {
       if (context.type === 'nodetranslated' && !this.building) {
         this.saveNodePositions()
       }
+      // Keep the dot-grid aligned with the content so the background pans + scales with the nodes.
+      if (context.type === 'translated' || context.type === 'zoomed') this.syncBackground()
       return context
     })
 
@@ -468,6 +483,7 @@ export class NodeEditorPanel {
     this.editor = editor
     this.area = area
     this.arrange = arrange
+    this.syncBackground() // align the grid to the initial transform
   }
 
   private async rebuild(config: EditorGraphConfig): Promise<void> {
@@ -763,6 +779,7 @@ export class NodeEditorPanel {
   private readonly onWheelPan = (event: WheelEvent): void => {
     if (this.shouldHandleWheelZoom(event)) {
       event.preventDefault()
+      event.stopPropagation() // capture phase: claim it before the node input / Tweakpane control
       void this.zoomByWheel(event)
       return
     }
@@ -772,6 +789,7 @@ export class NodeEditorPanel {
     }
 
     event.preventDefault()
+    event.stopPropagation()
     const dx = normalizedWheelDelta(event.deltaX, event.deltaMode)
     const dy = normalizedWheelDelta(event.deltaY, event.deltaMode)
     // Scroll down/right reveals lower/right content, i.e. translate the content the opposite way.
@@ -796,7 +814,9 @@ export class NodeEditorPanel {
   private isCanvasWheelEvent(event: WheelEvent): boolean {
     if (event.type !== 'wheel' || event.defaultPrevented) return false
     if (!this.open_ || !this.area || this.dragStart) return false
-    return !isInteractiveWheelTarget(event)
+    // The canvas owns the wheel anywhere over the graph — including node inputs and title bars — so zoom/
+    // pan isn't swallowed by a control. (Wheel-to-tweak on a number field is traded away for this.)
+    return true
   }
 
   private async zoomByWheel(event: WheelEvent): Promise<void> {
@@ -813,6 +833,18 @@ export class NodeEditorPanel {
     const t = area.area.transform
     const c = this.clampedXY(t.x + dx, t.y + dy)
     void area.area.translate(c.x, c.y)
+  }
+
+  // Align the CSS dot-grid to the area transform: pan it by the translation and scale the tile by the
+  // zoom, so the background moves together with the nodes (Figma/Blender-style).
+  private syncBackground(): void {
+    const area = this.area
+    if (!area) return
+    const { x, y, k } = area.area.transform
+    const size = GRID_SIZE * k
+    const s = this.canvasHost.style
+    s.backgroundSize = `${size}px ${size}px`
+    s.backgroundPosition = `${x}px ${y}px`
   }
 
   private clampPan(): void {
@@ -938,15 +970,6 @@ function normalizedWheelDelta(delta: number, deltaMode: number): number {
 
 function orbitWheelZoomScale(deltaY: number): number {
   return Math.pow(WHEEL_ZOOM_BASE, WHEEL_ZOOM_SPEED * Math.abs(deltaY * 0.01))
-}
-
-function isInteractiveWheelTarget(event: WheelEvent): boolean {
-  for (const target of event.composedPath()) {
-    if (!(target instanceof Element)) continue
-    if (target.matches('input, select, textarea, button, [contenteditable="true"]')) return true
-    if (target.classList.contains('tp-dfwv') || target.classList.contains('tp-rotv')) return true
-  }
-  return false
 }
 
 function nextFrame(): Promise<void> {

@@ -419,11 +419,13 @@ ne-node .input-title {
 ne-node {
   --socket-size: 12px;
 }
+/* Centre the dot on the node's border: pull the wrapper out by half the dot + half the socket's fixed
+   12px hit-padding (6px) + the node's 1px border = (size/2 + 7px). */
 ne-node .output-socket {
-  margin-right: calc(0px - var(--socket-size) - var(--socket-margin, 6px));
+  margin-right: calc(0px - var(--socket-size) / 2 - 7px);
 }
 ne-node .input-socket {
-  margin-left: calc(0px - var(--socket-size) - var(--socket-margin, 6px));
+  margin-left: calc(0px - var(--socket-size) / 2 - 7px);
 }
 /* Socket dot colour by data type (Blender socket-colour convention). The wrapper span carries
    data-kind and sets --ne-kind-color; we pipe it into the socket component's --socket-color. The
@@ -443,6 +445,10 @@ ne-node [data-kind='shader'] {
 ne-node .output-socket rete-socket,
 ne-node .input-socket rete-socket {
   --socket-color: var(--ne-kind-color, #a1a1a1);
+  /* Set --socket-size directly on the socket (not just on ne-node): the component sets a :host default
+     that beats the inherited value, so only a rule targeting rete-socket actually resizes the dot.
+     Matches the ne-node value so the centring margins line up. */
+  --socket-size: 12px;
 }
 ne-node .controls {
   padding: 0;
