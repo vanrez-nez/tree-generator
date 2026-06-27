@@ -5,6 +5,7 @@ import type { ContainerApi } from "@tweakpane/core";
 import {
   Boxes,
   GitBranch,
+  Monitor,
   SlidersVertical,
   Sprout,
   Sun,
@@ -76,8 +77,41 @@ const sceneCanvas = canvas;
 const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
 camera.position.z = 4;
 
-const renderer = new WebGPURenderer({ canvas: sceneCanvas, antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+// Renderer config (Render tab). `antialias` + `samples` (MSAA) are WebGPU CONSTRUCTOR-only options — the
+// device can't change them live — so they're persisted and applied on the next construction (a reload).
+// `pixelRatio` and `transparentBg` apply live. `alpha: true` is fixed so the transparent-bg toggle works
+// at runtime via setClearAlpha.
+interface RendererConfig {
+  antialias: boolean;
+  samples: number; // MSAA sample count when antialias is on (2 / 4 / 8)
+  pixelRatio: number;
+  transparentBg: boolean;
+}
+const RENDERER_CONFIG_KEY = "rendererConfig";
+function loadRendererConfig(): RendererConfig {
+  const defaults: RendererConfig = {
+    antialias: true,
+    samples: 4,
+    pixelRatio: Math.min(window.devicePixelRatio, 2),
+    transparentBg: false,
+  };
+  try {
+    return { ...defaults, ...JSON.parse(localStorage.getItem(RENDERER_CONFIG_KEY) ?? "{}") };
+  } catch {
+    return defaults;
+  }
+}
+const rendererConfig = loadRendererConfig();
+const saveRendererConfig = (): void =>
+  localStorage.setItem(RENDERER_CONFIG_KEY, JSON.stringify(rendererConfig));
+
+const renderer = new WebGPURenderer({
+  canvas: sceneCanvas,
+  antialias: rendererConfig.antialias,
+  samples: rendererConfig.antialias ? rendererConfig.samples : 0,
+  alpha: true,
+});
+renderer.setPixelRatio(rendererConfig.pixelRatio);
 
 const controls = new OrbitControls(camera, sceneCanvas);
 controls.enableDamping = true;
@@ -176,6 +210,12 @@ const mainTabs = pane.addBlade({
       color: "#fbbf24",
     },
     {
+      title: "Render",
+      tooltip: "Renderer (antialias, samples, alpha)",
+      icon: Monitor,
+      color: "#38bdf8",
+    },
+    {
       title: "Debug",
       tooltip: "Debug",
       icon: SlidersVertical,
@@ -183,7 +223,8 @@ const mainTabs = pane.addBlade({
     },
   ],
 }) as VerticalTabsApi;
-const [genPage, graphPage, meshPage, texturePage, scenePage, debugPage] = mainTabs.pages;
+const [genPage, graphPage, meshPage, texturePage, scenePage, renderPage, debugPage] =
+  mainTabs.pages;
 
 const graphTabs = graphPage.addTab({
   pages: [
@@ -314,6 +355,8 @@ buildMeshControls(meshPage);
 buildRootControls(graphRootsPage);
 buildDebugFolder(debugPage);
 buildSceneControls(scenePage);
+buildRenderControls(renderPage);
+applyTransparentBg(rendererConfig.transparentBg); // reflect the persisted choice on startup
 buildScenePanels();
 // Built once: the mixer persists across tree regeneration and is topology-independent, so its panel
 // must NOT be part of the scenePanelFolders rebuild cycle.
@@ -741,6 +784,45 @@ function setToneMapping(mode: THREE.ToneMapping): void {
     const material = (obj as THREE.Mesh).material;
     if (!material) return;
     for (const m of Array.isArray(material) ? material : [material]) m.needsUpdate = true;
+  });
+}
+
+// Toggle a transparent canvas (the renderer is constructed with alpha:true, so clear-alpha works live).
+// Drops the scene's opaque background and clears with alpha 0, so the canvas composites over the page.
+function applyTransparentBg(on: boolean): void {
+  mainScene.scene.background = on ? null : new THREE.Color(0x111111); // 0x111111 = MainScene default
+  renderer.setClearAlpha(on ? 0 : 1);
+}
+
+// Render tab: renderer-level config. Pixel ratio + transparent background apply live; antialias and MSAA
+// samples are WebGPU construction-time options (the device can't change them on the fly), so they're
+// persisted and applied on the next load via the Apply (reload) button.
+function buildRenderControls(container: ContainerApi): void {
+  const quality = container.addFolder({ title: "Quality", expanded: true });
+  quality
+    .addBinding(rendererConfig, "pixelRatio", { label: "pixel ratio", min: 0.5, max: 2, step: 0.05 })
+    .on("change", (e) => {
+      renderer.setPixelRatio(e.value);
+      resize();
+      saveRendererConfig();
+    });
+  quality
+    .addBinding(rendererConfig, "transparentBg", { label: "transparent bg" })
+    .on("change", (e) => {
+      applyTransparentBg(e.value);
+      saveRendererConfig();
+    });
+
+  // MSAA: constructor-only on WebGPU. Edits persist; "Apply (reload)" rebuilds the renderer with them.
+  const aa = container.addFolder({ title: "Anti-aliasing", expanded: true });
+  aa.addBinding(rendererConfig, "antialias", { label: "MSAA" }).on("change", saveRendererConfig);
+  aa.addBinding(rendererConfig, "samples", {
+    label: "samples",
+    options: { "2×": 2, "4×": 4, "8×": 8 },
+  }).on("change", saveRendererConfig);
+  aa.addButton({ title: "Apply (reload)" }).on("click", () => {
+    saveRendererConfig();
+    location.reload();
   });
 }
 
