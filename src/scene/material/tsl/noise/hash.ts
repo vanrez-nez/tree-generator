@@ -56,3 +56,10 @@ export function hashCell2ToVec2(ix: V, iy: V, perX: number, perY: number): V {
 export function hashCell2ToVec3(ix: V, iy: V, perX: number, perY: number): V {
   return hashInt3ToVec3(wrapAxis(ix, perX), wrapAxis(iy, perY), int(0));
 }
+
+// Like hashCell2ToVec3 but with a build-time `seed` in the z slot — call with different seeds to get extra
+// independent per-cell randoms (e.g. a tile generator needs position + size + rotation + value). The seed is
+// NOT wrapped, so each seed yields a distinct random set with the same x/y tiling period.
+export function hashCell2ToVec3Seed(ix: V, iy: V, seed: number, perX: number, perY: number): V {
+  return hashInt3ToVec3(wrapAxis(ix, perX), wrapAxis(iy, perY), int(seed));
+}
