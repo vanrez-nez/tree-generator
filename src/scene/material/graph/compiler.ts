@@ -151,9 +151,11 @@ export function applyBundle(
   material: MeshPhysicalNodeMaterial,
   bundle: MaterialBundle,
 ): void {
-  // Baked per-vertex form AO from the mesh (to-buffer-geometry's `vertexAo`); modulates only the
-  // indirect/IBL term. Geometry-driven, so it applies regardless of the graph's channels.
-  material.aoNode = attribute("vertexAo", "float");
+  // AO modulates only the indirect/IBL term. Compose the mesh's per-vertex FORM AO (to-buffer-geometry's
+  // `vertexAo`, geometry-driven) with the graph's texture-scale DETAIL AO when the Principled AO input is
+  // connected — same as the offline backend's bakedAO × vertexAo.
+  const vertexAo = attribute("vertexAo", "float");
+  material.aoNode = bundle.ambientOcclusion ? bundle.ambientOcclusion.mul(vertexAo) : vertexAo;
   if (bundle.baseColor) material.colorNode = bundle.baseColor;
   if (bundle.emission) material.emissiveNode = bundle.emission;
   if (bundle.roughness) material.roughnessNode = bundle.roughness;

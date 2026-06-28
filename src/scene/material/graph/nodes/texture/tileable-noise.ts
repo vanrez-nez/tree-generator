@@ -48,9 +48,9 @@ const OFFLINE_BASES: Record<string, NoiseBase01> = {
   stone: stoneBase01,
   paper: paperBase01,
   wool: woolBase01,
-  simplex: simplexBase01,
   wavelet: waveletBase01,
   erosion: erosionBase01,
+  // NOTE: simplex is NOT here — it needs an EVEN period (see build) so it's special-cased.
 };
 
 // curl emits a vector flow field in addition to the scalar magnitude. declare() exposes the extra port.
@@ -107,6 +107,14 @@ export const tileableNoiseNode: MaterialNodeDef = {
       // Vector flow field (single sample at the base period); `field` = its magnitude.
       const c = curlVec(uv2.mul(scale), scale, scale) as V;
       return { field: c.length(), vector: c };
+    }
+
+    if (noiseType === "simplex") {
+      // psrdnoise's sheared simplex lattice only tiles in Y when the period is EVEN — an odd period shifts
+      // the skewed x-index by a half cell across the y-wrap, leaving a vertical seam. Snap the period up to
+      // even (every octave period stays even since it's ×2^o).
+      const even = scale + (scale % 2);
+      return { field: periodicFbm01(uv2, even, even, octaves, gain, simplexBase01) };
     }
 
     const base = OFFLINE_BASES[noiseType];

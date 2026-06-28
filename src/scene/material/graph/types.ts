@@ -179,6 +179,7 @@ export interface MaterialBundle {
   ior?: MaterialValue;
   alpha?: MaterialValue;
   normal?: MaterialValue;
+  ambientOcclusion?: MaterialValue;
   emission?: MaterialValue;
   coat?: MaterialValue;
   coatRoughness?: MaterialValue;

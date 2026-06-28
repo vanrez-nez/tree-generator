@@ -43,6 +43,7 @@ export const principledBsdfNode: MaterialNodeDef = {
     { key: "ior", label: "IOR", kind: "float" },
     { key: "alpha", label: "Alpha", kind: "float" },
     { key: "normal", label: "Normal", kind: "vector" },
+    { key: "ambientOcclusion", label: "Ambient Occlusion", kind: "float" },
     { key: "coat", label: "Coat Weight", kind: "float" },
     { key: "coatRoughness", label: "Coat Roughness", kind: "float" },
     { key: "sheen", label: "Sheen Weight", kind: "float" },
@@ -78,6 +79,9 @@ export const principledBsdfNode: MaterialNodeDef = {
       roughness: inOr("roughness"),
       ior: inOr("ior"),
       normal: ctx.inputs.normal, // undefined → interpolated geometry normal
+      // Texture-scale AO authored in the graph (mortar lines, pores, grooves). Input-only — undefined when
+      // unconnected so no AO channel is baked; composes with the mesh's per-vertex form AO downstream.
+      ambientOcclusion: ctx.inputs.ambientOcclusion,
       alpha: ctx.inputs.alpha !== undefined ? ctx.inputs.alpha : num("alpha") < 1 ? u.alpha : undefined,
       emission,
       coat,

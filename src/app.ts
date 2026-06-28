@@ -57,6 +57,7 @@ import {
 import { NodeEditorPanel } from "./node-editor";
 import { buildMaterialEditorConfig } from "./scene/material/editor-config";
 import { ChannelBaker } from "./scene/material/graph/channel-baker";
+import { runTilingTest } from "./scene/material/graph/tiling-test";
 import { MATERIAL_PRESETS, makePreset, DEFAULT_PRESET } from "./scene/material/presets";
 import { PBR_SOCKETS, type PbrSocket, type MaterialGraphDocument } from "./scene/material/graph/types";
 
@@ -435,11 +436,46 @@ if (import.meta.env.DEV) {
     __baker: channelBaker,
     __savePng: saveChannelToBake,
     __bakeConfig: bakeConfigToBake,
+    __bakeMaterialTask: bakeMaterialTask,
     __frame: () => {
       mainScene.update(0, camera, rendererSize);
       renderer.render(mainScene.scene, camera);
     },
+    // Tiling test for every Tileable Noise type: bakes each, scores the wrap-edge seam, console.tables a
+    // pass/fail summary, and saves a 2×2 composite PNG per type to ./bake (needs `npm run bake:server`).
+    // Usage from the dev console: `await __tilingTest()`  (optionally `__tilingTest(256)`).
+    __tilingTest: (size?: number) =>
+      runTilingTest(renderer, channelBaker, mainScene.materialController, {
+        size,
+        onTile: (type, img) => saveTilingComposite(type, img),
+      }).then((rows) => {
+        console.table(
+          rows.map((r) => ({
+            type: r.type,
+            pass: r.pass,
+            ratioH: Number.isFinite(r.ratioH) ? +r.ratioH.toFixed(2) : "—",
+            ratioV: Number.isFinite(r.ratioV) ? +r.ratioV.toFixed(2) : "—",
+          })),
+        );
+        const failed = rows.filter((r) => !r.pass).map((r) => r.type);
+        console.log(failed.length ? `[tiling] SEAMS: ${failed.join(", ")}` : "[tiling] all seamless ✓");
+        return rows;
+      }),
   });
+}
+
+// Build a 2×2 composite of a baked tile and POST it to the bake server (dev) as tiling-<type>.png — the
+// internal edges reveal any seam visually, alongside the numeric score from runTilingTest.
+async function saveTilingComposite(type: string, img: ImageData): Promise<void> {
+  const tile = imageDataToCanvas(img);
+  const proof = document.createElement("canvas");
+  proof.width = img.width * 2;
+  proof.height = img.height * 2;
+  const ctx = proof.getContext("2d");
+  if (!ctx) return;
+  for (let y = 0; y < 2; y++) for (let x = 0; x < 2; x++) ctx.drawImage(tile, x * img.width, y * img.height);
+  const blob = await canvasToPngBlob(proof);
+  if (blob) await postBakeFile(`tiling-${type}.png`, blob);
 }
 
 // Per-line disc-tube controls: radius (max), tip taper, opacity, visibility, and a cubic-Bézier
@@ -724,18 +760,117 @@ function refreshTexturePreview(): void {
 // `npm run bake:server`), which writes it to ./bake/<channel>.png. Lets a node configuration be saved
 // as a 2D texture on disk for inspection. No-op if the bake server isn't running.
 const BAKE_SERVER = "http://127.0.0.1:8788";
+const MATERIAL_TASK_CHANNELS: PbrSocket[] = [
+  "baseColor",
+  "roughness",
+  "normal",
+  "metallic",
+  "ambientOcclusion",
+];
+
+function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
+  return new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+}
+
+function imageDataToCanvas(image: ImageData): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  canvas.width = image.width;
+  canvas.height = image.height;
+  canvas.getContext("2d")?.putImageData(image, 0, 0);
+  return canvas;
+}
+
+async function postBakeFile(file: string, body: BodyInit): Promise<boolean> {
+  try {
+    const res = await fetch(`${BAKE_SERVER}/save?name=${file}`, { method: "POST", body });
+    return res.ok;
+  } catch {
+    console.warn("[bake] POST failed — is `npm run bake:server` running?");
+    return false;
+  }
+}
+
 async function saveChannelToBake(channel: PbrSocket, size = 1024): Promise<void> {
   const image = await channelBaker.readImageData(renderer, mainScene.materialController, channel, size);
   if (!image) return;
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  canvas.getContext("2d")?.putImageData(image, 0, 0);
-  const blob: Blob | null = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+  const blob = await canvasToPngBlob(imageDataToCanvas(image));
   if (!blob) return;
-  await fetch(`${BAKE_SERVER}/save?name=${channel}.png`, { method: "POST", body: blob }).catch(() => {
-    console.warn("[bake] POST failed — is `npm run bake:server` running?");
-  });
+  await postBakeFile(`${channel}.png`, blob);
+}
+
+function makeTileabilityProof(channelImages: Map<PbrSocket, ImageData>): HTMLCanvasElement | null {
+  const base = channelImages.get("baseColor") ?? channelImages.values().next().value;
+  if (!base) return null;
+  const tile = imageDataToCanvas(base);
+  const proof = document.createElement("canvas");
+  proof.width = base.width * 2;
+  proof.height = base.height * 2;
+  const ctx = proof.getContext("2d");
+  if (!ctx) return null;
+  for (let y = 0; y < 2; y++) {
+    for (let x = 0; x < 2; x++) ctx.drawImage(tile, x * base.width, y * base.height);
+  }
+  return proof;
+}
+
+function buildStandardMaterialDemoScene(material: THREE.Material): {
+  scene: THREE.Scene;
+  camera: THREE.PerspectiveCamera;
+  dispose: () => void;
+} {
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x181818);
+  const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 20);
+  camera.position.set(0, 1.25, 4.2);
+  camera.lookAt(0, 0.45, 0);
+
+  const sphereGeometry = new THREE.SphereGeometry(1, 96, 48);
+  const planeGeometry = new THREE.PlaneGeometry(5, 5);
+  const addFullVertexAo = (geometry: THREE.BufferGeometry): void => {
+    geometry.setAttribute(
+      "vertexAo",
+      new THREE.BufferAttribute(new Float32Array(geometry.getAttribute("position").count).fill(1), 1),
+    );
+  };
+  addFullVertexAo(sphereGeometry);
+  addFullVertexAo(planeGeometry);
+  const sphere = new THREE.Mesh(sphereGeometry, material);
+  sphere.position.set(0, 0.95, 0);
+  const plane = new THREE.Mesh(planeGeometry, material);
+  plane.rotation.x = -Math.PI / 2;
+  plane.position.y = -0.12;
+
+  const key = new THREE.DirectionalLight(0xffffff, 3.0);
+  key.position.set(3, 4, 5);
+  const fill = new THREE.AmbientLight(0xffffff, 0.35);
+  scene.add(sphere, plane, key, fill);
+
+  return {
+    scene,
+    camera,
+    dispose: () => {
+      sphereGeometry.dispose();
+      planeGeometry.dispose();
+      scene.remove(sphere, plane, key, fill);
+    },
+  };
+}
+
+async function renderStandardMaterialDemo(size = 512): Promise<Blob | null> {
+  const previousPixelRatio = renderer.getPixelRatio();
+  const previousSize = new THREE.Vector2();
+  renderer.getSize(previousSize);
+  const demo = buildStandardMaterialDemoScene(mainScene.materialController.material);
+  try {
+    renderer.setPixelRatio(1);
+    renderer.setSize(size, size, false);
+    renderer.render(demo.scene, demo.camera);
+    return await canvasToPngBlob(sceneCanvas);
+  } finally {
+    demo.dispose();
+    renderer.setPixelRatio(previousPixelRatio);
+    renderer.setSize(previousSize.x, previousSize.y, false);
+  }
 }
 
 // Load a full graph config (a MaterialGraphDocument) into the live material, bake every connected PBR
@@ -747,32 +882,62 @@ async function bakeConfigToBake(
   name = "config",
   size = 1024,
 ): Promise<void> {
-  const folder = encodeURIComponent(name);
   mainScene.materialController.loadDocument(doc);
   if (mainScene.materialController.lastError) {
     console.warn(`[bake] config compiled with error: ${mainScene.materialController.lastError}`);
   }
-  const post = (file: string, body: BodyInit) =>
-    fetch(`${BAKE_SERVER}/save?name=${folder}/${file}`, { method: "POST", body }).catch(() => {
-      console.warn("[bake] POST failed — is `npm run bake:server` running?");
-    });
-
-  await post("config.json", new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" }));
+  await postBakeFile(`${name}/config.json`, new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" }));
 
   const written: string[] = [];
   for (const channel of PBR_SOCKETS) {
     const image = await channelBaker.readImageData(renderer, mainScene.materialController, channel, size);
     if (!image) continue; // channel unconnected — skip
-    const canvas = document.createElement("canvas");
-    canvas.width = size;
-    canvas.height = size;
-    canvas.getContext("2d")?.putImageData(image, 0, 0);
-    const blob: Blob | null = await new Promise((r) => canvas.toBlob(r, "image/png"));
+    const blob = await canvasToPngBlob(imageDataToCanvas(image));
     if (!blob) continue;
-    await post(`${channel}.ours.png`, blob);
+    await postBakeFile(`${name}/${channel}.ours.png`, blob);
     written.push(channel);
   }
   console.log(`[bake] wrote bake/${name}/ — channels: ${written.join(", ") || "(none connected)"}`);
+}
+
+// Reusable material-task pipeline: load a graph preset, bake the standard channel set, write the preset,
+// prove the base tile by rendering it as a 2x2 image, and capture a 512x512 standard material demo
+// (sphere plus plane). Every catalog render task should use this instead of recreating preview setup.
+async function bakeMaterialTask(
+  doc: MaterialGraphDocument,
+  outputFolder: string,
+  channelSize = 1024,
+): Promise<void> {
+  const folder = outputFolder.replace(/^bake\//, "").replace(/\/$/, "");
+  mainScene.materialController.loadDocument(doc);
+  if (mainScene.materialController.lastError) {
+    console.warn(`[bake] config compiled with error: ${mainScene.materialController.lastError}`);
+  }
+
+  const channelImages = new Map<PbrSocket, ImageData>();
+  const written: string[] = [];
+  await postBakeFile(`${folder}/preset.json`, new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" }));
+
+  for (const channel of MATERIAL_TASK_CHANNELS) {
+    const image = await channelBaker.readImageData(renderer, mainScene.materialController, channel, channelSize);
+    if (!image) continue;
+    channelImages.set(channel, image);
+    const blob = await canvasToPngBlob(imageDataToCanvas(image));
+    if (!blob) continue;
+    await postBakeFile(`${folder}/channels/${channel}.png`, blob);
+    written.push(channel);
+  }
+
+  const proof = makeTileabilityProof(channelImages);
+  const proofBlob = proof ? await canvasToPngBlob(proof) : null;
+  if (proofBlob) await postBakeFile(`${folder}/proof/tileability-2x2.png`, proofBlob);
+
+  const demoBlob = await renderStandardMaterialDemo(512);
+  if (demoBlob) await postBakeFile(`${folder}/renders/standard-demo-512.png`, demoBlob);
+
+  console.log(
+    `[material-task] wrote bake/${folder}/ — channels: ${written.join(", ") || "(none connected)"}, tileability proof: ${proofBlob ? "yes" : "no"}, demo: ${demoBlob ? "yes" : "no"}`,
+  );
 }
 
 // Apply a tone-mapping mode: set it on the renderer and force every scene material to recompile (the tone

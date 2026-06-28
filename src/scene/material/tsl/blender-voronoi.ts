@@ -137,7 +137,14 @@ function voronoiF2(coord: V, randomness: V, metric: number, exponent: V, want: W
   })();
 }
 
-// Smooth F1: 5×5×5 smooth-minimum blend (smoothness param). Stateful accumulation of distance/color/pos.
+// Smooth F1: smooth-minimum blend (smoothness param). Stateful accumulation of distance/color/pos.
+// GPU-SAFETY: Blender's reference uses a 5×5×5 (125-tap) neighbourhood, but at the offline bake's 4×
+// supersample that overruns the GPU and triggers a device loss (it took out the whole context once). The
+// loop is build-time, so it can't shrink with the smoothness uniform — instead it's fixed at 3×3×3 (27-tap,
+// the same cost as F1/F2, which are proven safe). For the smoothness range this node exposes (0–1, the
+// soft-min weight of a cell ≥2 units away is ~0 once `0.5 + (smoothD−d)·0.5/sm` clamps below 0), the outer
+// ring contributes negligibly, so the result is visually equivalent to the 125-tap version.
+const SMOOTH_RADIUS = 1; // 3×3×3 = 27 taps (was 2 → 5×5×5 = 125, which device-loses in the bake)
 function voronoiSmoothF1(
   coord: V,
   randomness: V,
@@ -158,9 +165,9 @@ function voronoiSmoothF1(
     const smoothC = vec3(0, 0, 0).toVar();
     const smoothP = vec3(0, 0, 0).toVar();
     const h = float(-1).toVar();
-    for (let k = -2; k <= 2; k++)
-      for (let j = -2; j <= 2; j++)
-        for (let i = -2; i <= 2; i++) {
+    for (let k = -SMOOTH_RADIUS; k <= SMOOTH_RADIUS; k++)
+      for (let j = -SMOOTH_RADIUS; j <= SMOOTH_RADIUS; j++)
+        for (let i = -SMOOTH_RADIUS; i <= SMOOTH_RADIUS; i++) {
           const off = vec3(i, j, k);
           const rnd = cellHash(cx.add(i), cy.add(j), cz.add(k), period); // = cell colour
           const pp = off.add(rnd.mul(randomness));
