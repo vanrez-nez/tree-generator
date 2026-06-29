@@ -10,6 +10,9 @@ import { MaterialGraphController } from "./material/graph/controller";
 
 // How long graph edits must settle before the (expensive) surface mesh is rebuilt.
 const MESH_REBUILD_DEBOUNCE_MS = 200;
+// Directional-light shadow map resolution (square). High for crisp baked edges; cost is paid only when the
+// shadow re-bakes (tree regen / sun move), not per frame.
+const SHADOW_MAP_SIZE = 2048;
 
 export const DEFAULT_MESHER_OPTIONS: MesherOptions = {
   radialResolution: 32,
@@ -37,8 +40,10 @@ export class MainScene {
 
   // Scene lighting, exposed so the Scene panel can drive intensity/colour live. The flat ambient is kept
   // low — a shared IBL environment (scene.environment, set up in app.ts) provides the fill that gives the
-  // tree form, and a strong flat ambient would wash out the baked AO. Directional stays as a cheap key.
-  readonly directionalLight = new THREE.DirectionalLight(0xffffff, 0.3);
+  // tree form, and a strong flat ambient would wash out the baked AO. The directional is the KEY that casts
+  // the tree's (statically-baked) shadow, so it's a real intensity (not a 0.3 fill) — strong enough for the
+  // shadow to read against the IBL fill.
+  readonly directionalLight = new THREE.DirectionalLight(0xffffff, 2);
   readonly ambientLight = new THREE.AmbientLight(0xffffff, 0.05);
 
   selectedLineId = "trunk";
@@ -83,8 +88,12 @@ export class MainScene {
       this.mesher.setSurfaceMaterial(this.materialController.material),
     );
 
-    this.directionalLight.position.set(2, 2, 3);
+    // Same light DIRECTION as before (the old (2,2,3) ×4), pushed out so it sits well above the tree top —
+    // a directional's shading is distance-independent, but the shadow camera must clear the geometry.
+    this.directionalLight.position.set(8, 8, 12);
+    this.configureShadow();
     this.scene.add(this.directionalLight);
+    this.scene.add(this.directionalLight.target); // target at origin; the shadow camera aims here
     this.scene.add(this.ambientLight);
 
     // Visual floor plane, bound to its own material controller (re-pushed on recompile, like the surface).
@@ -109,8 +118,40 @@ export class MainScene {
     geometry.setAttribute("vertexAo", new THREE.Float32BufferAttribute(new Float32Array(vertexCount).fill(1), 1));
     const mesh = new THREE.Mesh(geometry, this.floorMaterialController.material);
     mesh.name = "floor";
+    mesh.receiveShadow = true; // catches the tree's baked shadow
     mesh.position.y = -0.01; // just under the debug grid to avoid z-fighting
     return mesh;
+  }
+
+  // Static, high-quality shadow for the directional KEY light. The map is rendered once and frozen
+  // (autoUpdate=false); requestShadowBake() re-renders it on demand (tree regenerated, or the sun moved).
+  // VSM (renderer.shadowMap.type) gives soft edges; `radius`/`blurSamples` widen the blur. The ortho frustum
+  // is sized to bracket the tree + roots tightly — tighter = sharper texel density for a given map size.
+  private configureShadow(): void {
+    const light = this.directionalLight;
+    light.castShadow = true;
+    light.shadow.mapSize.set(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
+
+    const cam = light.shadow.camera;
+    cam.left = -8;
+    cam.right = 8;
+    cam.top = 8;
+    cam.bottom = -8;
+    cam.near = 1;
+    cam.far = 40;
+    cam.updateProjectionMatrix();
+
+    light.shadow.bias = -0.0008; // nudge to kill self-shadow acne on the trunk
+    light.shadow.normalBias = 0.02;
+    light.shadow.radius = 5; // VSM blur width → softer edges
+    light.shadow.blurSamples = 16;
+    light.shadow.autoUpdate = false; // baked: only re-render on requestShadowBake()
+  }
+
+  // Re-render the (otherwise frozen) shadow map once on the next frame. Called after a mesh rebuild and
+  // whenever the sun's direction changes — the only events that alter the tree's cast shadow.
+  requestShadowBake(): void {
+    this.directionalLight.shadow.needsUpdate = true;
   }
 
   // Show/hide the visual floor.
@@ -296,6 +337,8 @@ export class MainScene {
       this.meshStats.vertices = vertices;
       this.meshStats.triangles = triangles;
       this.meshDirty = false;
+      // The surface geometry changed → re-bake the (frozen) shadow map once for the new tree.
+      this.requestShadowBake();
     }
 
     // Texture time = the offline channel re-bake (render to RTs); 0 in the live backend. Total = geometry

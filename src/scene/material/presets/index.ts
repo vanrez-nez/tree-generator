@@ -10,6 +10,7 @@ import barkDoc from "./bark.json";
 import parquetDoc from "./parquet.json";
 import chineseHackberryBarkDoc from "./chinese-hackberry-bark.json";
 import rockDoc from "./rock.json";
+import crackedClayDoc from "./cracked-clay.json";
 
 // Material preset registry. Each preset is a plain JSON MaterialGraphDocument under presets/. Add a new
 // `<name>.json` and one entry here to surface it in the Material panel's preset selector.
@@ -31,6 +32,7 @@ export const MATERIAL_PRESETS: Preset[] = [
   { key: "parquet", label: "Parquet", doc: parquetDoc as MaterialGraphDocument },
   { key: "chinese-hackberry-bark", label: "Chinese Hackberry Bark", doc: chineseHackberryBarkDoc as MaterialGraphDocument },
   { key: "rock", label: "Rock", doc: rockDoc as MaterialGraphDocument },
+  { key: "cracked-clay", label: "Cracked Clay", doc: crackedClayDoc as MaterialGraphDocument },
 ];
 export const DEFAULT_PRESET = "empty"; // presets/default.json — the document loaded on a fresh session
 

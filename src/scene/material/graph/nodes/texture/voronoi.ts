@@ -1,4 +1,6 @@
-import type { MaterialNodeDef, PortDef } from "../../types";
+import { uniformArray, int, float, floor } from "three/tsl";
+import { Vector3 } from "three";
+import type { MaterialNodeDef, MaterialValue, PortDef } from "../../types";
 import {
   blenderVoronoiF1,
   blenderVoronoiF1Color,
@@ -11,6 +13,8 @@ import {
   blenderVoronoiSmoothF1Pos,
   blenderVoronoiDistanceToEdge,
 } from "../../../tsl/blender-voronoi";
+import { relaxedCellOffsets } from "../../../tsl/lloyd-points";
+import { relaxedVoronoiDistanceToEdge } from "../../../tsl/relaxed-voronoi";
 
 const METRICS = ["euclidean", "manhattan", "chebychev", "minkowski"];
 const FEATURES = ["f1", "f2", "smooth-f1", "distance-to-edge"];
@@ -42,6 +46,9 @@ export const voronoiNode: MaterialNodeDef = {
     { key: "feature", label: "feature", type: "select", options: FEATURES, default: "f1" },
     { key: "exponent", label: "exponent", type: "float", min: 0.1, max: 8, step: 0.1, default: 2 },
     { key: "smoothness", label: "smoothness", type: "float", min: 0, max: 1, step: 0.01, default: 0.25 },
+    // Lloyd relaxation iterations for natural (centroidal) cells — offline + distance-to-edge only. 0 keeps
+    // the faithful jittered-grid Voronoi; 2–4 give equiaxed, sliver-free, non-square mud-crack cells.
+    { key: "relax", label: "relax", type: "int", min: 0, max: 5, step: 1, default: 0 },
   ],
   declare(params) {
     const feature = (params.feature as string) ?? "f1";
@@ -57,7 +64,27 @@ export const voronoiNode: MaterialNodeDef = {
     const r = ctx.uniforms.randomness;
     const e = ctx.uniforms.exponent;
     const s = ctx.uniforms.smoothness;
-    switch ((ctx.params.feature as string) ?? "f1") {
+    const feature = (ctx.params.feature as string) ?? "f1";
+
+    // Lloyd-relaxed cells: offline + distance-to-edge only. Precompute a periodic relaxed seed set on the
+    // CPU and hand it to the shader as a uniformArray; the relaxed neighbour search reads those offsets
+    // instead of the PCG hash (same cost, GPU-safe). `randomness` becomes the build-time initial jitter
+    // (baked into the points) rather than a live uniform.
+    const relax = Math.max(0, Math.round(Number(ctx.params.relax ?? 0)));
+    if (feature === "distance-to-edge" && period > 0 && relax > 0) {
+      const data = relaxedCellOffsets(period, Number(ctx.params.randomness ?? 1), relax);
+      const vecs: Vector3[] = [];
+      for (let n = 0; n < period * period; n++)
+        vecs.push(new Vector3(data[n * 3], data[n * 3 + 1], data[n * 3 + 2]));
+      const seeds = uniformArray(vecs);
+      const wrap = (v: MaterialValue): MaterialValue =>
+        v.sub(int(floor(float(v).div(period))).mul(int(period)));
+      const seedFn = (ix: MaterialValue, iy: MaterialValue): MaterialValue =>
+        seeds.element(wrap(iy).mul(period).add(wrap(ix))) as MaterialValue;
+      return { distance: relaxedVoronoiDistanceToEdge(p, seedFn) };
+    }
+
+    switch (feature) {
       case "distance-to-edge":
         return { distance: blenderVoronoiDistanceToEdge(p, r, period) };
       case "f2":

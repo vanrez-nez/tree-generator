@@ -16,7 +16,7 @@ export const tileableWarpNode: MaterialNodeDef = {
   outputs: [{ key: "coord", kind: "vector" }],
   params: [
     { key: "amount", label: "amount", type: "float", min: 0, max: 1, step: 0.01, default: 0.15 },
-    { key: "scale", label: "scale", type: "int", min: 1, max: 16, step: 1, default: 4 },
+    { key: "scale", label: "scale", type: "int", min: 1, max: 64, step: 1, default: 4 },
   ],
   build(ctx) {
     const base = (ctx.inputs.coord ?? ctx.coord) as V;

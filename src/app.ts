@@ -115,6 +115,11 @@ const renderer = new WebGPURenderer({
 });
 renderer.setPixelRatio(rendererConfig.pixelRatio);
 renderer.toneMapping = THREE.ACESFilmicToneMapping; // default tone mapping (Scene panel can change it live)
+// Static (baked-once) tree shadows: VSM for soft edges. The directional light's shadow map is rendered only
+// when the tree or sun changes (shadow.autoUpdate=false in MainScene), so there's no per-frame shadow cost —
+// it behaves like a baked shadow. See MainScene's directional-light shadow setup + requestShadowBake().
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.VSMShadowMap;
 
 const controls = new OrbitControls(camera, sceneCanvas);
 controls.enableDamping = true;
@@ -373,6 +378,11 @@ const sceneState = {
   ambIntensity: mainScene.ambientLight.intensity,
   ambColor: `#${mainScene.ambientLight.color.getHexString()}`,
   envIntensity: 0.1,
+};
+// Baked-shadow knobs, seeded from the light's configured shadow (see MainScene.configureShadow).
+const shadowState = {
+  softness: mainScene.directionalLight.shadow.radius,
+  darkness: mainScene.directionalLight.shadow.intensity,
 };
 
 buildGenerationControls(genPage);
@@ -1076,7 +1086,23 @@ function buildSceneControls(container: ContainerApi): void {
     .on("change", (e) => mainScene.directionalLight.color.set(e.value));
   dir
     .addBinding(sceneState, "dirPosition", { label: "direction" })
-    .on("change", (e) => mainScene.directionalLight.position.set(e.value.x, e.value.y, e.value.z));
+    .on("change", (e) => {
+      mainScene.directionalLight.position.set(e.value.x, e.value.y, e.value.z);
+      mainScene.requestShadowBake(); // sun moved → re-bake the frozen shadow
+    });
+
+  // Baked (static) shadow controls. The map renders only on a re-bake (tree regen / sun move), so these are
+  // quality knobs, not per-frame cost. Softness is the VSM blur width.
+  const shadow = dir.addFolder({ title: "Shadow", expanded: true });
+  shadow
+    .addBinding(shadowState, "softness", { label: "softness", min: 0, max: 25, step: 0.5 })
+    .on("change", (e) => {
+      mainScene.directionalLight.shadow.radius = e.value;
+      mainScene.requestShadowBake();
+    });
+  shadow
+    .addBinding(shadowState, "darkness", { label: "darkness", min: 0, max: 1, step: 0.01 })
+    .on("change", (e) => (mainScene.directionalLight.shadow.intensity = e.value));
 
   const amb = container.addFolder({ title: "Ambient Light", expanded: true });
   amb
@@ -1122,7 +1148,9 @@ function buildTextureLayers(): void {
     })
     .on("change", (event) => {
       mainScene.materialController.loadDocument(makePreset(event.value));
-      rebuildEditor();
+      // Only refresh the editor if it's already open — changing a preset must not pop it open. It opens
+      // solely from the "Open Node Editor" button.
+      if (materialEditor.isOpen()) rebuildEditor();
     });
   // Debug: paint the offline surface with its shading normal (geometry + normal map) as RGB — relief
   // visible = the normal map is perturbing the surface.

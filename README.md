@@ -63,6 +63,78 @@ Note: channels are baked through the graph's **baked** backend (a 2D uv slice). 
 3D world-space (live) domain — e.g. the angular `anisotropic-stripes` — can show artifacts/seams when
 baked this way; the bake is faithful to the graph, not necessarily a tileable texture yet.
 
+## Material task preview pipeline
+
+Catalog render tasks should use the shared dev helper instead of rebuilding preview scenes per task.
+Start the dev server and bake server, then run this in the app console:
+
+```js
+const preset = await (await fetch('/configs/materials/ceramic-brick-and-tile/brick/brick-running-bond-red.json')).json();
+await __bakeMaterialTask(
+  preset,
+  'materials/ceramic-brick-and-tile/brick/brick-running-bond-red',
+  1024,
+);
+```
+
+The helper loads the graph, writes `preset.json`, bakes `channels/baseColor.png`,
+`channels/roughness.png`, `channels/normal.png`, `channels/metallic.png`,
+`channels/ambientOcclusion.png`, writes `proof/tileability-2x2.png`, and renders
+`renders/standard-demo-512.png` as a 512x512 sphere with a plane below using the same material.
+
+## Batch material preset generation with an agent
+
+Use the material-agent runner to process catalog tasks one at a time with Codex or Claude. The runner
+does not modify graph/node implementation files; it builds a prompt per `catalog/**/material.md` that
+includes the existing node capabilities and the shared bake instructions above. Each job is verified
+after the agent exits, and failures are logged without stopping the remaining sequence.
+
+Do not use Playwright for these jobs. The generated prompt forbids installing or using Playwright because
+this material bake path depends on the app's WebGL/WebGPU runtime and the dev-console
+`__bakeMaterialTask` helper in a real browser session.
+
+```sh
+# Preview the first three prompts without running an agent.
+npm run material:agent -- --dry-run --limit 3
+
+# Run five metal materials through Codex.
+npm run material:agent -- --agent codex --category metal --limit 5
+
+# Run one specific material through Claude.
+npm run material:agent -- --agent claude --only ceramic-brick-and-tile/brick/brick-running-bond-red
+
+# Continue a larger run, skipping materials whose required bake files already exist.
+npm run material:agent -- --agent codex --skip-existing
+```
+
+For each material, the agent must write:
+
+```txt
+configs/materials/<catalog-relative-path>.json
+```
+
+Then it must bake with:
+
+```js
+const preset = await (await fetch('/configs/materials/<catalog-relative-path>.json')).json();
+await __bakeMaterialTask(preset, 'materials/<catalog-relative-path>', 1024);
+```
+
+The runner verifies:
+
+```txt
+bake/materials/<catalog-relative-path>/preset.json
+bake/materials/<catalog-relative-path>/channels/baseColor.png
+bake/materials/<catalog-relative-path>/channels/roughness.png
+bake/materials/<catalog-relative-path>/channels/normal.png
+bake/materials/<catalog-relative-path>/channels/metallic.png
+bake/materials/<catalog-relative-path>/channels/ambientOcclusion.png
+bake/materials/<catalog-relative-path>/proof/tileability-2x2.png
+bake/materials/<catalog-relative-path>/renders/standard-demo-512.png
+```
+
+Logs and JSONL summaries are written under `bake/_material-agent-runs/`.
+
 ## Dual-system testing pipeline (ours vs Blender)
 
 While porting Blender's node math (see `blender-node-alignment-plan.md`), we compare our output against

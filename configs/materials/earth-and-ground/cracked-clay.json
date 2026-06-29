@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "nodes": [
+    { "id": "uv", "type": "tex-coordinate", "params": {}, "position": { "x": -1000, "y": 0 }, "enabled": true },
+    { "id": "vor", "type": "voronoi", "params": { "scale": 22, "randomness": 1, "metric": "euclidean", "feature": "distance-to-edge", "relax": 3 }, "position": { "x": -760, "y": 0 }, "enabled": true },
+    { "id": "crack", "type": "color-ramp", "params": { "colorA": "#241a12", "colorB": "#b5824a", "low": 0.0, "high": 0.05 }, "position": { "x": -500, "y": 0 }, "enabled": true },
+    { "id": "pr", "type": "principled-bsdf", "params": { "metallic": 0, "roughness": 0.9 }, "position": { "x": -200, "y": 0 }, "enabled": true },
+    { "id": "out", "type": "material-output", "params": {}, "position": { "x": 100, "y": 0 }, "enabled": true }
+  ],
+  "edges": [
+    { "fromNode": "uv", "fromOutput": "uv", "toNode": "vor", "toInput": "coord" },
+    { "fromNode": "vor", "fromOutput": "distance", "toNode": "crack", "toInput": "field" },
+    { "fromNode": "crack", "fromOutput": "color", "toNode": "pr", "toInput": "baseColor" },
+    { "fromNode": "pr", "fromOutput": "bsdf", "toNode": "out", "toInput": "surface" }
+  ]
+}

@@ -74,7 +74,7 @@ export const tileableNoiseNode: MaterialNodeDef = {
   outputs: [{ key: "field", kind: "float" }],
   params: [
     { key: "noiseType", label: "type", type: "select", options: NOISE_TYPES, default: "perlin-fbm" },
-    { key: "scale", label: "scale", type: "int", min: 1, max: 24, step: 1, default: 5 },
+    { key: "scale", label: "scale", type: "int", min: 1, max: 128, step: 1, default: 5 },
     { key: "aspect", label: "aspect", type: "float", min: 1, max: 8, step: 0.5, default: 1 },
     { key: "octaves", label: "detail", type: "int", min: 1, max: 8, step: 1, default: 4 },
     { key: "gain", label: "roughness", type: "float", min: 0, max: 1, step: 0.01, default: 0.5 },

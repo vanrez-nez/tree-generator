@@ -59,6 +59,10 @@ export class TreeMesher {
 
   constructor() {
     this.solidMesh.name = "tree-surface";
+    // The tree surface both casts shadows (onto the floor and itself) and receives them (branches shadow the
+    // trunk). The wireframe overlay stays shadow-free. Shadows are baked once per generation, not per frame.
+    this.solidMesh.castShadow = true;
+    this.solidMesh.receiveShadow = true;
     this.wireMesh.name = "tree-wireframe";
     this.solidMesh.visible = false; // no geometry yet — revealed by build()
     this.wireMesh.visible = false; // wireframe overlay off by default

@@ -7,6 +7,8 @@
     { "id": "crGrit", "type": "color-ramp", "params": { "colorA": "#5e4e38", "colorB": "#ffffff", "low": 0.2, "high": 0.85 }, "position": { "x": -1660, "y": -180 }, "enabled": true },
     { "id": "dirtCol", "type": "blend", "params": { "mode": "multiply", "opacity": 0.35 }, "position": { "x": -1420, "y": -300 }, "enabled": true },
 
+    { "id": "rockScale", "type": "mapping", "params": { "mappingType": "point", "location": { "x": 0, "y": 0, "z": 0 }, "rotation": { "x": 0, "y": 0, "z": 0 }, "scale": { "x": 4, "y": 4, "z": 4 } }, "position": { "x": -2200, "y": 360 }, "enabled": true },
+
     { "id": "scSmall", "type": "scatter", "params": { "density": 22, "amount": 0.4, "radius": 0.28, "sizeRandom": 0.85, "posRandom": 0.9, "rotRandom": 1 }, "position": { "x": -1900, "y": 40 }, "enabled": true },
     { "id": "shSmall", "type": "shape", "params": { "shape": "blob", "sides": 6, "irregularity": 0.7, "dome": 0.55, "edge": 0.06 }, "position": { "x": -1680, "y": 40 }, "enabled": true },
     { "id": "crRockS", "type": "color-ramp", "params": { "colorA": "#6e695f", "colorB": "#c4bdac", "low": 0.05, "high": 0.95 }, "position": { "x": -1680, "y": 150 }, "enabled": true },
@@ -63,6 +65,10 @@
     { "fromNode": "nGrit", "fromOutput": "field", "toNode": "crGrit", "toInput": "field" },
     { "fromNode": "crDirt", "fromOutput": "color", "toNode": "dirtCol", "toInput": "a" },
     { "fromNode": "crGrit", "fromOutput": "color", "toNode": "dirtCol", "toInput": "b" },
+
+    { "fromNode": "rockScale", "fromOutput": "vector", "toNode": "scSmall", "toInput": "coord" },
+    { "fromNode": "rockScale", "fromOutput": "vector", "toNode": "scMed", "toInput": "coord" },
+    { "fromNode": "rockScale", "fromOutput": "vector", "toNode": "scBig", "toInput": "coord" },
 
     { "fromNode": "scSmall", "fromOutput": "coord", "toNode": "shSmall", "toInput": "coord" },
     { "fromNode": "scSmall", "fromOutput": "value", "toNode": "shSmall", "toInput": "seed" },

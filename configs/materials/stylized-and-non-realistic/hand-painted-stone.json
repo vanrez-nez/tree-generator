@@ -1,0 +1,91 @@
+{
+  "version": 2,
+  "nodes": [
+    { "id": "uv", "type": "tex-coordinate", "params": {}, "position": { "x": -1500, "y": 0 }, "enabled": true },
+    { "id": "warp", "type": "tileable-warp", "params": { "amount": 0.08, "scale": 4 }, "position": { "x": -1280, "y": -40 }, "enabled": true },
+
+    { "id": "vCells", "type": "voronoi", "params": { "scale": 4, "randomness": 1, "metric": "euclidean", "feature": "f1" }, "position": { "x": -1040, "y": -260 }, "enabled": true },
+    { "id": "vEdge", "type": "voronoi", "params": { "scale": 4, "randomness": 1, "metric": "euclidean", "feature": "distance-to-edge" }, "position": { "x": -1040, "y": 60 }, "enabled": true },
+    { "id": "brush", "type": "tileable-noise", "params": { "noiseType": "perlin-fbm", "scale": 6, "octaves": 3, "gain": 0.5 }, "position": { "x": -1040, "y": 320 }, "enabled": true },
+
+    { "id": "plateLum", "type": "luminance", "params": {}, "position": { "x": -800, "y": -360 }, "enabled": true },
+    { "id": "plateRamp", "type": "color-ramp", "params": { "colorA": "#5f636a", "colorB": "#7c6d58", "low": 0.15, "high": 0.85 }, "position": { "x": -560, "y": -460 }, "enabled": true },
+
+    { "id": "shadeRamp", "type": "color-ramp", "params": { "colorA": "#9a9a9a", "colorB": "#efefef", "low": 0.0, "high": 0.3 }, "position": { "x": -560, "y": -240 }, "enabled": true },
+    { "id": "shadeBlend", "type": "blend", "params": { "mode": "multiply", "opacity": 1 }, "position": { "x": -300, "y": -360 }, "enabled": true },
+
+    { "id": "brushRamp", "type": "color-ramp", "params": { "colorA": "#6a6358", "colorB": "#8c867a", "low": 0.3, "high": 0.7 }, "position": { "x": -560, "y": 320 }, "enabled": true },
+    { "id": "brushMul", "type": "blend", "params": { "mode": "multiply", "opacity": 0.16 }, "position": { "x": -60, "y": -300 }, "enabled": true },
+
+    { "id": "rimGt", "type": "math", "params": { "op": "greater-than", "factor": 0.035 }, "position": { "x": -800, "y": 120 }, "enabled": true },
+    { "id": "rimLt", "type": "math", "params": { "op": "less-than", "factor": 0.07 }, "position": { "x": -800, "y": 260 }, "enabled": true },
+    { "id": "rimBand", "type": "math", "params": { "op": "multiply" }, "position": { "x": -560, "y": 180 }, "enabled": true },
+    { "id": "rimColor", "type": "constant-color", "params": { "color": "#b9b3a4" }, "position": { "x": -60, "y": -540 }, "enabled": true },
+    { "id": "rimBlend", "type": "blend", "params": { "mode": "screen", "opacity": 0.12 }, "position": { "x": 200, "y": -360 }, "enabled": true },
+
+    { "id": "crackMask", "type": "math", "params": { "op": "less-than", "factor": 0.024 }, "position": { "x": -800, "y": 420 }, "enabled": true },
+    { "id": "crackColor", "type": "constant-color", "params": { "color": "#1e1a15" }, "position": { "x": 200, "y": -560 }, "enabled": true },
+    { "id": "crackBlend", "type": "blend", "params": { "mode": "mix", "opacity": 0.9 }, "position": { "x": 460, "y": -360 }, "enabled": true },
+
+    { "id": "hEdgeMul", "type": "math", "params": { "op": "multiply", "factor": 0.25 }, "position": { "x": -560, "y": 560 }, "enabled": true },
+    { "id": "hPlateMul", "type": "math", "params": { "op": "multiply", "factor": 0.16 }, "position": { "x": -560, "y": 700 }, "enabled": true },
+    { "id": "hSum", "type": "math", "params": { "op": "add" }, "position": { "x": -300, "y": 620 }, "enabled": true },
+    { "id": "hClamp", "type": "clamp", "params": { "mode": "range", "min": 0, "max": 1 }, "position": { "x": -60, "y": 620 }, "enabled": true },
+    { "id": "normal", "type": "normal-from-height", "params": { "strength": 0.25 }, "position": { "x": 200, "y": 620 }, "enabled": true },
+
+    { "id": "roughRamp", "type": "color-ramp", "params": { "colorA": "#efefef", "colorB": "#cfcfcf", "low": 0.0, "high": 0.3 }, "position": { "x": -300, "y": 820 }, "enabled": true },
+    { "id": "aoLevels", "type": "levels", "params": { "min": 0.4, "max": 1, "invert": false }, "position": { "x": -300, "y": 960 }, "enabled": true },
+    { "id": "metalZero", "type": "constant-field", "params": { "value": 0 }, "position": { "x": -300, "y": 1100 }, "enabled": true },
+
+    { "id": "principled", "type": "principled-bsdf", "params": { "metallic": 0, "roughness": 0.85 }, "position": { "x": 820, "y": 0 }, "enabled": true },
+    { "id": "out", "type": "material-output", "params": {}, "position": { "x": 1100, "y": 20 }, "enabled": true }
+  ],
+  "edges": [
+    { "fromNode": "uv", "fromOutput": "uv", "toNode": "warp", "toInput": "coord" },
+    { "fromNode": "warp", "fromOutput": "coord", "toNode": "vCells", "toInput": "coord" },
+    { "fromNode": "warp", "fromOutput": "coord", "toNode": "vEdge", "toInput": "coord" },
+    { "fromNode": "warp", "fromOutput": "coord", "toNode": "brush", "toInput": "coord" },
+
+    { "fromNode": "vCells", "fromOutput": "color", "toNode": "plateLum", "toInput": "color" },
+    { "fromNode": "plateLum", "fromOutput": "field", "toNode": "plateRamp", "toInput": "field" },
+
+    { "fromNode": "vEdge", "fromOutput": "distance", "toNode": "shadeRamp", "toInput": "field" },
+    { "fromNode": "plateRamp", "fromOutput": "color", "toNode": "shadeBlend", "toInput": "a" },
+    { "fromNode": "shadeRamp", "fromOutput": "color", "toNode": "shadeBlend", "toInput": "b" },
+
+    { "fromNode": "brush", "fromOutput": "field", "toNode": "brushRamp", "toInput": "field" },
+    { "fromNode": "shadeBlend", "fromOutput": "color", "toNode": "brushMul", "toInput": "a" },
+    { "fromNode": "brushRamp", "fromOutput": "color", "toNode": "brushMul", "toInput": "b" },
+
+    { "fromNode": "vEdge", "fromOutput": "distance", "toNode": "rimGt", "toInput": "a" },
+    { "fromNode": "vEdge", "fromOutput": "distance", "toNode": "rimLt", "toInput": "a" },
+    { "fromNode": "rimGt", "fromOutput": "field", "toNode": "rimBand", "toInput": "a" },
+    { "fromNode": "rimLt", "fromOutput": "field", "toNode": "rimBand", "toInput": "b" },
+    { "fromNode": "brushMul", "fromOutput": "color", "toNode": "rimBlend", "toInput": "a" },
+    { "fromNode": "rimColor", "fromOutput": "color", "toNode": "rimBlend", "toInput": "b" },
+    { "fromNode": "rimBand", "fromOutput": "field", "toNode": "rimBlend", "toInput": "mask" },
+
+    { "fromNode": "vEdge", "fromOutput": "distance", "toNode": "crackMask", "toInput": "a" },
+    { "fromNode": "rimBlend", "fromOutput": "color", "toNode": "crackBlend", "toInput": "a" },
+    { "fromNode": "crackColor", "fromOutput": "color", "toNode": "crackBlend", "toInput": "b" },
+    { "fromNode": "crackMask", "fromOutput": "field", "toNode": "crackBlend", "toInput": "mask" },
+
+    { "fromNode": "vEdge", "fromOutput": "distance", "toNode": "hEdgeMul", "toInput": "a" },
+    { "fromNode": "plateLum", "fromOutput": "field", "toNode": "hPlateMul", "toInput": "a" },
+    { "fromNode": "hEdgeMul", "fromOutput": "field", "toNode": "hSum", "toInput": "a" },
+    { "fromNode": "hPlateMul", "fromOutput": "field", "toNode": "hSum", "toInput": "b" },
+    { "fromNode": "hSum", "fromOutput": "field", "toNode": "hClamp", "toInput": "value" },
+    { "fromNode": "hClamp", "fromOutput": "field", "toNode": "normal", "toInput": "height" },
+
+    { "fromNode": "vEdge", "fromOutput": "distance", "toNode": "roughRamp", "toInput": "field" },
+    { "fromNode": "vEdge", "fromOutput": "distance", "toNode": "aoLevels", "toInput": "field" },
+
+    { "fromNode": "crackBlend", "fromOutput": "color", "toNode": "principled", "toInput": "baseColor" },
+    { "fromNode": "roughRamp", "fromOutput": "color", "toNode": "principled", "toInput": "roughness" },
+    { "fromNode": "normal", "fromOutput": "normal", "toNode": "principled", "toInput": "normal" },
+    { "fromNode": "metalZero", "fromOutput": "field", "toNode": "principled", "toInput": "metallic" },
+    { "fromNode": "aoLevels", "fromOutput": "field", "toNode": "principled", "toInput": "ambientOcclusion" },
+    { "fromNode": "hClamp", "fromOutput": "field", "toNode": "principled", "toInput": "height" },
+    { "fromNode": "principled", "fromOutput": "bsdf", "toNode": "out", "toInput": "surface" }
+  ]
+}
