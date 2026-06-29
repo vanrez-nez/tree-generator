@@ -65,6 +65,10 @@ export class MainScene {
   // drawn geometry changes (from any source — UI, joints, root system, code), the signature
   // changes and we schedule a rebuild. Undefined until the first frame so the initial mesh builds.
   private lastSignature: number | undefined;
+  // Last graph-INPUT signature we resolved. The graph is camera/time-independent, so when this is
+  // unchanged the junction + drawing resolution would recompute identical geometry — skip it and only do
+  // the cheap camera-scale refresh. Undefined until the first frame so the initial resolution runs.
+  private lastInputSignature: number | undefined;
 
   constructor() {
     this.scene.background = new THREE.Color(0x111111);
@@ -266,13 +270,22 @@ export class MainScene {
   }
 
   update(_deltaTime: number, camera: THREE.Camera, viewportSize?: THREE.Vector2): void {
-    this.graph.update(camera, viewportSize);
+    // Resolve junctions + line drawing only when an authored input actually changed (generation, slider
+    // drags, joint/modifier edits). The graph has no per-frame/animated inputs, so on an idle frame the
+    // resolution would reproduce identical geometry — skip it and just keep the debug markers screen-sized.
+    const inputSignature = this.graph.getInputSignature();
+    if (inputSignature !== this.lastInputSignature) {
+      this.lastInputSignature = inputSignature;
+      this.graph.update(camera, viewportSize);
 
-    // The graph is the source of truth: react to changes in its drawn geometry, not to UI events.
-    const signature = this.graph.getGeometrySignature();
-    if (signature !== this.lastSignature) {
-      this.lastSignature = signature;
-      this.scheduleMeshRebuild();
+      // The graph is the source of truth: react to changes in its drawn geometry, not to UI events.
+      const signature = this.graph.getGeometrySignature();
+      if (signature !== this.lastSignature) {
+        this.lastSignature = signature;
+        this.scheduleMeshRebuild();
+      }
+    } else {
+      this.graph.refreshCameraScale(camera);
     }
 
     if (this.meshDirty) {

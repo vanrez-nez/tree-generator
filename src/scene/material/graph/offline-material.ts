@@ -1,10 +1,11 @@
 import * as THREE from "three";
 import { RenderTarget, type WebGPURenderer, type MeshPhysicalNodeMaterial } from "three/webgpu";
-import { uniform, vec3, normalWorld, texture, normalMap, float, attribute } from "three/tsl";
+import { uniform, vec3, normalWorld, texture, normalMap, float, attribute, uv } from "three/tsl";
 import { compileSockets, newSurfaceMaterial } from "./compiler";
 import { encodeChannel, renderColorNodeToTarget, COLOR_CHANNELS } from "./channel-baker";
 import { triplanarColor } from "../tsl/triplanar";
 import { triplanarNormalMap } from "../tsl/triplanar-normal";
+import { parallaxOcclusionUV } from "../tsl/parallax";
 import type { MaterialGraphDocument, MaterialValue, PbrSocket } from "./types";
 import type { NodeRegistry } from "./registry";
 
@@ -12,6 +13,10 @@ const BAKE_SIZE = 1024;
 // Anisotropic-filter taps for the baked channel textures. 8 is well within every desktop GPU's cap (≥16)
 // and kills the grazing-angle normal-map shimmer; the driver clamps to its own max if lower.
 const MAX_ANISOTROPY = 8;
+// Parallax-occlusion march steps. More = smoother silhouettes / less layer-stepping, but the march is
+// unrolled so cost is LINEAR in this count and paid on every floor fragment — the dominant GPU cost of the
+// effect. 12 is the perf/quality balance (24 looked marginally cleaner but ~doubled the march cost).
+const PARALLAX_LAYERS = 12;
 // Channels baked for the surface: the scalar/colour maps, the tangent-space normal map, and emission.
 // Emission bakes to an sRGB LDR texture (RGBA8), so emission color×strength is clamped to [0,1] — fine for
 // glow masks; HDR strengths >1 would need a float RT (use the live backend for those).
@@ -36,9 +41,17 @@ export class OfflineMaterial {
   readonly roughnessFactor = uniform(1);
   readonly metalnessFactor = uniform(1);
   readonly colorTint = uniform(new THREE.Color(1, 1, 1));
+  // Parallax-occlusion depth: max UV shift at grazing depth. Default 0 = OFF — the march is the effect's
+  // dominant GPU cost (~3-6 ms/frame on a full-screen floor), so it's opt-in. >0 enables it, but only when a
+  // height map was baked AND triplanar is off (the UV-space POM path). setParallaxScale re-wires across 0.
+  readonly parallaxScale = uniform(0);
   lastBakeMs = 0;
 
   private readonly targets = new Map<PbrSocket, RenderTarget>();
+  // Baked scalar height map (its own target, not a PbrSocket channel — it drives the parallax UV offset,
+  // never a lit channel). Null until a graph connects Principled's Height input.
+  private heightTarget: RenderTarget | null = null;
+  private hasHeight = false;
   private wiredSignature = ""; // which channels are currently sampled, to avoid needless material rebuilds
   private lastPresent = new Set<PbrSocket>();
   private debugNormals = false;
@@ -63,6 +76,15 @@ export class OfflineMaterial {
   }
   setColorTint(hex: string): void {
     this.colorTint.value.set(hex);
+  }
+
+  // Parallax-occlusion depth. The march is the effect's dominant per-fragment GPU cost, so 0 must REMOVE it,
+  // not just zero the offset — crossing the 0 boundary re-wires the surface to drop (or add back) the march.
+  // Above 0 the value is a live uniform (depth changes are free; only the on/off transition re-wires).
+  setParallaxScale(value: number): void {
+    const wasOn = this.parallaxScale.value > 0;
+    this.parallaxScale.value = value;
+    if (value > 0 !== wasOn) this.wire(this.lastPresent);
   }
 
   // Toggle world-space triplanar projection vs plain UV sampling of the baked maps. Re-wires the surface.
@@ -93,7 +115,14 @@ export class OfflineMaterial {
       renderColorNodeToTarget(renderer, encodeChannel(node, ch), this.ensureTarget(ch), ch === "normal");
       present.push(ch);
     }
-    const signature = present.join(",");
+    // Height drives the parallax UV offset, not a lit channel — bake it into its own (linear) target. It's
+    // a plain scalar field, so encode it like the field channels (grayscale, no colorspace).
+    this.hasHeight = bundle.height !== undefined;
+    if (this.hasHeight) {
+      renderColorNodeToTarget(renderer, vec3(bundle.height), this.ensureHeightTarget(), false);
+    }
+    // The presence of a height map changes the sampling wiring (parallax UV vs flat), so fold it in.
+    const signature = present.join(",") + (this.hasHeight ? "|h" : "");
     if (signature !== this.wiredSignature) {
       this.wire(new Set(present));
       this.wiredSignature = signature;
@@ -126,6 +155,23 @@ export class OfflineMaterial {
     return rt;
   }
 
+  // Linear, mip-filtered target for the baked scalar height map (same data-channel config as the non-colour
+  // channels above). Lazily created — kept across rebakes so the surface keeps referencing one texture.
+  private ensureHeightTarget(): RenderTarget {
+    if (!this.heightTarget) {
+      const rt = new RenderTarget(this.size, this.size);
+      const t = rt.texture;
+      t.colorSpace = THREE.NoColorSpace;
+      t.wrapS = t.wrapT = THREE.RepeatWrapping;
+      t.generateMipmaps = true;
+      t.minFilter = THREE.LinearMipmapLinearFilter;
+      t.magFilter = THREE.LinearFilter;
+      t.anisotropy = MAX_ANISOTROPY;
+      this.heightTarget = rt;
+    }
+    return this.heightTarget;
+  }
+
   // Point the surface material's channel nodes at the baked textures (triplanar). Only called when the set
   // of connected channels changes — re-baking re-renders the same texture objects in place.
   private wire(present: Set<PbrSocket>): void {
@@ -133,17 +179,37 @@ export class OfflineMaterial {
     const m = this.material;
     const scale = this.scaleUniform;
     const sharp = this.sharpnessUniform;
-    // Channel sampler: world-space triplanar (projection blend) or plain mesh-UV `texture()`.
+    // Parallax-occlusion mapping: when a height map was baked and we're sampling by mesh UV (triplanar has
+    // no single UV to offset), shift the sample coordinates along the view ray so the baked maps gain motion
+    // parallax and self-occlusion. All UV-space samplers below share this offset coordinate. (parallaxScale
+    // = 0 → the march returns the base UV, so this is also the live "off" state without a rewire.)
+    // Gate on scale > 0 too: the march is expensive, so a 0 depth must compile it out entirely (setParallaxScale
+    // re-wires when this crosses 0).
+    const useParallax = this.hasHeight && !this.triplanar && this.parallaxScale.value > 0;
+    const baseUv = uv();
+    const pUv: MaterialValue = useParallax
+      ? parallaxOcclusionUV(this.heightTarget!.texture, baseUv, this.parallaxScale, PARALLAX_LAYERS)
+      : undefined;
+    // The parallax-offset UV jumps between marching outcomes per pixel, so its screen-space derivatives are
+    // noisy — sampling with them would pick a high mip and blur every channel to mush. Sample AT the offset
+    // location but compute the mip LOD from the smooth base-UV derivatives (explicit gradients).
+    const ddx = baseUv.dFdx();
+    const ddy = baseUv.dFdy();
+    const sampleUv = (tex: MaterialValue): MaterialValue =>
+      useParallax ? texture(tex, pUv).grad(ddx, ddy) : texture(tex);
+    // Channel sampler: world-space triplanar (projection blend) or plain mesh-UV `texture()` (parallax UV
+    // with base-UV gradients when active).
     const sample = (ch: PbrSocket): MaterialValue =>
       this.triplanar
         ? triplanarColor(this.targets.get(ch)!.texture, scale, sharp)
-        : texture(this.targets.get(ch)!.texture);
-    // The world-space shading normal: triplanar reorient, or UV normal-map (TBN), else the geometry normal.
+        : sampleUv(this.targets.get(ch)!.texture);
+    // The world-space shading normal: triplanar reorient, or UV normal-map (TBN, parallax-offset), else the
+    // geometry normal.
     const shadingNormal: MaterialValue = !present.has("normal")
       ? normalWorld
       : this.triplanar
         ? triplanarNormalMap(this.targets.get("normal")!.texture, scale, sharp)
-        : normalMap(texture(this.targets.get("normal")!.texture).xyz, float(1));
+        : normalMap(sampleUv(this.targets.get("normal")!.texture).xyz, float(1));
 
     if (this.debugNormals) {
       // Unlit normal visualisation: emissive = encoded shading normal, albedo black so lighting can't tint it.
@@ -170,6 +236,8 @@ export class OfflineMaterial {
   dispose(): void {
     for (const rt of this.targets.values()) rt.dispose();
     this.targets.clear();
+    this.heightTarget?.dispose();
+    this.heightTarget = null;
     this.material.dispose();
   }
 }

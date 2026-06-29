@@ -43,6 +43,7 @@ export const principledBsdfNode: MaterialNodeDef = {
     { key: "ior", label: "IOR", kind: "float" },
     { key: "alpha", label: "Alpha", kind: "float" },
     { key: "normal", label: "Normal", kind: "vector" },
+    { key: "height", label: "Height", kind: "float" },
     { key: "ambientOcclusion", label: "Ambient Occlusion", kind: "float" },
     { key: "coat", label: "Coat Weight", kind: "float" },
     { key: "coatRoughness", label: "Coat Roughness", kind: "float" },
@@ -79,6 +80,10 @@ export const principledBsdfNode: MaterialNodeDef = {
       roughness: inOr("roughness"),
       ior: inOr("ior"),
       normal: ctx.inputs.normal, // undefined → interpolated geometry normal
+      // Scalar height for offline parallax-occlusion mapping. Input-only (no slider): undefined when
+      // unconnected so no height map is baked and the surface samples flat. Drive it from the same field
+      // that feeds Normal From Height for relief that matches the normal map.
+      height: ctx.inputs.height,
       // Texture-scale AO authored in the graph (mortar lines, pores, grooves). Input-only — undefined when
       // unconnected so no AO channel is baked; composes with the mesh's per-vertex form AO downstream.
       ambientOcclusion: ctx.inputs.ambientOcclusion,

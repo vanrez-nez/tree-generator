@@ -179,6 +179,9 @@ export interface MaterialBundle {
   ior?: MaterialValue;
   alpha?: MaterialValue;
   normal?: MaterialValue;
+  // Scalar height field (white = raised). Offline-only: baked to its own map and consumed by the surface's
+  // parallax-occlusion step — never a lit PBR channel. Undefined → no parallax (flat sampling).
+  height?: MaterialValue;
   ambientOcclusion?: MaterialValue;
   emission?: MaterialValue;
   coat?: MaterialValue;

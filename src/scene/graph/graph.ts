@@ -5,7 +5,7 @@ import type {
   JointDocument,
   ModifierDocument,
 } from "./document";
-import { FNV_OFFSET, hashInt, hashString } from "./hash";
+import { FNV_OFFSET, hashFloat, hashInt, hashString } from "./hash";
 import { Joint } from "./joint";
 import { beginWorldFrame, GraphLine, type GraphLineOptions } from "./line";
 import type { LineModifier } from "./modifiers/modifier";
@@ -33,6 +33,11 @@ export class Graph {
   private readonly lineEntries = new Map<string, GraphLine>();
   private readonly jointEntries: GraphJointEntry[] = [];
 
+  // Bumped whenever the set of lines/joints or their source points change (add/remove/load/clear). Source
+  // points are otherwise immutable, so this lets `getInputSignature` detect structural/topology edits
+  // without re-hashing every point each frame.
+  private structureVersion = 0;
+
   loadDocument(document: GraphDocument): void {
     this.clear();
 
@@ -53,6 +58,7 @@ export class Graph {
     this.lines.add(line);
     this.group.add(line.object);
     line.updateDrawing();
+    this.structureVersion += 1;
 
     return line;
   }
@@ -83,6 +89,7 @@ export class Graph {
       document: jointDocument,
       joint,
     });
+    this.structureVersion += 1;
 
     return joint;
   }
@@ -95,6 +102,7 @@ export class Graph {
     }
 
     this.jointEntries.splice(index, 1);
+    this.structureVersion += 1;
 
     return true;
   }
@@ -106,6 +114,7 @@ export class Graph {
 
     this.group.remove(line.object);
     line.dispose();
+    this.structureVersion += 1;
 
     return true;
   }
@@ -119,6 +128,7 @@ export class Graph {
     this.lines.clear();
     this.lineEntries.clear();
     this.jointEntries.length = 0;
+    this.structureVersion += 1;
   }
 
   getLines(): GraphLine[] {
@@ -157,6 +167,60 @@ export class Graph {
     }
 
     return hash >>> 0;
+  }
+
+  // A cheap hash of every authored INPUT that `update()` reads (vs `getGeometrySignature`, which hashes the
+  // resolved OUTPUT and so can only be computed after the expensive resolution). Lets the caller skip the
+  // per-frame junction/drawing resolution entirely when nothing an edit could touch has changed — the graph
+  // is camera/time-independent, so an idle frame (just orbiting) recomputes to the same geometry.
+  //
+  // Covers: structure/source points (via `structureVersion`); per-line render + debug fields and tube taper;
+  // each modifier's enabled/params/envelope; each joint's lean/direction/attachment. If a new geometry-
+  // affecting authored field is added, include it here or live edits to it won't take effect while idle.
+  getInputSignature(): number {
+    let hash = hashInt(FNV_OFFSET, this.structureVersion);
+
+    for (const line of this.lines) {
+      hash = hashString(
+        hash,
+        JSON.stringify([line.color, line.thickness, line.style, line.dashSize, line.gapSize]),
+      );
+      hash = hashInt(hash, line.debugPointVisible ? 1 : 0);
+      hash = hashInt(hash, line.debugLinePointsVisible ? 1 : 0);
+      hash = hashFloat(hash, line.debugT);
+
+      const tube = line.tube;
+      if (tube) {
+        hash = hashInt(hash, tube.visible ? 1 : 0);
+        hash = hashFloat(hash, tube.radius);
+        hash = hashFloat(hash, tube.tipScale);
+        hash = hashFloat(hash, tube.opacity);
+        hash = hashString(hash, JSON.stringify(tube.curve));
+      }
+
+      for (const modifier of line.modifiers) {
+        hash = hashInt(hash, modifier.enabled ? 1 : 0);
+        hash = hashString(hash, JSON.stringify(modifier.params));
+        hash = hashString(hash, JSON.stringify(modifier.envelope));
+      }
+    }
+
+    for (const { joint, document } of this.jointEntries) {
+      hash = hashFloat(hash, joint.maxLeanAngle);
+      hash = hashInt(hash, Math.round(joint.directionPoints));
+      hash = hashFloat(hash, document.parentT);
+      hash = hashInt(hash, document.childPointIndex);
+    }
+
+    return hash >>> 0;
+  }
+
+  // Per-frame, camera-only refresh for when `update()` is skipped (geometry unchanged): keeps the debug
+  // markers at a constant on-screen size as the camera moves. Cheap — no geometry/junction resolution.
+  refreshCameraScale(camera: THREE.Camera): void {
+    for (const line of this.lines) {
+      line.refreshCameraScale(camera);
+    }
   }
 
   // World points are resolved lazily and pull-based: a child reads its parent on demand, so parents

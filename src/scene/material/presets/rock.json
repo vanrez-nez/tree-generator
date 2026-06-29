@@ -115,6 +115,7 @@
     { "fromNode": "hTot", "fromOutput": "field", "toNode": "hTot2", "toInput": "a" },
     { "fromNode": "dGate", "fromOutput": "field", "toNode": "hTot2", "toInput": "b" },
     { "fromNode": "hTot2", "fromOutput": "field", "toNode": "nfh", "toInput": "height" },
+    { "fromNode": "hTot2", "fromOutput": "field", "toNode": "pr", "toInput": "height" },
 
     { "fromNode": "nDirt", "fromOutput": "field", "toNode": "aoDirt", "toInput": "a" },
     { "fromNode": "hMaxB", "fromOutput": "field", "toNode": "crTop", "toInput": "field" },

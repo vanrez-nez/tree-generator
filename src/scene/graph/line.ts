@@ -249,6 +249,21 @@ export class GraphLineVisual {
     }
   }
 
+  // Camera-only refresh: keep the debug markers at a constant on-screen size when the geometry didn't change
+  // and `updateDrawing` was skipped this frame. Reuses the marker positions set by the last full draw — no
+  // geometry/modifier work.
+  refreshCameraScale(camera?: THREE.Camera): void {
+    this.updateDebugPointScale(camera);
+
+    if (this.lineState.debugLinePointsVisible) {
+      for (const marker of this.linePointDebugMarkers) {
+        if (marker.visible) {
+          this.updateMarkerScale(marker, camera);
+        }
+      }
+    }
+  }
+
   dispose(): void {
     this.object.remove(this.line);
     this.object.remove(this.debugPoint);
@@ -487,6 +502,11 @@ export class GraphLine {
 
   updateDrawing(camera?: THREE.Camera, viewportSize?: THREE.Vector2): void {
     this.visual.updateDrawing(camera, viewportSize);
+  }
+
+  // Cheap per-frame debug-marker rescale used when the full redraw is skipped (geometry unchanged).
+  refreshCameraScale(camera?: THREE.Camera): void {
+    this.visual.refreshCameraScale(camera);
   }
 
   dispose(): void {

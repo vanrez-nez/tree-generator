@@ -275,7 +275,7 @@ const markPreviewDirty = (): void => {
 mainScene.materialController.onRecompile(markPreviewDirty);
 // Material-graph UI state. `worldPerTile` maps to the FBM generator's scale; `backend` toggles the
 // live procedural vs convertToTexture baked-map compile.
-const triplanarState = { enabled: false, worldPerTile: 1.2, sharpness: 8 };
+const triplanarState = { enabled: false, worldPerTile: 1.2, sharpness: 8, parallax: 0 };
 const materialState = { backend: "offline" as "live" | "offline", debugNormals: false, preset: DEFAULT_PRESET };
 
 // Visual floor state. The floor has its own material controller (mainScene.floorMaterialController), driven
@@ -290,6 +290,9 @@ const floorState = {
     : DEFAULT_FLOOR_PRESET,
   visible: true,
   tiling: 6,
+  // Parallax-occlusion depth for the floor surface. Default 0 = OFF (opt-in: the march is GPU-heavy). Only
+  // has an effect when the preset bakes a height map (e.g. rock) and triplanar is off.
+  parallax: 0,
 };
 
 // Direct configuration of the THREE surface material (the MeshPhysicalNodeMaterial the controller binds to
@@ -465,6 +468,7 @@ if (import.meta.env.DEV) {
     __scene: mainScene,
     __renderer: renderer,
     __camera: camera,
+    __controls: controls,
     __editor: materialEditor,
     __openEditor: rebuildEditor,
     __baker: channelBaker,
@@ -1044,6 +1048,11 @@ function buildFloorControls(container: ContainerApi): void {
   folder
     .addBinding(floorState, "tiling", { label: "tiling", min: 1, max: 24, step: 1 })
     .on("change", (e) => mainScene.setFloorTiling(e.value));
+  // Parallax-occlusion depth: shader-side height relief (motion parallax + self-occlusion) over the baked
+  // height map. Needs a preset with a Height channel (e.g. rock) and triplanar off; 0 = flat.
+  folder
+    .addBinding(floorState, "parallax", { label: "parallax", min: 0, max: 0.12, step: 0.005 })
+    .on("change", (e) => mainScene.floorMaterialController.setParallaxScale(e.value));
   // Open the node editor on the FLOOR's own graph (independent of the tree) so it can be tuned in place.
   folder.addButton({ title: "Open Floor Node Editor" }).on("click", () => openFloorEditor());
 }
@@ -1192,6 +1201,10 @@ function buildTextureLayers(): void {
   triplanarFolder
     .addBinding(triplanarState, "sharpness", { label: "sharpness", min: 1, max: 24, step: 0.5 })
     .on("change", (event) => mainScene.materialController.setTriplanarSharpness(event.value));
+  // Parallax-occlusion depth (UV-space path — disable triplanar to see it). Needs a Height channel baked.
+  triplanarFolder
+    .addBinding(triplanarState, "parallax", { label: "parallax", min: 0, max: 0.12, step: 0.005 })
+    .on("change", (event) => mainScene.materialController.setParallaxScale(event.value));
 
 
   // Export each PBR channel to a PNG (baked from the graph via convertToTexture readback).

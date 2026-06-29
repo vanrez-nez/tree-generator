@@ -125,6 +125,12 @@ export class MaterialGraphController {
     this.offline.setTriplanar(on);
   }
 
+  // Parallax-occlusion depth for the offline surface (UV-space path). Live uniform; no re-bake. Only has a
+  // visible effect when the graph bakes a height map (Principled's Height input) and triplanar is off.
+  setParallaxScale(value: number): void {
+    this.offline.setParallaxScale(value);
+  }
+
   // Surface-material factors for the offline backend: scale the baked roughness/metalness channels and tint
   // the basecolor. Live uniforms (no re-bake). A node material ignores the plain `material.roughness` scalar
   // once a roughness channel is baked, so these multipliers are how the Texture > Material sliders take
