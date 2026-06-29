@@ -1,7 +1,9 @@
 import type { MaterialNodeDef, MaterialValue } from "../../types";
-import { tilePattern } from "../../../tsl/tile";
+import { tilePattern, hexPattern } from "../../../tsl/tile";
 
 type V = MaterialValue;
+
+const LATTICES = ["square", "hex"];
 
 // Tile Generator — a generic Substance-style grid generator, not brick-specific. It places a rounded-rect
 // tile per grid cell with a per-row offset and per-tile randomisation of position / size / rotation / value.
@@ -23,6 +25,7 @@ export const tileNode: MaterialNodeDef = {
     { key: "value", label: "Value", kind: "float" },
   ],
   params: [
+    { key: "lattice", label: "lattice", type: "select", options: LATTICES, default: "square" },
     { key: "columns", label: "columns", type: "int", min: 1, max: 32, step: 1, default: 6 },
     { key: "rows", label: "rows", type: "int", min: 1, max: 64, step: 1, default: 12 },
     { key: "offset", label: "row offset", type: "float", min: 0, max: 1, step: 0.01, default: 0.5 },
@@ -37,6 +40,21 @@ export const tileNode: MaterialNodeDef = {
   build(ctx) {
     const coord = (ctx.inputs.coord ?? ctx.coord) as V;
     const columns = Math.max(1, Math.round(Number(ctx.params.columns ?? 6)));
+
+    // Hex lattice: a regular honeycomb. Row count is derived from columns (×2/√3, snapped even) so the
+    // hexagons stay regular AND the tile wraps; columns/rows aspect, offset, and the SDF params don't apply.
+    if ((ctx.params.lattice as string) === "hex") {
+      const hexRows = Math.max(2, Math.round((columns * 2) / Math.sqrt(3) / 2) * 2);
+      const { mask, value } = hexPattern(
+        coord,
+        columns,
+        hexRows,
+        ctx.uniforms.gap as V,
+        ctx.uniforms.edge as V,
+      );
+      return { mask, value };
+    }
+
     const offsetFreq = Math.max(1, Math.round(Number(ctx.params.offsetFreq ?? 2)));
     // Snap rows up to a multiple of offsetFreq so the offset cycle closes at the tile's top edge (seamless).
     const rawRows = Math.max(1, Math.round(Number(ctx.params.rows ?? 12)));

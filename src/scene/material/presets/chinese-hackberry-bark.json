@@ -1,0 +1,55 @@
+{
+  "version": 2,
+  "nodes": [
+    { "id": "nBase", "type": "tileable-noise", "params": { "noiseType": "perlin-fbm", "scale": 3, "octaves": 4, "gain": 0.55 }, "position": { "x": -640, "y": -260 }, "enabled": true },
+    { "id": "crBase", "type": "color-ramp", "params": { "colorA": "#2e3226", "colorB": "#47412e", "low": 0.28, "high": 0.78 }, "position": { "x": -360, "y": -260 }, "enabled": true },
+
+    { "id": "nGrain", "type": "tileable-noise", "params": { "noiseType": "perlin-fbm", "scale": 6, "aspect": 6, "octaves": 4, "gain": 0.5 }, "position": { "x": -640, "y": -80 }, "enabled": true },
+    { "id": "crGrain", "type": "color-ramp", "params": { "colorA": "#b6b6b6", "colorB": "#ffffff", "low": 0.2, "high": 0.85 }, "position": { "x": -360, "y": -80 }, "enabled": true },
+    { "id": "baseGrain", "type": "blend", "params": { "mode": "multiply", "opacity": 0.35 }, "position": { "x": -80, "y": -180 }, "enabled": true },
+
+    { "id": "nStreak", "type": "tileable-noise", "params": { "noiseType": "perlin-fbm", "scale": 2, "aspect": 7, "octaves": 3, "gain": 0.55 }, "position": { "x": -640, "y": 110 }, "enabled": true },
+    { "id": "crStreak", "type": "color-ramp", "params": { "colorA": "#000000", "colorB": "#ffffff", "low": 0.55, "high": 0.64 }, "position": { "x": -360, "y": 110 }, "enabled": true },
+    { "id": "streakColor", "type": "constant-color", "params": { "color": "#241f15" }, "position": { "x": -80, "y": 110 }, "enabled": true },
+    { "id": "baseStreak", "type": "blend", "params": { "mode": "mix", "opacity": 0.5 }, "position": { "x": 220, "y": -60 }, "enabled": true },
+
+    { "id": "nBlob", "type": "tileable-noise", "params": { "noiseType": "perlin-fbm", "scale": 10, "octaves": 3, "gain": 0.5 }, "position": { "x": -640, "y": 320 }, "enabled": true },
+    { "id": "nDensity", "type": "tileable-noise", "params": { "noiseType": "perlin-fbm", "scale": 4, "aspect": 2, "octaves": 2, "gain": 0.5 }, "position": { "x": -640, "y": 500 }, "enabled": true },
+    { "id": "lichenField", "type": "math", "params": { "op": "multiply" }, "position": { "x": -360, "y": 410 }, "enabled": true },
+    { "id": "lichenRamp", "type": "color-ramp", "params": { "colorA": "#000000", "colorB": "#ffffff", "low": 0.4, "high": 0.52 }, "position": { "x": -80, "y": 410 }, "enabled": true },
+    { "id": "lichenColor", "type": "constant-color", "params": { "color": "#a9b0a2" }, "position": { "x": -80, "y": 250 }, "enabled": true },
+    { "id": "baseLichen", "type": "blend", "params": { "mode": "mix", "opacity": 0.85 }, "position": { "x": 520, "y": 120 }, "enabled": true },
+
+    { "id": "rough", "type": "math", "params": { "op": "multiply-add", "factor": 0.12, "c": 0.8 }, "position": { "x": 520, "y": 420 }, "enabled": true },
+    { "id": "nfh", "type": "normal-from-height", "params": { "strength": 0.16 }, "position": { "x": 820, "y": 320 }, "enabled": true },
+
+    { "id": "pr", "type": "principled-bsdf", "params": { "metallic": 0 }, "position": { "x": 1120, "y": 120 }, "enabled": true },
+    { "id": "out", "type": "material-output", "params": {}, "position": { "x": 1420, "y": 140 }, "enabled": true }
+  ],
+  "edges": [
+    { "fromNode": "nBase", "fromOutput": "field", "toNode": "crBase", "toInput": "field" },
+    { "fromNode": "nGrain", "fromOutput": "field", "toNode": "crGrain", "toInput": "field" },
+    { "fromNode": "crBase", "fromOutput": "color", "toNode": "baseGrain", "toInput": "a" },
+    { "fromNode": "crGrain", "fromOutput": "color", "toNode": "baseGrain", "toInput": "b" },
+
+    { "fromNode": "nStreak", "fromOutput": "field", "toNode": "crStreak", "toInput": "field" },
+    { "fromNode": "baseGrain", "fromOutput": "color", "toNode": "baseStreak", "toInput": "a" },
+    { "fromNode": "streakColor", "fromOutput": "color", "toNode": "baseStreak", "toInput": "b" },
+    { "fromNode": "crStreak", "fromOutput": "color", "toNode": "baseStreak", "toInput": "mask" },
+
+    { "fromNode": "nBlob", "fromOutput": "field", "toNode": "lichenField", "toInput": "a" },
+    { "fromNode": "nDensity", "fromOutput": "field", "toNode": "lichenField", "toInput": "b" },
+    { "fromNode": "lichenField", "fromOutput": "field", "toNode": "lichenRamp", "toInput": "field" },
+    { "fromNode": "baseStreak", "fromOutput": "color", "toNode": "baseLichen", "toInput": "a" },
+    { "fromNode": "lichenColor", "fromOutput": "color", "toNode": "baseLichen", "toInput": "b" },
+    { "fromNode": "lichenRamp", "fromOutput": "color", "toNode": "baseLichen", "toInput": "mask" },
+
+    { "fromNode": "lichenRamp", "fromOutput": "color", "toNode": "rough", "toInput": "a" },
+
+    { "fromNode": "baseLichen", "fromOutput": "color", "toNode": "pr", "toInput": "baseColor" },
+    { "fromNode": "baseLichen", "fromOutput": "color", "toNode": "nfh", "toInput": "height" },
+    { "fromNode": "nfh", "fromOutput": "normal", "toNode": "pr", "toInput": "normal" },
+    { "fromNode": "rough", "fromOutput": "field", "toNode": "pr", "toInput": "roughness" },
+    { "fromNode": "pr", "fromOutput": "bsdf", "toNode": "out", "toInput": "surface" }
+  ]
+}

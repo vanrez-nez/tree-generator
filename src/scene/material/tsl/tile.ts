@@ -15,7 +15,7 @@ import {
   smoothstep,
 } from "three/tsl";
 import type { MaterialValue } from "../graph/types";
-import { hashCell2ToVec3Seed } from "./noise/hash";
+import { hashCell2, hashCell2ToVec3Seed } from "./noise/hash";
 
 // Generic TILE GENERATOR (Substance-style), not a brick-specific node. It lays a rounded-rectangle tile in
 // each cell of a `columns × rows` grid, with a per-row horizontal offset and per-tile randomisation of
@@ -112,6 +112,70 @@ export function tilePattern(coord: V, grid: TileGrid, u: TileUniforms): TileResu
 
     // best is −SDF in UV: >0 inside, 0 at the edge, negative in the gap.
     return vec2(smoothstep(0, u.edge.add(1e-5), best), bestVal);
+  })() as V;
+  return { mask: packed.x, value: packed.y };
+}
+
+// Hexagon lattice — a regular hex grid (honeycomb). It's a Voronoi of the running-bond offset lattice: each
+// hexagon is the cell of a feature point, so we find the nearest centre (F1) for the per-hex value and the
+// distance to the bisector with neighbours (distance-to-edge) for the grout. Regular hexagons need a row
+// spacing of columns·(2/√3); the node derives `rows` from `columns` (snapped even) for that, so the caller
+// passes matching counts. Offset is fixed at half a cell (hex requires running bond). Seamless: integer
+// columns + even rows. `gap` (UV) is the grout half-width, `edge` its softness.
+export function hexPattern(coord: V, columns: number, rows: number, gap: V, edge: V): TileResult {
+  const C = columns;
+  const R = rows;
+  const packed = Fn(() => {
+    const g = vec2(coord.x.mul(C), coord.y.mul(R)) as V;
+    const baseRow = floor(g.y) as V;
+
+    // Pass 1 — nearest hex centre (F1): its UV position + per-hex value.
+    const nearD = float(1e9).toVar();
+    const nCx = float(0).toVar(); // nearest centre, UV
+    const nCy = float(0).toVar();
+    const nVal = float(0).toVar();
+    for (let dy = -1; dy <= 1; dy++) {
+      const cyf = baseRow.add(dy) as V;
+      const off = select(mod(cyf, float(2)).notEqual(0), float(0.5), float(0)) as V;
+      const colBase = floor(g.x.sub(off)) as V;
+      for (let dx = -1; dx <= 1; dx++) {
+        const cxf = colBase.add(dx) as V;
+        const cux = cxf.add(0.5).add(off).div(C) as V; // centre in UV
+        const cuy = cyf.add(0.5).div(R) as V;
+        const d = length(vec2(coord.x.sub(cux), coord.y.sub(cuy))) as V;
+        const win = d.lessThan(nearD) as V;
+        nearD.assign(select(win, d, nearD));
+        nCx.assign(select(win, cux, nCx));
+        nCy.assign(select(win, cuy, nCy));
+        nVal.assign(select(win, hashCell2(int(cxf), int(cyf), C, R), nVal));
+      }
+    }
+
+    // Pass 2 — distance to the nearest cell edge (bisector with each other centre).
+    const edgeD = float(1e9).toVar();
+    for (let dy = -1; dy <= 1; dy++) {
+      const cyf = baseRow.add(dy) as V;
+      const off = select(mod(cyf, float(2)).notEqual(0), float(0.5), float(0)) as V;
+      const colBase = floor(g.x.sub(off)) as V;
+      for (let dx = -1; dx <= 1; dx++) {
+        const cxf = colBase.add(dx) as V;
+        const cux = cxf.add(0.5).add(off).div(C) as V;
+        const cuy = cyf.add(0.5).div(R) as V;
+        const dcx = cux.sub(nCx) as V;
+        const dcy = cuy.sub(nCy) as V;
+        const len = length(vec2(dcx, dcy)).add(1e-9) as V;
+        // signed distance from the fragment to the perpendicular bisector of (nearest, this) centre pair
+        const midx = nCx.add(cux).mul(0.5) as V;
+        const midy = nCy.add(cuy).mul(0.5) as V;
+        // distance from the fragment INTO the nearest cell, toward this bisector (positive inside).
+        const ed = midx.sub(coord.x).mul(dcx.div(len)).add(midy.sub(coord.y).mul(dcy.div(len))) as V;
+        // skip the nearest centre itself (its bisector is undefined)
+        const isSelf = len.lessThan(1e-4) as V;
+        edgeD.assign(min(edgeD, select(isSelf, float(1e9), ed)));
+      }
+    }
+
+    return vec2(smoothstep(gap, gap.add(edge).add(1e-5), edgeD), nVal);
   })() as V;
   return { mask: packed.x, value: packed.y };
 }
