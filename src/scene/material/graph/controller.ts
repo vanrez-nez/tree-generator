@@ -77,10 +77,25 @@ export class MaterialGraphController {
   // Edits target the active (sub)document; compile/persist always run on the root.
   private path: string[] = [];
 
-  constructor(private readonly registry: NodeRegistry = defaultRegistry) {
+  // `storageKey` namespaces sessionStorage persistence. The tree's material uses the default key; a second
+  // controller (e.g. the visual floor) passes null to disable persistence so it never clobbers the tree's
+  // saved graph — it's driven entirely by preset selection instead.
+  constructor(
+    private readonly registry: NodeRegistry = defaultRegistry,
+    private readonly storageKey: string | null = STORAGE_KEY,
+  ) {
     this.doc = this.load() ?? createDefaultDocument();
     // No renderer yet → build the live material as a startup fallback; attachRenderer() switches to offline.
-    const compiled = compileGraph(this.doc, this.registry, { backend: "live" });
+    // A persisted graph can reference a node type/port that no longer exists (e.g. a removed or refactored
+    // node) — that must not crash boot, so fall back to the default document if the saved one won't compile.
+    let compiled;
+    try {
+      compiled = compileGraph(this.doc, this.registry, { backend: "live" });
+    } catch (err) {
+      console.warn("[material] persisted graph failed to compile; resetting to default", err);
+      this.doc = createDefaultDocument();
+      compiled = compileGraph(this.doc, this.registry, { backend: "live" });
+    }
     this.material_ = compiled.material;
     this.uniforms = compiled.uniforms;
   }
@@ -473,16 +488,18 @@ export class MaterialGraphController {
   }
 
   private persist(): void {
+    if (this.storageKey === null) return; // persistence disabled (e.g. the floor controller)
     try {
-      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(this.doc));
+      sessionStorage.setItem(this.storageKey, JSON.stringify(this.doc));
     } catch {
       // sessionStorage may be unavailable (private mode / quota) — non-fatal.
     }
   }
 
   private load(): MaterialGraphDocument | null {
+    if (this.storageKey === null) return null;
     try {
-      const raw = sessionStorage.getItem(STORAGE_KEY);
+      const raw = sessionStorage.getItem(this.storageKey);
       if (!raw) return null;
       const parsed = JSON.parse(raw) as MaterialGraphDocument;
       if (parsed.version !== DOC_VERSION || !Array.isArray(parsed.nodes)) return null;

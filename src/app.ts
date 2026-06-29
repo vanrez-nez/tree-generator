@@ -5,6 +5,7 @@ import type { ContainerApi } from "@tweakpane/core";
 import {
   Boxes,
   GitBranch,
+  LayoutGrid,
   Monitor,
   SlidersVertical,
   Sprout,
@@ -113,6 +114,7 @@ const renderer = new WebGPURenderer({
   alpha: true,
 });
 renderer.setPixelRatio(rendererConfig.pixelRatio);
+renderer.toneMapping = THREE.ACESFilmicToneMapping; // default tone mapping (Scene panel can change it live)
 
 const controls = new OrbitControls(camera, sceneCanvas);
 controls.enableDamping = true;
@@ -217,6 +219,12 @@ const mainTabs = pane.addBlade({
       color: "#38bdf8",
     },
     {
+      title: "Floor",
+      tooltip: "Visual floor (independent material)",
+      icon: LayoutGrid,
+      color: "#a3a3a3",
+    },
+    {
       title: "Debug",
       tooltip: "Debug",
       icon: SlidersVertical,
@@ -224,7 +232,7 @@ const mainTabs = pane.addBlade({
     },
   ],
 }) as VerticalTabsApi;
-const [genPage, graphPage, meshPage, texturePage, scenePage, renderPage, debugPage] =
+const [genPage, graphPage, meshPage, texturePage, scenePage, renderPage, floorPage, debugPage] =
   mainTabs.pages;
 
 const graphTabs = graphPage.addTab({
@@ -269,6 +277,20 @@ mainScene.materialController.onRecompile(markPreviewDirty);
 // live procedural vs convertToTexture baked-map compile.
 const triplanarState = { enabled: false, worldPerTile: 1.2, sharpness: 8 };
 const materialState = { backend: "offline" as "live" | "offline", debugNormals: false, preset: DEFAULT_PRESET };
+
+// Visual floor state. The floor has its own material controller (mainScene.floorMaterialController), driven
+// only by preset selection — independent of the tree's node graph. The chosen preset persists by key.
+const FLOOR_PRESET_KEY = "floorPreset";
+const DEFAULT_FLOOR_PRESET = "rock";
+// Fall back to the default if the persisted preset key no longer exists (e.g. a removed preset).
+const storedFloorPreset = localStorage.getItem(FLOOR_PRESET_KEY);
+const floorState = {
+  preset: MATERIAL_PRESETS.some((p) => p.key === storedFloorPreset)
+    ? (storedFloorPreset as string)
+    : DEFAULT_FLOOR_PRESET,
+  visible: true,
+  tiling: 6,
+};
 
 // Direct configuration of the THREE surface material (the MeshPhysicalNodeMaterial the controller binds to
 // the tree), exposed in Texture > Material. These are the renderer-side PBR knobs — distinct from the node
@@ -347,7 +369,7 @@ const sceneState = {
   dirPosition: { ...mainScene.directionalLight.position },
   ambIntensity: mainScene.ambientLight.intensity,
   ambColor: `#${mainScene.ambientLight.color.getHexString()}`,
-  envIntensity: 1,
+  envIntensity: 0.1,
 };
 
 buildGenerationControls(genPage);
@@ -357,6 +379,7 @@ buildRootControls(graphRootsPage);
 buildDebugFolder(debugPage);
 buildSceneControls(scenePage);
 buildRenderControls(renderPage);
+buildFloorControls(floorPage);
 applyTransparentBg(rendererConfig.transparentBg); // reflect the persisted choice on startup
 buildScenePanels();
 // Built once: the mixer persists across tree regeneration and is topology-independent, so its panel
@@ -368,6 +391,10 @@ const materialEditor = new NodeEditorPanel({ appElement: app });
 // callback so group enter/exit navigation can swap the displayed subgraph.
 const rebuildEditor = (): void =>
   materialEditor.open(buildMaterialEditorConfig(mainScene.materialController, rebuildEditor));
+// Same dockable editor, but bound to the FLOOR's separate controller — tuning the floor graph never touches
+// the tree (different controller; the floor one doesn't persist). Opened from the Floor tab.
+const openFloorEditor = (): void =>
+  materialEditor.open(buildMaterialEditorConfig(mainScene.floorMaterialController, openFloorEditor));
 buildTextureLayers();
 
 const timer = new THREE.Timer();
@@ -404,6 +431,13 @@ await renderer.init();
 // The offline backend bakes channels to textures, which needs the renderer — hand it over now that it's
 // initialised (triggers the first offline bake + swaps the surface material).
 mainScene.materialController.attachRenderer(renderer);
+
+// The visual floor: give its controller the renderer too, load the chosen floor preset (independent of the
+// tree's graph), and apply visibility/tiling.
+mainScene.floorMaterialController.attachRenderer(renderer);
+mainScene.floorMaterialController.loadDocument(makePreset(floorState.preset));
+mainScene.setFloorVisible(floorState.visible);
+mainScene.setFloorTiling(floorState.tiling);
 
 // Shared IBL environment: one RoomEnvironment PMREM cubemap drives image-based lighting for every tree
 // (a single shader sample, no per-instance cost), giving soft directional fill + subtle reflections that
@@ -991,6 +1025,29 @@ function buildRenderControls(container: ContainerApi): void {
   });
 }
 
+// Floor tab: the visual ground plane's own material (preset-driven, independent of the tree's node graph),
+// plus visibility and tiling. Selecting a preset loads it into the floor's separate controller only.
+function buildFloorControls(container: ContainerApi): void {
+  const folder = container.addFolder({ title: "Floor", expanded: true });
+  folder
+    .addBinding(floorState, "visible", { label: "visible" })
+    .on("change", (e) => mainScene.setFloorVisible(e.value));
+  folder
+    .addBinding(floorState, "preset", {
+      label: "material",
+      options: Object.fromEntries(MATERIAL_PRESETS.map((p) => [p.label, p.key])),
+    })
+    .on("change", (e) => {
+      mainScene.floorMaterialController.loadDocument(makePreset(e.value));
+      localStorage.setItem(FLOOR_PRESET_KEY, e.value);
+    });
+  folder
+    .addBinding(floorState, "tiling", { label: "tiling", min: 1, max: 24, step: 1 })
+    .on("change", (e) => mainScene.setFloorTiling(e.value));
+  // Open the node editor on the FLOOR's own graph (independent of the tree) so it can be tuned in place.
+  folder.addButton({ title: "Open Floor Node Editor" }).on("click", () => openFloorEditor());
+}
+
 // Scene tab: tone mapping + lighting, one folder per group. Drives the renderer and the lights live.
 function buildSceneControls(container: ContainerApi): void {
   const tone = container.addFolder({ title: "Tone Mapping", expanded: true });
@@ -1319,8 +1376,8 @@ function buildDebugFolder(container: ContainerApi): void {
     surface: true,
     wireframe: false,
     view: "surface" as "surface" | "normals" | "uv",
-    graph: true,
-    helpers: true,
+    graph: false,
+    helpers: false,
     discs: false,
     debugT: 0.5,
     debugPoint: true,
@@ -1340,6 +1397,10 @@ function buildDebugFolder(container: ContainerApi): void {
       options: { Surface: "surface", Normals: "normals", UV: "uv" },
     })
     .on("change", (event) => mainScene.mesher.setDebugView(event.value));
+  // Apply the initial (off) state to the scene — the change handlers only fire on user input, so the
+  // graph overlay and reference helpers would otherwise stay visible despite the unchecked boxes.
+  mainScene.setGraphVisible(debugView.graph);
+  mainScene.setDebugHelpersVisible(debugView.helpers);
   container
     .addBinding(debugView, "graph", { label: "graph" })
     .on("change", (event) => mainScene.setGraphVisible(event.value));

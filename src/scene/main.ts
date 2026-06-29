@@ -28,11 +28,18 @@ export class MainScene {
   // Owns the editable material graph document + the compiled surface material (src/scene/material/graph).
   readonly materialController = new MaterialGraphController();
 
+  // The visual floor: a solid ground plane purely for presentation (not gameplay/collision). It has its OWN
+  // independent material controller (no persistence → never touches the tree's saved graph); the tree owns
+  // the node editor, the floor is driven by preset selection only (Floor tab in app.ts).
+  readonly floorMaterialController = new MaterialGraphController(undefined, null);
+  private floorPlane: THREE.Mesh<THREE.BufferGeometry, THREE.Material>;
+  private floorBaseUv: Float32Array; // unscaled [0,1] uv, kept so the tiling control can re-scale it
+
   // Scene lighting, exposed so the Scene panel can drive intensity/colour live. The flat ambient is kept
   // low — a shared IBL environment (scene.environment, set up in app.ts) provides the fill that gives the
   // tree form, and a strong flat ambient would wash out the baked AO. Directional stays as a cheap key.
-  readonly directionalLight = new THREE.DirectionalLight(0xffffff, 3);
-  readonly ambientLight = new THREE.AmbientLight(0xffffff, 0.15);
+  readonly directionalLight = new THREE.DirectionalLight(0xffffff, 0.3);
+  readonly ambientLight = new THREE.AmbientLight(0xffffff, 0.05);
 
   selectedLineId = "trunk";
 
@@ -76,7 +83,43 @@ export class MainScene {
     this.scene.add(this.directionalLight);
     this.scene.add(this.ambientLight);
 
+    // Visual floor plane, bound to its own material controller (re-pushed on recompile, like the surface).
+    this.floorPlane = this.createFloorPlane();
+    this.floorBaseUv = (this.floorPlane.geometry.getAttribute("uv").array as Float32Array).slice();
+    this.setFloorTiling(6);
+    this.scene.add(this.floorPlane);
+    this.floorMaterialController.onRecompile(() => {
+      this.floorPlane.material = this.floorMaterialController.material;
+    });
+
     this.addDebugInstrumentation();
+  }
+
+  // A large flat plane at ground level, carrying the floor material. UVs are scaled by setFloorTiling so the
+  // material repeats across it; `vertexAo` is filled with 1 (no form occlusion) since the offline surface
+  // material multiplies its AO by that attribute (a plane has none of the tree's baked cavity AO).
+  private createFloorPlane(): THREE.Mesh<THREE.BufferGeometry, THREE.Material> {
+    const geometry = new THREE.PlaneGeometry(24, 24);
+    geometry.rotateX(-Math.PI / 2); // lie flat on the XZ ground plane (faces +Y)
+    const vertexCount = geometry.getAttribute("position").count;
+    geometry.setAttribute("vertexAo", new THREE.Float32BufferAttribute(new Float32Array(vertexCount).fill(1), 1));
+    const mesh = new THREE.Mesh(geometry, this.floorMaterialController.material);
+    mesh.name = "floor";
+    mesh.position.y = -0.01; // just under the debug grid to avoid z-fighting
+    return mesh;
+  }
+
+  // Show/hide the visual floor.
+  setFloorVisible(visible: boolean): void {
+    this.floorPlane.visible = visible;
+  }
+
+  // Repeat the floor material `tiles` times across the plane (scales the uv attribute from the [0,1] base).
+  setFloorTiling(tiles: number): void {
+    const uv = this.floorPlane.geometry.getAttribute("uv");
+    const arr = uv.array as Float32Array;
+    for (let i = 0; i < arr.length; i++) arr[i] = this.floorBaseUv[i] * tiles;
+    uv.needsUpdate = true;
   }
 
   // Debug instrumentation: a ground plane at y = 0 and origin axis helpers (X/Y/Z) for spatial

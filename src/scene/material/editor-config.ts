@@ -71,9 +71,18 @@ function bindParam(
       break;
   }
   binding.on("change", (ev) => {
-    controller.setParam(nodeId, param.key, ev.value);
-    // Live (float/colour) params never change ports; only the others can drive a declare() change.
-    if (onPortsMaybeChanged && param.type !== "float" && param.type !== "color") {
+    let value = ev.value;
+    // Guard against a non-finite edit (e.g. clearing the numeric field) — committing NaN to a param
+    // serialises to invalid WGSL and invalidates the whole shader. Drop back to the default instead.
+    if ((param.type === "int" || param.type === "float") && !Number.isFinite(Number(value))) {
+      value = param.default;
+    }
+    controller.setParam(nodeId, param.key, value);
+    // Only `select` / `bool` params can change a node's ports (every declare() keys off a select: noiseType,
+    // op, feature, operation). Rebuilding the whole editor on numeric edits (int/float) is unnecessary AND
+    // disruptive — it disposes the live Tweakpane mid-edit, snapping sliders (e.g. `scale`) back. Restrict
+    // the port-rebuild to the param types that actually affect ports.
+    if (onPortsMaybeChanged && (param.type === "select" || param.type === "bool")) {
       queueMicrotask(onPortsMaybeChanged);
     }
   });
@@ -120,7 +129,10 @@ function nodeToConfig(
   // the controller.
   const local: Record<string, unknown> = {};
   for (const p of def.params) {
-    const v = node.params[p.key] ?? p.default;
+    let v = node.params[p.key] ?? p.default;
+    // Never surface a non-finite numeric param (a value corrupted to NaN by a transient empty field) in the
+    // control — fall back to the default so the editor neither shows nor re-commits NaN.
+    if ((p.type === "int" || p.type === "float") && !Number.isFinite(Number(v))) v = p.default;
     // vec3 / curve are objects mutated in place by their widgets — deep-copy so edits don't alias
     // node.params before they're committed via setParam.
     local[p.key] =

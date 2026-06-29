@@ -266,7 +266,10 @@ function buildUniforms(def: MaterialNodeDef, node: GraphNode): Record<string, Ma
       const v = (raw ?? { x: 0, y: 0, z: 0 }) as { x: number; y: number; z: number };
       out[p.key] = uniform(new THREE.Vector3(v.x, v.y, v.z));
     } else if (p.type === "float" || p.type === "int") {
-      out[p.key] = uniform(Number(raw));
+      // Coerce non-finite values (e.g. a cleared numeric field → NaN) to the param default, then 0 — a NaN
+      // uniform serialises to invalid WGSL (`NaN.0`) and invalidates the whole shader.
+      const n = Number(raw);
+      out[p.key] = uniform(Number.isFinite(n) ? n : Number(p.default) || 0);
     } else if (p.type === "curve") {
       // 20 floats ([C,R,G,B] × 5 points); build() indexes via .element(). uniformArray.update() copies
       // its `.array` to the GPU each frame, so the controller can mutate it live (no recompile).

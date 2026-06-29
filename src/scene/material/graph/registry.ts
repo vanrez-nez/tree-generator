@@ -7,6 +7,8 @@ import { tileableWarpNode } from "./nodes/vector/tileable-warp";
 import { voronoiNode } from "./nodes/texture/voronoi";
 import { checkerNode } from "./nodes/texture/checker";
 import { tileNode } from "./nodes/texture/tile";
+import { scatterNode } from "./nodes/texture/scatter";
+import { shapeNode } from "./nodes/texture/shape";
 import { gradientNode } from "./nodes/texture/gradient";
 import { waveNode } from "./nodes/texture/wave";
 import { anisotropicStripesNode } from "./nodes/texture/anisotropic-stripes";
@@ -84,6 +86,8 @@ export function createDefaultRegistry(): NodeRegistry {
     .register(voronoiNode)
     .register(checkerNode)
     .register(tileNode)
+    .register(scatterNode)
+    .register(shapeNode)
     .register(gradientNode)
     .register(waveNode)
     .register(anisotropicStripesNode)

@@ -89,9 +89,15 @@ export const tileableNoiseNode: MaterialNodeDef = {
   },
   build(ctx) {
     const coord = (ctx.inputs.coord ?? ctx.coord) as V;
-    const scale = Math.max(1, Math.round(Number(ctx.params.scale ?? 5)));
-    const aspect = Number(ctx.params.aspect ?? 1);
-    const octaves = Math.max(1, Number(ctx.params.octaves ?? 4));
+    // Guard against non-finite params (e.g. an empty numeric field in the editor → NaN): a NaN period
+    // serialises to `NaN.0` in WGSL and invalidates the whole shader, so coerce back to a safe default.
+    const finite = (v: unknown, fallback: number) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : fallback;
+    };
+    const scale = Math.max(1, Math.round(finite(ctx.params.scale, 5)));
+    const aspect = finite(ctx.params.aspect, 1);
+    const octaves = Math.max(1, Math.round(finite(ctx.params.octaves, 4)));
     const noiseType = (ctx.params.noiseType as string) ?? "perlin-fbm";
     const gain = ctx.uniforms.gain as V;
 
