@@ -13,6 +13,7 @@ import { anisotropicStripesNode } from "./nodes/texture/anisotropic-stripes";
 import { mathNode } from "./nodes/converter/math";
 import { levelsNode } from "./nodes/converter/levels";
 import { colorRampNode } from "./nodes/converter/color-ramp";
+import { heightBlendNode } from "./nodes/converter/height-blend";
 import { blendNode } from "./nodes/color/blend";
 import { invertNode } from "./nodes/color/invert";
 import { brightContrastNode } from "./nodes/color/bright-contrast";
@@ -29,6 +30,7 @@ import { normalMapNode } from "./nodes/vector/normal-map";
 import { mappingNode } from "./nodes/vector/mapping";
 import { principledBsdfNode } from "./nodes/shader/principled-bsdf";
 import { emissionNode } from "./nodes/shader/emission";
+import { mixShaderNode } from "./nodes/shader/mix-shader";
 import { materialOutputNode } from "./nodes/output/material-output";
 import { groupNode, groupInputNode, groupOutputNode } from "./nodes/group/group";
 
@@ -88,6 +90,7 @@ export function createDefaultRegistry(): NodeRegistry {
     .register(mathNode)
     .register(levelsNode)
     .register(colorRampNode)
+    .register(heightBlendNode)
     .register(blendNode)
     .register(invertNode)
     .register(brightContrastNode)
@@ -108,6 +111,7 @@ export function createDefaultRegistry(): NodeRegistry {
     .register(mappingNode)
     .register(principledBsdfNode)
     .register(emissionNode)
+    .register(mixShaderNode)
     .register(materialOutputNode)
     .register(groupNode)
     .register(groupInputNode)

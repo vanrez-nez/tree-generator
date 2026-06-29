@@ -12,8 +12,12 @@ const BAKE_SIZE = 1024;
 // Anisotropic-filter taps for the baked channel textures. 8 is well within every desktop GPU's cap (≥16)
 // and kills the grazing-angle normal-map shimmer; the driver clamps to its own max if lower.
 const MAX_ANISOTROPY = 8;
-// Channels baked for the surface: the four scalar/colour maps + the tangent-space normal map.
-const SURFACE_CHANNELS: PbrSocket[] = ["baseColor", "roughness", "metallic", "ambientOcclusion", "normal"];
+// Channels baked for the surface: the scalar/colour maps, the tangent-space normal map, and emission.
+// Emission bakes to an sRGB LDR texture (RGBA8), so emission color×strength is clamped to [0,1] — fine for
+// glow masks; HDR strengths >1 would need a float RT (use the live backend for those).
+const SURFACE_CHANNELS: PbrSocket[] = [
+  "baseColor", "roughness", "metallic", "ambientOcclusion", "normal", "emission",
+];
 
 // The OFFLINE surface material. The node graph is rendered once to per-channel textures (GPU-resident
 // RenderTargets); the surface samples them via world-space triplanar projection + stock PBR lighting — the
@@ -158,7 +162,8 @@ export class OfflineMaterial {
     const vAo = attribute("vertexAo", "float");
     m.aoNode = present.has("ambientOcclusion") ? sample("ambientOcclusion").r.mul(vAo) : vAo;
     m.normalNode = present.has("normal") ? shadingNormal : null;
-    m.emissiveNode = null;
+    // Emission: sample the baked emission map (sRGB → linearised by the sampler). LDR (clamped [0,1]).
+    m.emissiveNode = present.has("emission") ? sample("emission") : null;
     m.needsUpdate = true;
   }
 
