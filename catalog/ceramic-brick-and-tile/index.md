@@ -1,10 +1,209 @@
 # Ceramic, Brick, and Tile
 
-- [Terracotta](./terracotta.md)
-- [Glazed Ceramic](./glazed-ceramic.md)
-- [Porcelain](./porcelain.md)
-- [Brick](./brick.md)
-- [Old Brick](./old-brick.md)
-- [Roof Tile](./roof-tile.md)
-- [Mosaic Tile](./mosaic-tile.md)
-- [Cracked Tile](./cracked-tile.md)
+Each material family is split into variant folders. Every variant folder contains `material.md` for the procedural generation task and `reference.png` for the visual target used during handoff and review.
+
+- [Brick](./brick/)
+- [Cracked Tile](./cracked-tile/)
+- [Glazed Ceramic](./glazed-ceramic/)
+- [Mosaic Tile](./mosaic-tile/)
+- [Old Brick](./old-brick/)
+- [Porcelain](./porcelain/)
+- [Roof Tile](./roof-tile/)
+- [Terracotta](./terracotta/)
+
+## Poly Haven Derived Variants
+
+- [Anti Skid Tiles](./anti-skid-tiles/material.md) - Poly Haven `anti_skid_tiles`
+- [Bitumen](./bitumen/material.md) - Poly Haven `bitumen`
+- [Blue Floor Tiles 01](./blue-floor-tiles-01/material.md) - Poly Haven `blue_floor_tiles_01`
+- [Brick 4](./brick-4/material.md) - Poly Haven `brick_4`
+- [Brick Crosswalk](./brick-crosswalk/material.md) - Poly Haven `brick_crosswalk`
+- [Brick Floor](./brick-floor/material.md) - Poly Haven `brick_floor`
+- [Brick Floor 002](./t-brick-floor-002/material.md) - Poly Haven `t_brick_floor_002`
+- [Brick Floor 003](./brick-floor-003/material.md) - Poly Haven `brick_floor_003`
+- [Brick Floor 02](./brick-floor-02/material.md) - Poly Haven `brick_floor_02`
+- [Brick Gravel](./brick-gravel/material.md) - Poly Haven `brick_gravel`
+- [Brick Moss 001](./brick-moss-001/material.md) - Poly Haven `brick_moss_001`
+- [Brick Pavement](./brick-pavement/material.md) - Poly Haven `brick_pavement`
+- [Brick Pavement 02](./brick-pavement-02/material.md) - Poly Haven `brick_pavement_02`
+- [Brick Pavement 03](./brick-pavement-03/material.md) - Poly Haven `brick_pavement_03`
+- [Brick Villa Floor](./brick-villa-floor/material.md) - Poly Haven `brick_villa_floor`
+- [Brick Wall 001](./brick-wall-001/material.md) - Poly Haven `brick_wall_001`
+- [Brick Wall 003](./brick-wall-003/material.md) - Poly Haven `brick_wall_003`
+- [Brick Wall 005](./brick-wall-005/material.md) - Poly Haven `brick_wall_005`
+- [Brick Wall 006](./brick-wall-006/material.md) - Poly Haven `brick_wall_006`
+- [Brick Wall 02](./brick-wall-02/material.md) - Poly Haven `brick_wall_02`
+- [Brick Wall 04](./brick-wall-04/material.md) - Poly Haven `brick_wall_04`
+- [Brick Wall 07](./brick-wall-07/material.md) - Poly Haven `brick_wall_07`
+- [Brick Wall 08](./brick-wall-08/material.md) - Poly Haven `brick_wall_08`
+- [Brick Wall 09](./brick-wall-09/material.md) - Poly Haven `brick_wall_09`
+- [Brick Wall 10](./brick-wall-10/material.md) - Poly Haven `brick_wall_10`
+- [Brick Wall 11](./brick-wall-11/material.md) - Poly Haven `brick_wall_11`
+- [Brick Wall 12](./brick-wall-12/material.md) - Poly Haven `brick_wall_12`
+- [Brick Wall 13](./brick-wall-13/material.md) - Poly Haven `brick_wall_13`
+- [Broken Brick Wall](./broken-brick-wall/material.md) - Poly Haven `broken_brick_wall`
+- [Brown Brick 02](./brown-brick-02/material.md) - Poly Haven `brown_brick_02`
+- [Brown Floor Tilles](./brown-floor-tiles/material.md) - Poly Haven `brown_floor_tiles`
+- [Castle Brick 01](./castle-brick-01/material.md) - Poly Haven `castle_brick_01`
+- [Castle Brick 02 Red](./castle-brick-02-red/material.md) - Poly Haven `castle_brick_02_red`
+- [Castle Brick 02 White](./castle-brick-02-white/material.md) - Poly Haven `castle_brick_02_white`
+- [Castle Brick 07](./castle-brick-07/material.md) - Poly Haven `castle_brick_07`
+- [Castle Brick Broken 06](./castle-brick-broken-06/material.md) - Poly Haven `castle_brick_broken_06`
+- [Ceramic Roof 01](./ceramic-roof-01/material.md) - Poly Haven `ceramic_roof_01`
+- [Checkered Pavement Tiles](./checkered-pavement-tiles/material.md) - Poly Haven `checkered_pavement_tiles`
+- [Church Bricks 02](./church-bricks-02/material.md) - Poly Haven `church_bricks_02`
+- [Church Bricks 03](./church-bricks-03/material.md) - Poly Haven `church_bricks_03`
+- [Clay Roof Tiles](./clay-roof-tiles/material.md) - Poly Haven `clay_roof_tiles`
+- [Clay Roof Tiles 02](./clay-roof-tiles-02/material.md) - Poly Haven `clay_roof_tiles_02`
+- [Clay Roof Tiles 03](./clay-roof-tiles-03/material.md) - Poly Haven `clay_roof_tiles_03`
+- [Concrete Brick Wall 001](./concrete-brick-wall-001/material.md) - Poly Haven `concrete_brick_wall_001`
+- [Concrete Tile Facade](./concrete-tile-facade/material.md) - Poly Haven `concrete_tile_facade`
+- [Concrete Tiles](./concrete-tiles/material.md) - Poly Haven `concrete_tiles`
+- [Concrete Tiles 02](./concrete-tiles-02/material.md) - Poly Haven `concrete_tiles_02`
+- [Concrete Wall 002](./t-concrete-wall-002/material.md) - Poly Haven `t_concrete_wall_002`
+- [Cracked Concrete Wall](./cracked-concrete-wall/material.md) - Poly Haven `cracked_concrete_wall`
+- [Damaged Plaster](./damaged-plaster/material.md) - Poly Haven `damaged_plaster`
+- [Dark Brick Wall](./dark-brick-wall/material.md) - Poly Haven `dark_brick_wall`
+- [Dirty Tiles](./dirty-tiles/material.md) - Poly Haven `dirty_tiles`
+- [Double Brick Floor](./double-brick-floor/material.md) - Poly Haven `double_brick_floor`
+- [Exterior Wall Cladding](./exterior-wall-cladding/material.md) - Poly Haven `exterior_wall_cladding`
+- [Exterior Wall Cladding 02](./exterior-wall-cladding-02/material.md) - Poly Haven `exterior_wall_cladding_02`
+- [Factory Brick](./factory-brick/material.md) - Poly Haven `factory_brick`
+- [Floor Bricks 02](./floor-bricks-02/material.md) - Poly Haven `floor_bricks_02`
+- [Floor Klinkers 01](./floor-klinkers-01/material.md) - Poly Haven `floor_klinkers_01`
+- [Floor Klinkers 04](./floor-klinkers-04/material.md) - Poly Haven `floor_klinkers_04`
+- [Floor Pavement](./floor-pavement/material.md) - Poly Haven `floor_pavement`
+- [Floor Tiles 02](./floor-tiles-02/material.md) - Poly Haven `floor_tiles_02`
+- [Floor Tiles 04](./floor-tiles-04/material.md) - Poly Haven `floor_tiles_04`
+- [Floor Tiles 06](./floor-tiles-06/material.md) - Poly Haven `floor_tiles_06`
+- [Floor Tiles 08](./floor-tiles-08/material.md) - Poly Haven `floor_tiles_08`
+- [Floor Tiles 09](./floor-tiles-09/material.md) - Poly Haven `floor_tiles_09`
+- [Granite Tile](./granite-tile/material.md) - Poly Haven `granite_tile`
+- [Granite Tile 02](./granite-tile-02/material.md) - Poly Haven `granite_tile_02`
+- [Granite Tile 03](./granite-tile-03/material.md) - Poly Haven `granite_tile_03`
+- [Granite Tile 04](./granite-tile-04/material.md) - Poly Haven `granite_tile_04`
+- [Grey Cartago 01](./grey-cartago-01/material.md) - Poly Haven `grey_cartago_01`
+- [Grey Cartago 02](./grey-cartago-02/material.md) - Poly Haven `grey_cartago_02`
+- [Grey Cartago 03](./grey-cartago-03/material.md) - Poly Haven `grey_cartago_03`
+- [Grey Roof 01](./grey-roof-01/material.md) - Poly Haven `grey_roof_01`
+- [Grey Roof Tiles](./grey-roof-tiles/material.md) - Poly Haven `grey_roof_tiles`
+- [Grey Roof Tiles 02](./grey-roof-tiles-02/material.md) - Poly Haven `grey_roof_tiles_02`
+- [Grey Tiles](./grey-tiles/material.md) - Poly Haven `grey_tiles`
+- [Herringbone Brick](./herringbone-brick/material.md) - Poly Haven `herringbone_brick`
+- [Herringbone Brick 02](./herringbone-brick-02/material.md) - Poly Haven `herringbone_brick_02`
+- [Herringbone Brick 03](./herringbone-brick-03/material.md) - Poly Haven `herringbone_brick_03`
+- [Herringbone Concrete Tile](./herringbone-concrete-tile/material.md) - Poly Haven `herringbone_concrete_tile`
+- [Herringbone Concrete Tile 02](./herringbone-concrete-tile-02/material.md) - Poly Haven `herringbone_concrete_tile_02`
+- [Herringbone Pavement](./herringbone-pavement/material.md) - Poly Haven `herringbone_pavement`
+- [Herringbone Pavement 03](./herringbone-pavement-03/material.md) - Poly Haven `herringbone_pavement_03`
+- [Hexagonal Concrete Paving](./hexagonal-concrete-paving/material.md) - Poly Haven `hexagonal_concrete_paving`
+- [Interior Tiles](./interior-tiles/material.md) - Poly Haven `interior_tiles`
+- [Large Floor Tiles 02](./large-floor-tiles-02/material.md) - Poly Haven `large_floor_tiles_02`
+- [Large Grey Tiles](./large-grey-tiles/material.md) - Poly Haven `large_grey_tiles`
+- [Large Red Bricks](./large-red-bricks/material.md) - Poly Haven `large_red_bricks`
+- [Large Sandstone Blocks 01](./large-sandstone-blocks-01/material.md) - Poly Haven `large_sandstone_blocks_01`
+- [Large Square Pattern 01](./large-square-pattern-01/material.md) - Poly Haven `large_square_pattern_01`
+- [Long White Tiles](./long-white-tiles/material.md) - Poly Haven `long_white_tiles`
+- [Marble 01](./marble-01/material.md) - Poly Haven `marble_01`
+- [Marble Mosaic Tiles](./marble-mosaic-tiles/material.md) - Poly Haven `marble_mosaic_tiles`
+- [Marble Tiles](./marble-tiles/material.md) - Poly Haven `marble_tiles`
+- [Medieval Blocks 03](./medieval-blocks-03/material.md) - Poly Haven `medieval_blocks_03`
+- [Medieval Red Brick](./medieval-red-brick/material.md) - Poly Haven `medieval_red_brick`
+- [Mixed Brick Wall](./mixed-brick-wall/material.md) - Poly Haven `mixed_brick_wall`
+- [Mixed Rock Tiles](./mixed-rock-tiles/material.md) - Poly Haven `mixed_rock_tiles`
+- [Mixed Stone Tiles](./mixed-stone-tiles/material.md) - Poly Haven `mixed_stone_tiles`
+- [Mossy Brick](./mossy-brick/material.md) - Poly Haven `mossy_brick`
+- [Mossy Brick Floor](./mossy-brick-floor/material.md) - Poly Haven `mossy_brick_floor`
+- [Old Linoleum Flooring 01](./old-linoleum-flooring-01/material.md) - Poly Haven `old_linoleum_flooring_01`
+- [Old Mosaic Floor](./old-mosaic-floor/material.md) - Poly Haven `old_mosaic_floor`
+- [Painted Brick](./painted-brick/material.md) - Poly Haven `painted_brick`
+- [Painted Worn Brick](./painted-worn-brick/material.md) - Poly Haven `painted_worn_brick`
+- [Patio Tiles](./patio-tiles/material.md) - Poly Haven `patio_tiles`
+- [Patterned Brick Floor](./patterned-brick-floor/material.md) - Poly Haven `patterned_brick_floor`
+- [Patterned Brick Floor 02](./patterned-brick-floor-02/material.md) - Poly Haven `patterned_brick_floor_02`
+- [Patterned Brick Floor 03](./patterned-brick-floor-03/material.md) - Poly Haven `patterned_brick_floor_03`
+- [Patterned Brick Wall](./patterned-brick-wall/material.md) - Poly Haven `patterned_brick_wall`
+- [Patterned Brick Wall 02](./patterned-brick-wall-02/material.md) - Poly Haven `patterned_brick_wall_02`
+- [Patterned Brick Wall 03](./patterned-brick-wall-03/material.md) - Poly Haven `patterned_brick_wall_03`
+- [Patterned Cobblestone](./patterned-cobblestone/material.md) - Poly Haven `patterned_cobblestone`
+- [Patterned Slate Tiles](./patterned-slate-tiles/material.md) - Poly Haven `patterned_slate_tiles`
+- [Pavement 03](./pavement-03/material.md) - Poly Haven `pavement_03`
+- [Pavement 04](./pavement-04/material.md) - Poly Haven `pavement_04`
+- [Pavement 05](./pavement-05/material.md) - Poly Haven `pavement_05`
+- [Pavement 06](./pavement-06/material.md) - Poly Haven `pavement_06`
+- [Pebble Bricks](./pebble-bricks/material.md) - Poly Haven `pebble_bricks`
+- [Plaster Brick 01](./plaster-brick-01/material.md) - Poly Haven `plaster_brick_01`
+- [Plaster Brick Pattern](./plaster-brick-pattern/material.md) - Poly Haven `plaster_brick_pattern`
+- [Random Bricks Thick](./random-bricks-thick/material.md) - Poly Haven `random_bricks_thick`
+- [Rectangular Facade Tiles](./rectangular-facade-tiles/material.md) - Poly Haven `rectangular_facade_tiles`
+- [Rectangular Facade Tiles 02](./rectangular-facade-tiles-02/material.md) - Poly Haven `rectangular_facade_tiles_02`
+- [Recycled Brick Floor](./recycled-brick-floor/material.md) - Poly Haven `recycled_brick_floor`
+- [Red Brick](./red-brick/material.md) - Poly Haven `red_brick`
+- [Red Brick 03](./red-brick-03/material.md) - Poly Haven `red_brick_03`
+- [Red Brick Pavers](./red-brick-pavers/material.md) - Poly Haven `red_brick_pavers`
+- [Red Brick Plaster Patch 02](./red-brick-plaster-patch-02/material.md) - Poly Haven `red_brick_plaster_patch_02`
+- [Red Bricks 02](./red-bricks-02/material.md) - Poly Haven `red_bricks_02`
+- [Red Bricks 04](./red-bricks-04/material.md) - Poly Haven `red_bricks_04`
+- [Red Sandstone Tiles](./red-sandstone-tiles/material.md) - Poly Haven `red_sandstone_tiles`
+- [Red Slate Roof Tiles 01](./red-slate-roof-tiles-01/material.md) - Poly Haven `red_slate_roof_tiles_01`
+- [Reed Roof 03](./reed-roof-03/material.md) - Poly Haven `reed_roof_03`
+- [Reed Roof 04](./reed-roof-04/material.md) - Poly Haven `reed_roof_04`
+- [Riet 01](./riet-01/material.md) - Poly Haven `riet_01`
+- [Rock Embedded Tiles](./rock-embedded-tiles/material.md) - Poly Haven `rock_embedded_tiles`
+- [Rock Tile Floor](./rock-tile-floor/material.md) - Poly Haven `rock_tile_floor`
+- [Rock Tile Floor 02](./rock-tile-floor-02/material.md) - Poly Haven `rock_tile_floor_02`
+- [Roof 07](./roof-07/material.md) - Poly Haven `roof_07`
+- [Roof 09](./roof-09/material.md) - Poly Haven `roof_09`
+- [Roof 3](./roof-3/material.md) - Poly Haven `roof_3`
+- [Roof Slates 02](./roof-slates-02/material.md) - Poly Haven `roof_slates_02`
+- [Roof Slates 03](./roof-slates-03/material.md) - Poly Haven `roof_slates_03`
+- [Roof Tiles](./roof-tiles/material.md) - Poly Haven `roof_tiles`
+- [Roof Tiles 14](./roof-tiles-14/material.md) - Poly Haven `roof_tiles_14`
+- [Rough Block Wall](./rough-block-wall/material.md) - Poly Haven `rough_block_wall`
+- [Rough Plaster 03](./rough-plaster-03/material.md) - Poly Haven `rough_plaster_03`
+- [Rough Plaster Brick](./rough-plaster-brick/material.md) - Poly Haven `rough_plaster_brick`
+- [Rough Plaster Brick 02](./rough-plaster-brick-02/material.md) - Poly Haven `rough_plaster_brick_02`
+- [Rough Plaster Brick 04](./rough-plaster-brick-04/material.md) - Poly Haven `rough_plaster_brick_04`
+- [Rough Plasterbrick 05](./rough-plasterbrick-05/material.md) - Poly Haven `rough_plasterbrick_05`
+- [Rounded Square Tiled Wall](./rounded-square-tiled-wall/material.md) - Poly Haven `rounded_square_tiled_wall`
+- [Rubber Tiles](./rubber-tiles/material.md) - Poly Haven `rubber_tiles`
+- [Sandstone Blocks 04](./sandstone-blocks-04/material.md) - Poly Haven `sandstone_blocks_04`
+- [Sandstone Blocks 05](./sandstone-blocks-05/material.md) - Poly Haven `sandstone_blocks_05`
+- [Sandstone Brick Wall 01](./sandstone-brick-wall-01/material.md) - Poly Haven `sandstone_brick_wall_01`
+- [Seaworn Sandstone Brick](./seaworn-sandstone-brick/material.md) - Poly Haven `seaworn_sandstone_brick`
+- [Seaworn Stone Tiles](./seaworn-stone-tiles/material.md) - Poly Haven `seaworn_stone_tiles`
+- [Short Bricks Floor](./short-bricks-floor/material.md) - Poly Haven `short_bricks_floor`
+- [Slab Tiles](./slab-tiles/material.md) - Poly Haven `slab_tiles`
+- [Slumped Mortar Brick](./slumped-mortar-brick/material.md) - Poly Haven `slumped_mortar_brick`
+- [Square Brick Paving](./square-brick-paving/material.md) - Poly Haven `square_brick_paving`
+- [Square Concrete Pavers](./square-concrete-pavers/material.md) - Poly Haven `square_concrete_pavers`
+- [Square Floor](./square-floor/material.md) - Poly Haven `square_floor`
+- [Square Floor Patern 01](./square-floor-patern-01/material.md) - Poly Haven `square_floor_patern_01`
+- [Square Tiled Wall](./square-tiled-wall/material.md) - Poly Haven `square_tiled_wall`
+- [Square Tiles](./square-tiles/material.md) - Poly Haven `square_tiles`
+- [Square Tiles 02](./square-tiles-02/material.md) - Poly Haven `square_tiles_02`
+- [Square Tiles 03](./square-tiles-03/material.md) - Poly Haven `square_tiles_03`
+- [Stenciled Brick Floor](./stenciled-brick-floor/material.md) - Poly Haven `stenciled_brick_floor`
+- [Stone Brick Wall 001](./stone-brick-wall-001/material.md) - Poly Haven `stone_brick_wall_001`
+- [Stone Embedded Tiles](./stone-embedded-tiles/material.md) - Poly Haven `stone_embedded_tiles`
+- [Stone Tile Wall](./stone-tile-wall/material.md) - Poly Haven `stone_tile_wall`
+- [Stone Tiles](./stone-tiles/material.md) - Poly Haven `stone_tiles`
+- [Stone Tiles 02](./stone-tiles-02/material.md) - Poly Haven `stone_tiles_02`
+- [Stone Tiles 03](./stone-tiles-03/material.md) - Poly Haven `stone_tiles_03`
+- [Terracotta Floor Tiles](./terracotta-floor-tiles/material.md) - Poly Haven `terracotta_floor_tiles`
+- [Terrazzo Tiles](./terrazzo-tiles/material.md) - Poly Haven `terrazzo_tiles`
+- [Thatch Roof Angled](./thatch-roof-angled/material.md) - Poly Haven `thatch_roof_angled`
+- [Tiled Floor 001](./tiled-floor-001/material.md) - Poly Haven `tiled_floor_001`
+- [Volcanic Rock Tiles](./volcanic-rock-tiles/material.md) - Poly Haven `volcanic_rock_tiles`
+- [Wall Bricks Plaster](./wall-bricks-plaster/material.md) - Poly Haven `wall_bricks_plaster`
+- [White Bricks](./white-bricks/material.md) - Poly Haven `white_bricks`
+- [White Sandstone Blocks 02](./white-sandstone-blocks-02/material.md) - Poly Haven `white_sandstone_blocks_02`
+- [White Sandstone Bricks](./white-sandstone-bricks/material.md) - Poly Haven `white_sandstone_bricks`
+- [White Sandstone Bricks 03](./white-sandstone-bricks-03/material.md) - Poly Haven `white_sandstone_bricks_03`
+- [Whitewashed Brick](./whitewashed-brick/material.md) - Poly Haven `whitewashed_brick`
+- [Worn Brick Floor](./worn-brick-floor/material.md) - Poly Haven `worn_brick_floor`
+- [Worn Brick Path](./worn-brick-path/material.md) - Poly Haven `worn_brick_path`
+- [Worn Brick Wall](./worn-brick-wall/material.md) - Poly Haven `worn_brick_wall`
+- [Worn Tile Floor](./worn-tile-floor/material.md) - Poly Haven `worn_tile_floor`
+- [Yellow Brick](./yellow-brick/material.md) - Poly Haven `yellow_brick`
+- [Yellow Bricks](./yellow-bricks/material.md) - Poly Haven `yellow_bricks`

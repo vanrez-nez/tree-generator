@@ -1,17 +1,115 @@
 # Wood and Bark
 
-- [Oak](./oak.md)
-- [Pine](./pine.md)
-- [Walnut](./walnut.md)
-- [Birch](./birch.md)
-- [Mahogany](./mahogany.md)
-- [Bamboo](./bamboo.md)
-- [Plywood](./plywood.md)
-- [End Grain](./end-grain.md)
-- [Painted Wood](./painted-wood.md)
-- [Charred Wood](./charred-wood.md)
-- [Wet Wood](./wet-wood.md)
-- [Rotten Wood](./rotten-wood.md)
-- [Cork](./cork.md)
-- [Rough Bark](./rough-bark.md)
-- [Peeling Bark](./peeling-bark.md)
+- [Bamboo](./bamboo/material.md)
+- [Birch](./birch/material.md)
+- [Charred Wood](./charred-wood/material.md)
+- [Cork](./cork/material.md)
+- [End Grain](./end-grain/material.md)
+- [Mahogany](./mahogany/material.md)
+- [Oak](./oak/material.md)
+- [Painted Wood](./painted-wood/material.md)
+- [Peeling Bark](./peeling-bark/material.md)
+- [Pine](./pine/material.md)
+- [Plywood](./plywood-core/material.md)
+- [Rotten Wood](./rotten-wood/material.md)
+- [Rough Bark](./rough-bark/material.md)
+- [Walnut](./walnut/material.md)
+- [Wet Wood](./wet-wood/material.md)
+
+
+## Poly Haven Derived Variants
+
+- [Aerial Wood Snips](./aerial-wood-snips/material.md) - Poly Haven `aerial_wood_snips`
+- [Bark Blue gum](./bark-bluegum/material.md) - Poly Haven `bark_bluegum`
+- [Bark Brown 01](./bark-brown-01/material.md) - Poly Haven `bark_brown_01`
+- [Bark Brown 02](./bark-brown-02/material.md) - Poly Haven `bark_brown_02`
+- [Bark Platanus](./bark-platanus/material.md) - Poly Haven `bark_platanus`
+- [Bark Willow](./bark-willow/material.md) - Poly Haven `bark_willow`
+- [Bark Willow 02](./bark-willow-02/material.md) - Poly Haven `bark_willow_02`
+- [Beam Wall 01](./beam-wall-01/material.md) - Poly Haven `beam_wall_01`
+- [Black Painted Planks](./black-painted-planks/material.md) - Poly Haven `black_painted_planks`
+- [Blue Painted Planks](./blue-painted-planks/material.md) - Poly Haven `blue_painted_planks`
+- [Brown Planks 03](./brown-planks-03/material.md) - Poly Haven `brown_planks_03`
+- [Brown Planks 04](./brown-planks-04/material.md) - Poly Haven `brown_planks_04`
+- [Brown Planks 05](./brown-planks-05/material.md) - Poly Haven `brown_planks_05`
+- [Brown Planks 07](./brown-planks-07/material.md) - Poly Haven `brown_planks_07`
+- [Brown Planks 08](./brown-planks-08/material.md) - Poly Haven `brown_planks_08`
+- [Brown Planks 09](./brown-planks-09/material.md) - Poly Haven `brown_planks_09`
+- [Chinese Cedar Bark](./chinese-cedar-bark/material.md) - Poly Haven `chinese_cedar_bark`
+- [Chinese Hackberry Bark](./chinese-hackberry-bark/material.md) - Poly Haven `chinese_hackberry_bark`
+- [Dark Planks](./dark-planks/material.md) - Poly Haven `dark_planks`
+- [Dark Wood](./dark-wood/material.md) - Poly Haven `dark_wood`
+- [Dark Wooden Planks](./dark-wooden-planks/material.md) - Poly Haven `dark_wooden_planks`
+- [Diagonal Parquet](./diagonal-parquet/material.md) - Poly Haven `diagonal_parquet`
+- [Distressed Painted Planks](./distressed-painted-planks/material.md) - Poly Haven `distressed_painted_planks`
+- [Fine Grained Wood](./fine-grained-wood/material.md) - Poly Haven `fine_grained_wood`
+- [Green Rough Planks](./green-rough-planks/material.md) - Poly Haven `green_rough_planks`
+- [Herringbone Parquet](./herringbone-parquet/material.md) - Poly Haven `herringbone_parquet`
+- [Japanese Camphor Bark](./japanese-camphor-bark/material.md) - Poly Haven `japanese_camphor_bark`
+- [Japanese Cedar Bark](./japanese-cedar-bark/material.md) - Poly Haven `japanese_cedar_bark`
+- [Japanese Hackberry Bark](./japanese-hackberry-bark/material.md) - Poly Haven `japanese_hackberry_bark`
+- [Japanese Sycamore](./japanese-sycamore/material.md) - Poly Haven `japanese_sycamore`
+- [Japanese Zelkova Bark](./japanese-zelkova-bark/material.md) - Poly Haven `japanese_zelkova_bark`
+- [Jolcham Oak Bark 01](./jolcham-oak-bark-01/material.md) - Poly Haven `jolcham_oak_bark_01`
+- [Kitchen Wood](./kitchen-wood/material.md) - Poly Haven `kitchen_wood`
+- [Knotted Pine Bark](./knotted-pine-bark/material.md) - Poly Haven `knotted_pine_bark`
+- [Laminate Floor](./laminate-floor/material.md) - Poly Haven `laminate_floor`
+- [Laminate Floor 02](./laminate-floor-02/material.md) - Poly Haven `laminate_floor_02`
+- [Laminate Floor 03](./laminate-floor-03/material.md) - Poly Haven `laminate_floor_03`
+- [Linoleum Brown](./linoleum-brown/material.md) - Poly Haven `linoleum_brown`
+- [Medieval Wood](./medieval-wood/material.md) - Poly Haven `medieval_wood`
+- [Metasequoia Bark](./metasequoia-bark/material.md) - Poly Haven `metasequoia_bark`
+- [Moss Wood](./moss-wood/material.md) - Poly Haven `moss_wood`
+- [Oak Veneer 01](./oak-veneer-01/material.md) - Poly Haven `oak_veneer_01`
+- [Old Planks 02](./old-planks-02/material.md) - Poly Haven `old_planks_02`
+- [Old Wood Floor](./old-wood-floor/material.md) - Poly Haven `old_wood_floor`
+- [Oriented Strand Board](./oriented-strand-board/material.md) - Poly Haven `oriented_strand_board`
+- [Palm Bark](./palm-bark/material.md) - Poly Haven `palm_bark`
+- [Palm Tree Bark](./palm-tree-bark/material.md) - Poly Haven `palm_tree_bark`
+- [Pine Bark](./pine-bark/material.md) - Poly Haven `pine_bark`
+- [Plank Flooring](./plank-flooring/material.md) - Poly Haven `plank_flooring`
+- [Plank Flooring 02](./plank-flooring-02/material.md) - Poly Haven `plank_flooring_02`
+- [Plank Flooring 03](./plank-flooring-03/material.md) - Poly Haven `plank_flooring_03`
+- [Plank Flooring 04](./plank-flooring-04/material.md) - Poly Haven `plank_flooring_04`
+- [Planks Brown 10](./planks-brown-10/material.md) - Poly Haven `planks_brown_10`
+- [Plywood](./plywood/material.md) - Poly Haven `plywood`
+- [Raw Plank Wall](./raw-plank-wall/material.md) - Poly Haven `raw_plank_wall`
+- [Rectangular Parquet](./rectangular-parquet/material.md) - Poly Haven `rectangular_parquet`
+- [Rosewood Veneer1](./rosewood-veneer1/material.md) - Poly Haven `rosewood_veneer1`
+- [Rough Pine Door](./rough-pine-door/material.md) - Poly Haven `rough_pine_door`
+- [Rough Wood](./rough-wood/material.md) - Poly Haven `rough_wood`
+- [Sakura Bark](./sakura-bark/material.md) - Poly Haven `sakura_bark`
+- [Stained Pine](./stained-pine/material.md) - Poly Haven `stained_pine`
+- [Synthetic Wood](./synthetic-wood/material.md) - Poly Haven `synthetic_wood`
+- [Tree Bark 03](./tree-bark-03/material.md) - Poly Haven `tree_bark_03`
+- [Trident Maple Bark](./trident-maple-bark/material.md) - Poly Haven `trident_maple_bark`
+- [Weathered Brown Planks](./weathered-brown-planks/material.md) - Poly Haven `weathered_brown_planks`
+- [Weathered Planks](./weathered-planks/material.md) - Poly Haven `weathered_planks`
+- [Wood Cabinet Worn Long](./wood-cabinet-worn-long/material.md) - Poly Haven `wood_cabinet_worn_long`
+- [Wood Chip Path](./wood-chip-path/material.md) - Poly Haven `wood_chip_path`
+- [Wood Chips](./wood-chips/material.md) - Poly Haven `wood_chips`
+- [Wood Floor](./wood-floor/material.md) - Poly Haven `wood_floor`
+- [Wood Floor Deck](./wood-floor-deck/material.md) - Poly Haven `wood_floor_deck`
+- [Wood Floor Worn](./wood-floor-worn/material.md) - Poly Haven `wood_floor_worn`
+- [Wood Inlaid Concrete Wall](./wood-inlaid-concrete-wall/material.md) - Poly Haven `wood_inlaid_concrete_wall`
+- [Wood Inlaid Stone Wall](./wood-inlaid-stone-wall/material.md) - Poly Haven `wood_inlaid_stone_wall`
+- [Wood Peeling Paint Weathered](./wood-peeling-paint-weathered/material.md) - Poly Haven `wood_peeling_paint_weathered`
+- [Wood Plank Wall](./wood-plank-wall/material.md) - Poly Haven `wood_plank_wall`
+- [Wood Planks](./wood-planks/material.md) - Poly Haven `wood_planks`
+- [Wood Planks Dirt](./wood-planks-dirt/material.md) - Poly Haven `wood_planks_dirt`
+- [Wood Planks Grey](./wood-planks-grey/material.md) - Poly Haven `wood_planks_grey`
+- [Wood Shutter](./wood-shutter/material.md) - Poly Haven `wood_shutter`
+- [Wood Stone Pathway](./wood-stone-pathway/material.md) - Poly Haven `wood_stone_pathway`
+- [Wood Table](./wood-table/material.md) - Poly Haven `wood_table`
+- [Wood Table 001](./wood-table-001/material.md) - Poly Haven `wood_table_001`
+- [Wood Table Worn](./wood-table-worn/material.md) - Poly Haven `wood_table_worn`
+- [Wood Textured Concrete](./wood-textured-concrete/material.md) - Poly Haven `wood_textured_concrete`
+- [Wood Trunk Wall](./wood-trunk-wall/material.md) - Poly Haven `wood_trunk_wall`
+- [Wooden Garage Door](./wooden-garage-door/material.md) - Poly Haven `wooden_garage_door`
+- [Wooden Gate](./wooden-gate/material.md) - Poly Haven `wooden_gate`
+- [Wooden Panels](./wooden-panels/material.md) - Poly Haven `wooden_panels`
+- [Wooden Planks](./wooden-planks/material.md) - Poly Haven `wooden_planks`
+- [Wooden Rough Planks](./wooden-rough-planks/material.md) - Poly Haven `wooden_rough_planks`
+- [Worn Planks](./worn-planks/material.md) - Poly Haven `worn_planks`
+- [Yellow Flower Mulch](./yellow-flower-mulch/material.md) - Poly Haven `yellow_flower_mulch`
+- [Yellow Plaster 02](./yellow-plaster-02/material.md) - Poly Haven `yellow_plaster_02`
