@@ -32,16 +32,18 @@ body {
   position: fixed;
   top: calc(16px + var(--node-editor-top-inset));
   right: 16px;
-  bottom: calc(16px + var(--node-editor-bottom-inset));
   width: min(25rem, calc(100vw - 32px));
-  max-height: none;
+  /* Hug the pane's actual height (not the full viewport), so the empty area below it doesn't overlay the
+     canvas and swallow clicks. Cap at the viewport minus the docked node-editor insets, and scroll only
+     when the pane is genuinely taller. Folding the pane now collapses the host with it. */
+  height: auto;
+  max-height: calc(100vh - 32px - var(--node-editor-top-inset) - var(--node-editor-bottom-inset));
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
 .pane-host .tp-dfwv,
 .pane-host > .tp-rotv {
-  min-height: 25rem !important;
   position: static !important;
   width: min(25rem, calc(100vw - 32px)) !important;
 }

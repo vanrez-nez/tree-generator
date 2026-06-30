@@ -213,6 +213,9 @@ export function buildMaterialEditorConfig(
     connections,
     palette,
     breadcrumb,
+    // Export the full root graph (not the active subgraph) as a downloadable JSON document — the same
+    // shape the preset registry consumes, so an exported file can be dropped back in as a preset.
+    onExport: () => downloadJson("material.json", controller.document),
     onExit: path.length > 0 ? () => (controller.exitGroup(), rerender()) : undefined,
     // Drawing a wire validates (port kinds) + applies via the controller; false vetoes it (snap back).
     onConnect: (c) =>
@@ -231,4 +234,16 @@ export function buildMaterialEditorConfig(
     },
     onDeleteNode: (id) => controller.removeNode(id),
   };
+}
+
+// Trigger a browser download of `data` serialised as pretty-printed JSON. Uses a transient object URL +
+// synthetic anchor click (revoked next tick), so no file lands in the DOM or persists.
+function downloadJson(filename: string, data: unknown): void {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }

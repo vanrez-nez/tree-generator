@@ -46,3 +46,35 @@ export function relaxedVoronoiDistanceToEdge(coord: V, seed: SeedFn): V {
     return minEdge;
   })();
 }
+
+// value(ix, iy) → a per-cell value (e.g. a random tint) for the relaxed cell (ix, iy). Already periodic.
+type ValueFn = (ix: V, iy: V) => V;
+
+// Per-cell value lookup over the SAME relaxed point set as `relaxedVoronoiDistanceToEdge`: finds the cell
+// whose seed is closest (pass 1 only) and returns `value(cellX, cellY)` for it. Used to give each mud plate
+// a constant per-cell attribute (a random tint) that lines up exactly with the crack tessellation — a plain
+// F1 Voronoi would use different (un-relaxed) seeds and its colour patches would cross the crack borders.
+export function relaxedVoronoiCellValue(coord: V, seed: SeedFn, value: ValueFn): V {
+  return Fn(() => {
+    const cell = floor(coord) as V;
+    const local = coord.sub(cell);
+    const cx = int(cell.x);
+    const cy = int(cell.y);
+    const point = (i: number, j: number): V =>
+      vec3(i, j, 0).add(seed(cx.add(i), cy.add(j))).sub(local);
+
+    const minDist = float(1e10).toVar();
+    const winX = int(0).toVar();
+    const winY = int(0).toVar();
+    for (let j = -1; j <= 1; j++)
+      for (let i = -1; i <= 1; i++) {
+        const vp = point(i, j);
+        const d = vp.dot(vp);
+        const closer = d.lessThan(minDist);
+        minDist.assign(closer.select(d, minDist));
+        winX.assign(closer.select(cx.add(i), winX));
+        winY.assign(closer.select(cy.add(j), winY));
+      }
+    return value(winX, winY);
+  })();
+}

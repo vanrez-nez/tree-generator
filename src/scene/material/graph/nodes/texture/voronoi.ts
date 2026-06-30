@@ -14,7 +14,7 @@ import {
   blenderVoronoiDistanceToEdge,
 } from "../../../tsl/blender-voronoi";
 import { relaxedCellOffsets } from "../../../tsl/lloyd-points";
-import { relaxedVoronoiDistanceToEdge } from "../../../tsl/relaxed-voronoi";
+import { relaxedVoronoiDistanceToEdge, relaxedVoronoiCellValue } from "../../../tsl/relaxed-voronoi";
 
 const METRICS = ["euclidean", "manhattan", "chebychev", "minkowski"];
 const FEATURES = ["f1", "f2", "smooth-f1", "distance-to-edge"];
@@ -26,8 +26,24 @@ const FULL_OUTPUTS: PortDef[] = [
   { key: "color", label: "Color", kind: "color" },
   { key: "position", label: "Position", kind: "vector" },
 ];
-const EDGE_OUTPUTS: PortDef[] = [{ key: "distance", label: "Distance", kind: "float" }];
+// Distance-to-Edge has no per-cell Colour output, so it carries a scalar per-cell `Random` instead — one
+// constant value per cell (for per-tile tint variation), aligned to the (relaxed) cell tessellation.
+const EDGE_OUTPUTS: PortDef[] = [
+  { key: "distance", label: "Distance", kind: "float" },
+  { key: "random", label: "Random", kind: "float" },
+];
 const COORD_INPUT: PortDef[] = [{ key: "coord", kind: "vector" }];
+
+// Deterministic per-cell random in [0,1] (stable across bakes). Indexed by the cell's linear id; the array
+// IS the tile period, so wrapped lookups repeat seamlessly across the bake-tile edge.
+function cellRandomValues(count: number): number[] {
+  const out = new Array<number>(count);
+  for (let n = 0; n < count; n++) {
+    const s = Math.sin(n * 12.9898 + 78.233) * 43758.5453;
+    out[n] = s - Math.floor(s);
+  }
+  return out;
+}
 
 // Voronoi Texture (Blender ShaderNodeTexVoronoi) — faithful Blender port (PCG cell hash + neighbour search
 // in tsl/blender-voronoi.ts). `scale` multiplies the domain; `randomness`/`exponent`/`smoothness` are live
@@ -81,12 +97,24 @@ export const voronoiNode: MaterialNodeDef = {
         v.sub(int(floor(float(v).div(period))).mul(int(period)));
       const seedFn = (ix: MaterialValue, iy: MaterialValue): MaterialValue =>
         seeds.element(wrap(iy).mul(period).add(wrap(ix))) as MaterialValue;
-      return { distance: relaxedVoronoiDistanceToEdge(p, seedFn) };
+      // Per-cell random tint: same relaxed seeds, so it lines up with the crack cells exactly.
+      const randoms = uniformArray(cellRandomValues(period * period));
+      const valueFn = (ix: MaterialValue, iy: MaterialValue): MaterialValue =>
+        randoms.element(wrap(iy).mul(period).add(wrap(ix))) as MaterialValue;
+      return {
+        distance: relaxedVoronoiDistanceToEdge(p, seedFn),
+        random: relaxedVoronoiCellValue(p, seedFn, valueFn),
+      };
     }
 
     switch (feature) {
       case "distance-to-edge":
-        return { distance: blenderVoronoiDistanceToEdge(p, r, period) };
+        // Un-relaxed distance-to-edge shares the jittered-grid seeds with F1, so F1's per-cell colour hash
+        // aligns with these cells — use its red channel as the per-cell random.
+        return {
+          distance: blenderVoronoiDistanceToEdge(p, r, period),
+          random: blenderVoronoiF1Color(p, r, m, e, period).x,
+        };
       case "f2":
         return {
           distance: blenderVoronoiF2(p, r, m, e, period),

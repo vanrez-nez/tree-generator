@@ -43,7 +43,7 @@ export class MainScene {
   // tree form, and a strong flat ambient would wash out the baked AO. The directional is the KEY that casts
   // the tree's (statically-baked) shadow, so it's a real intensity (not a 0.3 fill) — strong enough for the
   // shadow to read against the IBL fill.
-  readonly directionalLight = new THREE.DirectionalLight(0xffffff, 2);
+  readonly directionalLight = new THREE.DirectionalLight(0xffffff, 1);
   readonly ambientLight = new THREE.AmbientLight(0xffffff, 0.05);
 
   selectedLineId = "trunk";
