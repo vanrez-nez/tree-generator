@@ -137,15 +137,11 @@ export class NodeEditorPanel {
 
     const header = document.createElement('div')
     header.className = 'ne-header'
-    const title = document.createElement('span')
-    title.className = 'ne-header__title'
-    title.textContent = 'Material'
-    header.appendChild(title)
 
-    // Breadcrumb trail for group navigation (populated per config; hidden at the root).
+    // Breadcrumb trail (left-aligned, doubles as the editor title). Its root "Material" crumb replaces the
+    // former static title; deeper crumbs appear as the user navigates into groups.
     this.breadcrumb = document.createElement('div')
     this.breadcrumb.className = 'ne-breadcrumb'
-    this.breadcrumb.hidden = true
     header.appendChild(this.breadcrumb)
     // Esc exits one group level.
     document.addEventListener('keydown', (e) => {
@@ -627,6 +623,8 @@ export class NodeEditorPanel {
     node.onDelete =
       def.deletable && this.config?.onDeleteNode ? () => void this.deleteNode(def.id, node.id) : undefined
     node.onEnter = def.onEnter
+    node.onRename = def.onRename
+    node.defaultTitle = def.defaultTitle
     node.mountControls = def.mountControls
 
     for (const input of def.inputs ?? []) {
@@ -682,7 +680,8 @@ export class NodeEditorPanel {
     return { x: (rect.width / 2 - x) / k, y: (rect.height / 2 - y) / k }
   }
 
-  // (Re)build the group-navigation breadcrumb. Hidden at the root (no trail).
+  // (Re)build the group-navigation breadcrumb. Always shows at least the root "Material" crumb (it doubles
+  // as the editor title); deeper crumbs are appended as the user enters groups.
   private populateBreadcrumb(config: EditorGraphConfig): void {
     const trail = config.breadcrumb ?? []
     this.breadcrumb.replaceChildren()

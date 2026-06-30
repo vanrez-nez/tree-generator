@@ -36,6 +36,10 @@ export type EditorNodeConfig = {
   deletable?: boolean
   /** Provide to make the node "enterable" (double-click) — e.g. descend into a group's subgraph. */
   onEnter?: () => void
+  /** Commit a renamed label (empty string clears back to the default). Omit to disable renaming. */
+  onRename?: (label: string) => void
+  /** Fallback title shown when the custom label is cleared. */
+  defaultTitle?: string
 }
 
 /** A node type offered in the editor's add-node palette. */

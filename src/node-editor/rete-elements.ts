@@ -11,6 +11,7 @@ import {
   createElement as createLucideElement,
   Eye,
   EyeOff,
+  Pencil,
   Trash2,
   type IconNode,
 } from 'lucide'
@@ -26,6 +27,8 @@ export class EditorNode extends ClassicPreset.Node {
   onToggle?: (enabled: boolean) => void
   onDelete?: () => void
   onEnter?: () => void
+  onRename?: (label: string) => void
+  defaultTitle?: string
   mountControls?: (host: HTMLElement) => () => void
 }
 
@@ -68,11 +71,51 @@ export class EditorNodeElement extends LitElement {
   static properties = {
     data: { attribute: false },
     emit: { attribute: false },
+    editing: { state: true },
   }
   // `declare` (not a class field) so Lit's reactive accessors from `static properties` aren't
   // shadowed — otherwise `.data`/`.emit` assignments wouldn't trigger re-render (class-field-shadowing).
   declare data: EditorNode
   declare emit: (props: unknown) => void
+  // Inline rename state: `editing` swaps the title text for an <input>; `cancelEdit` makes the next blur
+  // discard instead of commit (Esc); `focusedEdit` ensures we focus/select the input only once per open.
+  declare editing: boolean
+  private cancelEdit = false
+  private focusedEdit = false
+
+  // Enter inline-rename mode (no-op if this node isn't renamable). Driven from the panel's title
+  // double-click handler, since Rete's drag handle suppresses native dblclick on the title bar.
+  beginRename(): void {
+    if (!this.data?.onRename) return
+    this.editing = true
+  }
+
+  private renameInput(): HTMLInputElement | null {
+    return this.querySelector<HTMLInputElement>('input.title-edit')
+  }
+
+  private readonly onRenameKey = (event: KeyboardEvent): void => {
+    event.stopPropagation()
+    if (event.key === 'Enter') this.renameInput()?.blur()
+    else if (event.key === 'Escape') {
+      this.cancelEdit = true
+      this.renameInput()?.blur()
+    }
+  }
+
+  private readonly commitRename = (): void => {
+    if (!this.editing) return
+    const input = this.renameInput()
+    const cancelled = this.cancelEdit
+    this.cancelEdit = false
+    this.editing = false
+    if (cancelled || !input) return
+    const value = input.value.trim()
+    this.data.onRename?.(value)
+    // Reflect the result locally so the title updates without a full editor rebuild. Empty clears back to
+    // the type name (defaultTitle).
+    this.data.label = value || (this.data.defaultTitle ?? this.data.label)
+  }
 
   // Light DOM (not shadow) so Tweakpane's globally-injected stylesheet reaches the embedded panes.
   // Node chrome is styled from node-editor.css via `ne-node` selectors.
@@ -135,7 +178,32 @@ export class EditorNodeElement extends LitElement {
         </button>`
       : nothing
 
+    const renamable = Boolean(this.data.onRename)
+    const rename =
+      renamable && !this.editing
+        ? html`<button
+            class="ne-rename"
+            title="Rename node"
+            @pointerdown=${(e: Event) => e.stopPropagation()}
+            @click=${(e: Event) => {
+              e.stopPropagation()
+              this.beginRename()
+            }}
+          >
+            ${lucideIcon(Pencil)}
+          </button>`
+        : nothing
+
     const enterable = Boolean(this.data.onEnter)
+    const titleText = this.editing
+      ? html`<input
+          class="title-text title-edit"
+          .value=${String(label ?? '')}
+          @pointerdown=${(e: Event) => e.stopPropagation()}
+          @keydown=${this.onRenameKey}
+          @blur=${this.commitRename}
+        />`
+      : html`<span class="title-text">${label}</span>`
     return html`
       <div
         class="title ${enterable ? 'enterable' : ''}"
@@ -143,8 +211,8 @@ export class EditorNodeElement extends LitElement {
         data-class=${this.data.nodeClass ?? nothing}
         title=${enterable ? 'Double-click to enter group' : 'Double-click to zoom to node'}
       >
-        <span class="title-text">${label}</span>
-        ${eye}${del}
+        ${titleText}
+        ${rename}${eye}${del}
       </div>
       <div class="ports outputs" @pointerdown=${this.stopDrag}>
         ${outputs.map(([key, output]) =>
@@ -192,6 +260,17 @@ export class EditorNodeElement extends LitElement {
     super.updated(changed)
     // Mirror Rete's expectation that the element reports an `auto` height when not fixed.
     this.style.width = `${this.data?.width ?? NODE_WIDTH}px`
+    // Focus + select the rename field once when it opens (autofocus isn't reliable for re-rendered DOM).
+    if (this.editing && !this.focusedEdit) {
+      const input = this.querySelector<HTMLInputElement>('input.title-edit')
+      if (input) {
+        input.focus()
+        input.select()
+        this.focusedEdit = true
+      }
+    } else if (!this.editing) {
+      this.focusedEdit = false
+    }
   }
 }
 

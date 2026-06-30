@@ -127,6 +127,10 @@ export interface GraphNode {
   params: Record<string, unknown>;
   position: { x: number; y: number };
   enabled: boolean;
+  // Optional user-facing name; overrides the registry def.label in the editor (title + breadcrumb).
+  // Cosmetic only — the compiler ignores it, so renames never recompile. Additive/optional: documents
+  // without it load fine (no DOC_VERSION bump).
+  label?: string;
   // Instance-specific ports — set only on group / group-input / group-output nodes, whose interface is
   // defined per instance rather than by a static MaterialNodeDef. Resolved via nodePorts() in registry.ts.
   ports?: { inputs: PortDef[]; outputs: PortDef[] };

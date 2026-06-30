@@ -146,7 +146,9 @@ function nodeToConfig(
 
   return {
     id: node.id,
-    title: def.label,
+    title: node.label ?? def.label,
+    defaultTitle: def.label,
+    onRename: (label) => controller.setNodeLabel(node.id, label),
     nodeClass: def.nodeClass,
     position: node.position,
     inputs: ports.inputs.map((p) => ({ key: p.key, label: p.label ?? p.key, kind: p.kind })),
@@ -195,18 +197,17 @@ export function buildMaterialEditorConfig(
     toInput: e.toInput,
   }));
 
-  // Breadcrumb: Material (root) → each entered group; clicking a crumb pops back to that depth.
-  const path = controller.groupPath;
-  const breadcrumb =
-    path.length === 0
-      ? undefined
-      : [
-          { label: "Material", onClick: () => (controller.exitToDepth(0), rerender()) },
-          ...path.map((id, i) => ({
-            label: id,
-            onClick: () => (controller.exitToDepth(i + 1), rerender()),
-          })),
-        ];
+  // Breadcrumb: always starts with the root "Material" crumb (it doubles as the editor title), then each
+  // entered group; clicking a crumb pops back to that depth. Group crumbs show the display name (custom
+  // label, else type name) rather than the raw id.
+  const trail = controller.groupTrail();
+  const breadcrumb = [
+    { label: "Material", onClick: () => (controller.exitToDepth(0), rerender()) },
+    ...trail.map((crumb, i) => ({
+      label: crumb.label,
+      onClick: () => (controller.exitToDepth(i + 1), rerender()),
+    })),
+  ];
 
   return {
     nodes,
@@ -216,7 +217,7 @@ export function buildMaterialEditorConfig(
     // Export the full root graph (not the active subgraph) as a downloadable JSON document — the same
     // shape the preset registry consumes, so an exported file can be dropped back in as a preset.
     onExport: () => downloadJson("material.json", controller.document),
-    onExit: path.length > 0 ? () => (controller.exitGroup(), rerender()) : undefined,
+    onExit: trail.length > 0 ? () => (controller.exitGroup(), rerender()) : undefined,
     // Drawing a wire validates (port kinds) + applies via the controller; false vetoes it (snap back).
     onConnect: (c) =>
       controller.connect({ fromNode: c.from, fromOutput: c.fromOutput, toNode: c.to, toInput: c.toInput }),

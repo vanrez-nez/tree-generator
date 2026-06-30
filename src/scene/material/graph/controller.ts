@@ -166,6 +166,20 @@ export class MaterialGraphController {
     return [...this.path];
   }
 
+  // Breadcrumb labels: each entered group's display name (custom label, else registry def.label, else id),
+  // root → active. Walks the same path as active(); self-heals to empty if the path is stale.
+  groupTrail(): { id: string; label: string }[] {
+    const trail: { id: string; label: string }[] = [];
+    let doc = this.doc;
+    for (const id of this.path) {
+      const g = doc.nodes.find((n) => n.id === id && n.type === GROUP_TYPE);
+      if (!g?.subgraph) return [];
+      trail.push({ id, label: g.label ?? this.registry.get(g.type).label ?? id });
+      doc = g.subgraph;
+    }
+    return trail;
+  }
+
   // Walk `path` from the root into nested group subgraphs. Self-heals to the root if the path is stale.
   private active(): MaterialGraphDocument {
     let doc = this.doc;
@@ -402,6 +416,15 @@ export class MaterialGraphController {
     if (!node) return;
     node.position = position;
     this.persist(); // layout only, no recompile
+  }
+
+  // Rename a node's display label. Empty/blank clears it (falls back to the registry def.label). Cosmetic:
+  // the compiler ignores `label`, so this persists only — no recompile, no layout disturbance.
+  setNodeLabel(id: string, label: string): void {
+    const node = this.active().nodes.find((n) => n.id === id);
+    if (!node) return;
+    node.label = label.trim() || undefined;
+    this.persist();
   }
 
   // Returns false (and makes no change) if the port kinds are incompatible.

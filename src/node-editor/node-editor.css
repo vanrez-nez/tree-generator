@@ -90,12 +90,6 @@ body.ne-resizing .ne-canvas {
   flex: none;
 }
 
-.ne-header__title {
-  font-weight: 600;
-  letter-spacing: 0.03em;
-  flex: 1;
-}
-
 .ne-dock,
 .ne-layout,
 .ne-zoom {
@@ -250,6 +244,21 @@ ne-node .title-text {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Inline rename field: sits in place of the name text, inheriting the title's font so the swap is seamless. */
+ne-node input.title-edit {
+  flex: 1;
+  min-width: 0;
+  margin: -2px 0;
+  padding: 1px 4px;
+  font: inherit;
+  font-weight: 600;
+  letter-spacing: inherit;
+  color: #f3f5f8;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 4px;
+  outline: none;
+}
 ne-node .eye {
   display: inline-flex;
   align-items: center;
@@ -268,6 +277,26 @@ ne-node .eye .lucide-icon {
 }
 ne-node .eye.off {
   opacity: 0.4;
+}
+ne-node .ne-rename {
+  display: inline-flex;
+  align-items: center;
+  background: none;
+  border: none;
+  padding: 2px;
+  margin-left: 2px;
+  cursor: pointer;
+  color: #9aa0a8;
+}
+ne-node .ne-rename:hover {
+  color: #d6d9df;
+}
+ne-node .ne-rename .lucide-icon {
+  display: block;
+  fill: none;
+  pointer-events: none;
+  stroke: currentColor;
+  stroke-width: 2;
 }
 ne-node .ne-del {
   display: inline-flex;
@@ -365,7 +394,9 @@ ne-node .ne-del .lucide-icon {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  margin-left: 8px;
+  /* Doubles as the editor title: occupy the left of the header so the toolbar groups push to the right. */
+  flex: 1;
+  min-width: 0;
   font-size: 12px;
 }
 .ne-breadcrumb[hidden] {
