@@ -5,6 +5,7 @@ import {
   encodeChannel,
   renderColorNodeToTarget,
   renderMaterialToTarget,
+  compileMaterialsAsync,
   makeChannelMaterial,
   COLOR_CHANNELS,
 } from "./channel-baker";
@@ -23,6 +24,12 @@ type GPUQueueLike = { onSubmittedWorkDone?: () => Promise<void> };
 const BAKE_SIZE = 1024;
 // Anisotropic-filter taps for baked channel textures (within every desktop GPU's cap; driver clamps down).
 const MAX_ANISOTROPY = 8;
+
+// Dev-only bake profiling: log a per-rebuild phase breakdown to pin where the noise-slider freeze goes —
+// compile (JS TSL graph) vs dispatch (6× pipeline build) vs GPU wait/exec. A structural noise param forces
+// the full rebuild path; a uniform param (roughness) takes the cheap rerender baseline. Flip false / delete
+// this and the renderer's `trackTimestamp` (app.ts) once characterised.
+const BAKE_PROFILE = true;
 
 // Channels a surface bakes: scalar/colour maps + tangent-space normal + emission. Height is separate (it
 // drives parallax, not a lit channel) and tracked on the texture set.
@@ -131,6 +138,15 @@ export interface BakeProgress {
 
 export class MaterialBakeService {
   private renderer: WebGPURenderer | null = null;
+  // Render gate. `renderer.compileAsync` (used to compile bake pipelines off the blocking path) mutates
+  // SHARED renderer state and has a long await window; if the app's animate loop renders during that
+  // window it does so in a corrupted state (black screen / broken geometry). While this depth is > 0 the
+  // animate loop must skip its `renderer.render` — see app.ts. Held only during the async-compile window;
+  // the synchronous bake renders that follow can't be interleaved (JS is single-threaded, no awaits).
+  private compileGateDepth = 0;
+  get rendererBusy(): boolean {
+    return this.compileGateDepth > 0;
+  }
   // Serial job chain — bakes run one at a time (shared GPU quads). Each job appends to this promise.
   private queue: Promise<unknown> = Promise.resolve();
   private completed = 0;
@@ -198,18 +214,22 @@ export class MaterialBakeService {
     return this.enqueue(opts.label ?? "surface", async () => {
       const renderer = this.renderer;
       if (!renderer) return false;
+      const tCompile0 = performance.now();
       const { bundle, uniforms } = graph.compileBundle({ backend: "offline", soloNodeId: opts.soloNodeId });
+      const compileMs = performance.now() - tCompile0;
       set.uniforms = uniforms; // retained so a uniform-only edit can re-render without recompiling
       const channels = opts.channels ?? set.channels;
       const present = new Set<PbrSocket>();
+      // Collect channel jobs first (assigning colorNode + needsUpdate is what marks them for recompile).
+      type Job = { mat: MeshBasicNodeMaterial; target: RenderTarget; isNormal: boolean };
+      const jobs: Job[] = [];
       for (const ch of channels) {
         const node = (bundle as Partial<Record<string, MaterialValue>>)[ch];
         if (!node) continue;
-        // Assign the channel's colorNode ONCE here (this is the compile); rerenderInto reuses it as-is.
         const mat = set.channelMaterial(ch);
         mat.colorNode = encodeChannel(node, ch);
         mat.needsUpdate = true;
-        renderMaterialToTarget(renderer, mat, set.target(ch), ch === "normal");
+        jobs.push({ mat, target: set.target(ch), isNormal: ch === "normal" });
         present.add(ch);
       }
       // Height drives the parallax UV offset (its own linear target), not a lit channel.
@@ -218,15 +238,47 @@ export class MaterialBakeService {
         const hm = set.channelMaterial("height");
         hm.colorNode = vec3(bundle.height);
         hm.needsUpdate = true;
-        renderMaterialToTarget(renderer, hm, set.ensureHeightTarget(), false);
+        jobs.push({ mat: hm, target: set.ensureHeightTarget(), isNormal: false });
       }
+      // Compile the (changed) channel pipelines asynchronously and IN PARALLEL (one compileAsync over all
+      // channel materials) — non-blocking on Dawn/Metal, so the heavy shader compile doesn't freeze the
+      // editor, and wall time is ~max(channel) not the serial sum. The gate pauses the app's animate render
+      // for this window only (compileAsync's await is the one place a concurrent render would corrupt shared
+      // renderer state); the synchronous renders below can't interleave (no awaits between them), so they
+      // run ungated.
+      const tPrecompile0 = performance.now();
+      this.compileGateDepth += 1;
+      try {
+        await compileMaterialsAsync(
+          renderer,
+          jobs.map((j) => j.mat),
+        );
+      } finally {
+        this.compileGateDepth -= 1;
+      }
+      const precompileMs = performance.now() - tPrecompile0;
+      const tDispatch0 = performance.now();
+      for (const j of jobs) renderMaterialToTarget(renderer, j.mat, j.target, j.isNormal);
+      const dispatchMs = performance.now() - tDispatch0;
       const signature = [...present].sort().join(",") + (set.hasHeight ? "|h" : "");
       const changed = signature !== set.signature;
       set.present = present;
       set.signature = signature;
       // Wait for the GPU to actually finish before resolving — gives the caller real back-pressure so it
       // can't submit the next bake while this one is still executing (the cause of the editing GPU backlog).
+      const tGpu0 = performance.now();
       await this.gpuSync(set);
+      const gpuWaitMs = performance.now() - tGpu0;
+      if (BAKE_PROFILE) {
+        const total = compileMs + precompileMs + dispatchMs + gpuWaitMs;
+        // precompile = async (non-blocking, render-gated) pipeline compile via compileAsync; dispatch =
+        // warm render calls; gpuWait = wall time to GPU completion. The heavy time sits in the gated
+        // precompile phase, during which the 3D canvas holds its last frame instead of freezing.
+        console.log(
+          `[bake-prof] rebuild compile=${compileMs.toFixed(1)} precompile=${precompileMs.toFixed(1)} ` +
+            `dispatch=${dispatchMs.toFixed(1)} gpuWait=${gpuWaitMs.toFixed(1)} total=${total.toFixed(1)}ms`,
+        );
+      }
       return changed;
     });
   }
@@ -255,13 +307,24 @@ export class MaterialBakeService {
     const run = this.queue.then(async () => {
       const renderer = this.renderer;
       if (!renderer) return;
+      const tDispatch0 = performance.now();
       for (const ch of set.present) {
         renderMaterialToTarget(renderer, set.channelMaterial(ch), set.target(ch), ch === "normal");
       }
       if (set.hasHeight && set.heightTarget) {
         renderMaterialToTarget(renderer, set.channelMaterial("height"), set.heightTarget, false);
       }
+      const dispatchMs = performance.now() - tDispatch0;
+      // Baseline path (no recompile): same 6-channel render as a rebuild, reusing existing pipelines.
+      // Its gpuWait is the control to compare the rebuild numbers against.
+      const tGpu0 = performance.now();
       await this.gpuSync(set); // back-pressure: resolve only after the GPU finishes (see bakeInto)
+      if (BAKE_PROFILE) {
+        const gpuWaitMs = performance.now() - tGpu0;
+        console.log(
+          `[bake-prof] rerender dispatch=${dispatchMs.toFixed(1)} gpuWait=${gpuWaitMs.toFixed(1)}ms`,
+        );
+      }
     });
     this.queue = run.then(
       () => undefined,

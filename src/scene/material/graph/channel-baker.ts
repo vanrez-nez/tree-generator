@@ -1,5 +1,5 @@
 import { QuadMesh, RenderTarget, MeshBasicNodeMaterial, type WebGPURenderer } from "three/webgpu";
-import { NoColorSpace, NearestFilter, RepeatWrapping } from "three";
+import { NoColorSpace, NearestFilter, RepeatWrapping, Scene, OrthographicCamera } from "three";
 import { vec3, vec2, sRGBTransferOETF, texture, uniform, uv, normalize } from "three/tsl";
 import type { MaterialValue, PbrSocket } from "./types";
 
@@ -70,6 +70,38 @@ const downNormalQuad = new QuadMesh(downNormalMat);
 // re-rendering it later with only changed uniform values reuses its pipeline (no recompile).
 export function makeChannelMaterial(): MeshBasicNodeMaterial {
   return new MeshBasicNodeMaterial();
+}
+
+// One throwaway scene of fullscreen quads used ONLY to pre-compile bake pipelines (never rendered from).
+// QuadMesh shares one module geometry, and three's render pipeline cache key is (shader stages, material
+// render-state, render-target format, scale-sign) — NOT mesh identity — so a pipeline compiled on these
+// quads against `ssRT` is the exact one `bakeQuad` reuses when it renders the same material into `ssRT`.
+const compileScene = new Scene();
+const compileCamera = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const compileQuads: QuadMesh[] = [];
+
+// Pre-compile every channel's render pipeline OFF the blocking path, IN PARALLEL. The normal render path
+// (`bakeQuad.render`) hits three's synchronous `device.createRenderPipeline`, which on Dawn/Metal defers
+// the heavy shader compile to submit time and pegs the GPU process — a single structural edit on a heavy
+// graph freezes the editor for seconds. `renderer.compileAsync` instead routes through
+// `createRenderPipelineAsync` (non-blocking) and, given a scene of N materials, fires all N compiles then
+// awaits them together — so wall time is ~max(channel) instead of the serial sum. After this resolves the
+// per-channel `renderMaterialToTarget` calls find warm pipelines and render in ~ms. Caller must serialise:
+// a single `compileAsync` manages shared renderer state safely, but two concurrent ones would clobber it.
+export async function compileMaterialsAsync(
+  renderer: WebGPURenderer,
+  materials: MeshBasicNodeMaterial[],
+): Promise<void> {
+  while (compileQuads.length < materials.length) compileQuads.push(new QuadMesh());
+  compileScene.clear();
+  for (let i = 0; i < materials.length; i++) {
+    compileQuads[i].material = materials[i];
+    compileScene.add(compileQuads[i]);
+  }
+  const previous = renderer.getRenderTarget();
+  renderer.setRenderTarget(ssRT); // compile against the channel's actual target (format-matched pipeline)
+  await renderer.compileAsync(compileScene, compileCamera);
+  renderer.setRenderTarget(previous);
 }
 
 // Render `material` (its colorNode already assigned) into `rt`, supersampled + box-downsampled. This does NOT

@@ -428,7 +428,10 @@ function animate(timestamp?: number): void {
   mainScene.update(timer.getDelta(), camera, rendererSize);
   refreshTexturePreview();
   controls.update();
-  renderer.render(mainScene.scene, camera);
+  // Skip the frame render while a bake is compiling pipelines: `renderer.compileAsync` mutates shared
+  // renderer state, so rendering during its await window corrupts the output (black screen / broken
+  // geometry). The canvas holds its last frame for the ~sub-second compile; the DOM UI stays responsive.
+  if (!bakeService.rendererBusy) renderer.render(mainScene.scene, camera);
   stats.end();
 }
 
