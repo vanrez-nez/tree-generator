@@ -57,7 +57,9 @@ import {
 } from "./tweak-pane/vertical-tabs-blade";
 import { NodeEditorPanel } from "./node-editor";
 import { buildMaterialEditorConfig } from "./scene/material/editor-config";
-import { ChannelBaker } from "./scene/material/graph/channel-baker";
+import { bakeService } from "./scene/material/graph/bake-service";
+import { MaterialGraphController } from "./scene/material/graph/controller";
+import { TexturedSurface } from "./scene/material/graph/textured-surface";
 import { runTilingTest } from "./scene/material/graph/tiling-test";
 import { MATERIAL_PRESETS, makePreset, DEFAULT_PRESET } from "./scene/material/presets";
 import { PBR_SOCKETS, type PbrSocket, type MaterialGraphDocument } from "./scene/material/graph/types";
@@ -125,8 +127,6 @@ const controls = new OrbitControls(camera, sceneCanvas);
 controls.enableDamping = true;
 
 const mainScene = new MainScene();
-// Renders single material-graph channels to 2D for the preview + PNG export (baked backend).
-const channelBaker = new ChannelBaker();
 const rendererSize = new THREE.Vector2();
 
 const pane = new Pane({ container: paneHost, title: "Settings" });
@@ -277,7 +277,7 @@ let previewBaking = false;
 const markPreviewDirty = (): void => {
   previewDirty = true;
 };
-mainScene.materialController.onRecompile(markPreviewDirty);
+mainScene.treeSurface.onRebuilt(markPreviewDirty);
 // Material-graph UI state. `worldPerTile` maps to the FBM generator's scale; `backend` toggles the
 // live procedural vs convertToTexture baked-map compile.
 const triplanarState = { enabled: false, worldPerTile: 1.2, sharpness: 8, parallax: 0 };
@@ -331,7 +331,7 @@ const surfaceMaterialState = {
 // (so values persist across re-bakes), but the live backend rebuilds a fresh material on recompile — the
 // onRecompile hook below re-applies then. `needsUpdate` forces the node material to re-read the scalars.
 function applySurfaceMaterialState(): void {
-  const m = mainScene.materialController.material as MeshPhysicalNodeMaterial;
+  const m = mainScene.treeSurface.material as MeshPhysicalNodeMaterial;
   const s = surfaceMaterialState;
   m.envMapIntensity = s.envMapIntensity;
   m.flatShading = s.flatShading;
@@ -350,9 +350,9 @@ function applySurfaceMaterialState(): void {
 
 // The live backend swaps in a new material instance on recompile; re-apply the configured state so the
 // settings survive a graph/backend change. Offline reuses one stable material, so this is a no-op there.
-let lastSurfaceMaterial: unknown = mainScene.materialController.material;
-mainScene.materialController.onRecompile(() => {
-  const m = mainScene.materialController.material;
+let lastSurfaceMaterial: unknown = mainScene.treeSurface.material;
+mainScene.treeSurface.onRebuilt(() => {
+  const m = mainScene.treeSurface.material;
   if (m !== lastSurfaceMaterial) {
     lastSurfaceMaterial = m;
     applySurfaceMaterialState();
@@ -441,14 +441,15 @@ sceneResizeObserver.observe(sceneCanvas);
 // WebGPURenderer initialises its backend asynchronously (unlike WebGLRenderer). Wait for it before
 // the first render, then drive the loop via setAnimationLoop (the WebGPU-friendly RAF).
 await renderer.init();
-// The offline backend bakes channels to textures, which needs the renderer — hand it over now that it's
-// initialised (triggers the first offline bake + swaps the surface material).
-mainScene.materialController.attachRenderer(renderer);
+// Offline baking needs the renderer — hand it to the one shared bake service now that it's initialised,
+// then refresh both surfaces so they swap from the live startup fallback to the baked offline material.
+bakeService.attachRenderer(renderer);
+mainScene.treeSurface.refresh();
 
-// The visual floor: give its controller the renderer too, load the chosen floor preset (independent of the
-// tree's graph), and apply visibility/tiling.
-mainScene.floorMaterialController.attachRenderer(renderer);
+// The visual floor: load the chosen floor preset (independent of the tree's graph) and refresh its surface;
+// apply visibility/tiling.
 mainScene.floorMaterialController.loadDocument(makePreset(floorState.preset));
+mainScene.floorSurface.refresh();
 mainScene.setFloorVisible(floorState.visible);
 mainScene.setFloorTiling(floorState.tiling);
 
@@ -481,7 +482,13 @@ if (import.meta.env.DEV) {
     __controls: controls,
     __editor: materialEditor,
     __openEditor: rebuildEditor,
-    __baker: channelBaker,
+    __bakeService: bakeService,
+    // Back-compat shim for dev-console bake snippets: `__baker.readImageData(_renderer, graph, ch, size)`
+    // now routes through the singleton service (the renderer arg is ignored — the service owns it).
+    __baker: {
+      readImageData: (_r: unknown, graph: MaterialGraphController, ch: PbrSocket, size?: number) =>
+        bakeService.readImage(graph, ch, size),
+    },
     __savePng: saveChannelToBake,
     __bakeConfig: bakeConfigToBake,
     __bakeMaterialTask: bakeMaterialTask,
@@ -493,7 +500,7 @@ if (import.meta.env.DEV) {
     // pass/fail summary, and saves a 2×2 composite PNG per type to ./bake (needs `npm run bake:server`).
     // Usage from the dev console: `await __tilingTest()`  (optionally `__tilingTest(256)`).
     __tilingTest: (size?: number) =>
-      runTilingTest(renderer, channelBaker, mainScene.materialController, {
+      runTilingTest(bakeService, mainScene.materialController.getRegistry(), {
         size,
         onTile: (type, img) => saveTilingComposite(type, img),
       }).then((rows) => {
@@ -791,8 +798,8 @@ function refreshTexturePreview(): void {
   previewDirty = false;
   previewBaking = true;
   const socket = PREVIEW_SOCKET[previewState.channel];
-  void channelBaker
-    .readImageData(renderer, mainScene.materialController, socket, 256)
+  void bakeService
+    .readImage(mainScene.materialController, socket, 256)
     .then((image) => {
       if (image) texturePreview?.setImageData(image);
     })
@@ -839,11 +846,26 @@ async function postBakeFile(file: string, body: BodyInit): Promise<boolean> {
 }
 
 async function saveChannelToBake(channel: PbrSocket, size = 1024): Promise<void> {
-  const image = await channelBaker.readImageData(renderer, mainScene.materialController, channel, size);
+  const image = await bakeService.readImage(mainScene.materialController, channel, size);
   if (!image) return;
   const blob = await canvasToPngBlob(imageDataToCanvas(image));
   if (!blob) return;
   await postBakeFile(`${channel}.png`, blob);
+}
+
+// Bake a channel of the tree's graph (via the service) and trigger a browser download. Replaces the old
+// ChannelBaker.downloadPng; uses a transient object URL + synthetic anchor (revoked next tick).
+async function downloadChannelPng(channel: PbrSocket, filename: string, size = 1024): Promise<void> {
+  const image = await bakeService.readImage(mainScene.materialController, channel, size);
+  if (!image) return;
+  const blob = await canvasToPngBlob(imageDataToCanvas(image));
+  if (!blob) return;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 function makeTileabilityProof(channelImages: Map<PbrSocket, ImageData>): HTMLCanvasElement | null {
@@ -904,11 +926,11 @@ function buildStandardMaterialDemoScene(material: THREE.Material): {
   };
 }
 
-async function renderStandardMaterialDemo(size = 512): Promise<Blob | null> {
+async function renderStandardMaterialDemo(material: THREE.Material, size = 512): Promise<Blob | null> {
   const previousPixelRatio = renderer.getPixelRatio();
   const previousSize = new THREE.Vector2();
   renderer.getSize(previousSize);
-  const demo = buildStandardMaterialDemoScene(mainScene.materialController.material);
+  const demo = buildStandardMaterialDemoScene(material);
   try {
     renderer.setPixelRatio(1);
     renderer.setSize(size, size, false);
@@ -921,24 +943,29 @@ async function renderStandardMaterialDemo(size = 512): Promise<Blob | null> {
   }
 }
 
-// Load a full graph config (a MaterialGraphDocument) into the live material, bake every connected PBR
-// channel, and POST each to the bake-server under bake/<name>/<channel>.ours.png alongside the config
-// JSON. The Blender reference for the SAME config is produced separately by `npm run bake:blender`,
-// landing as bake/<name>/<channel>.blender.png — so the two systems sit side by side for comparison.
+// A throwaway graph for export baking. Built from a document with NO persistence, so it never touches the
+// tree's or floor's live material — this is the whole point of the bake-service split (no more clobber).
+function exportGraph(doc: MaterialGraphDocument): MaterialGraphController {
+  const graph = new MaterialGraphController(mainScene.materialController.getRegistry(), null);
+  graph.loadDocument(doc);
+  if (graph.lastError) console.warn(`[bake] config compiled with error: ${graph.lastError}`);
+  return graph;
+}
+
+// Bake every connected PBR channel of a config (a MaterialGraphDocument) and POST each to the bake-server
+// under bake/<name>/<channel>.ours.png alongside the config JSON. The Blender reference for the SAME config
+// is produced separately by `npm run bake:blender` (bake/<name>/<channel>.blender.png) — side by side.
 async function bakeConfigToBake(
   doc: MaterialGraphDocument,
   name = "config",
   size = 1024,
 ): Promise<void> {
-  mainScene.materialController.loadDocument(doc);
-  if (mainScene.materialController.lastError) {
-    console.warn(`[bake] config compiled with error: ${mainScene.materialController.lastError}`);
-  }
+  const graph = exportGraph(doc);
   await postBakeFile(`${name}/config.json`, new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" }));
 
   const written: string[] = [];
   for (const channel of PBR_SOCKETS) {
-    const image = await channelBaker.readImageData(renderer, mainScene.materialController, channel, size);
+    const image = await bakeService.readImage(graph, channel, size);
     if (!image) continue; // channel unconnected — skip
     const blob = await canvasToPngBlob(imageDataToCanvas(image));
     if (!blob) continue;
@@ -948,26 +975,23 @@ async function bakeConfigToBake(
   console.log(`[bake] wrote bake/${name}/ — channels: ${written.join(", ") || "(none connected)"}`);
 }
 
-// Reusable material-task pipeline: load a graph preset, bake the standard channel set, write the preset,
-// prove the base tile by rendering it as a 2x2 image, and capture a 512x512 standard material demo
-// (sphere plus plane). Every catalog render task should use this instead of recreating preview setup.
+// Reusable material-task pipeline: bake the standard channel set on a throwaway graph, write the preset,
+// prove the base tile as a 2x2 image, and capture a 512x512 standard material demo (sphere plus plane).
+// Every catalog render task uses this — and it never disturbs the on-screen tree/floor materials.
 async function bakeMaterialTask(
   doc: MaterialGraphDocument,
   outputFolder: string,
   channelSize = 1024,
 ): Promise<void> {
   const folder = outputFolder.replace(/^bake\//, "").replace(/\/$/, "");
-  mainScene.materialController.loadDocument(doc);
-  if (mainScene.materialController.lastError) {
-    console.warn(`[bake] config compiled with error: ${mainScene.materialController.lastError}`);
-  }
+  const graph = exportGraph(doc);
 
   const channelImages = new Map<PbrSocket, ImageData>();
   const written: string[] = [];
   await postBakeFile(`${folder}/preset.json`, new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" }));
 
   for (const channel of MATERIAL_TASK_CHANNELS) {
-    const image = await channelBaker.readImageData(renderer, mainScene.materialController, channel, channelSize);
+    const image = await bakeService.readImage(graph, channel, channelSize);
     if (!image) continue;
     channelImages.set(channel, image);
     const blob = await canvasToPngBlob(imageDataToCanvas(image));
@@ -980,7 +1004,12 @@ async function bakeMaterialTask(
   const proofBlob = proof ? await canvasToPngBlob(proof) : null;
   if (proofBlob) await postBakeFile(`${folder}/proof/tileability-2x2.png`, proofBlob);
 
-  const demoBlob = await renderStandardMaterialDemo(512);
+  // The lit sphere/plane demo needs a real material: build a throwaway textured surface from the same graph
+  // (baked through the service) and render it, then dispose its GPU resources.
+  const surface = new TexturedSurface(graph, bakeService);
+  await surface.refresh();
+  const demoBlob = await renderStandardMaterialDemo(surface.material, 512);
+  surface.dispose();
   if (demoBlob) await postBakeFile(`${folder}/renders/standard-demo-512.png`, demoBlob);
 
   console.log(
@@ -1062,7 +1091,7 @@ function buildFloorControls(container: ContainerApi): void {
   // height map. Needs a preset with a Height channel (e.g. rock) and triplanar off; 0 = flat.
   folder
     .addBinding(floorState, "parallax", { label: "parallax", min: 0, max: 0.12, step: 0.005 })
-    .on("change", (e) => mainScene.floorMaterialController.setParallaxScale(e.value));
+    .on("change", (e) => mainScene.floorSurface.setParallaxScale(e.value));
   // Open the node editor on the FLOOR's own graph (independent of the tree) so it can be tuned in place.
   folder.addButton({ title: "Open Floor Node Editor" }).on("click", () => openFloorEditor());
 }
@@ -1139,7 +1168,7 @@ function buildTextureLayers(): void {
   const materialFolder = texturePage.addFolder({ title: "Material", expanded: true });
   materialFolder
     .addBinding(materialState, "backend", { options: { Offline: "offline", Live: "live" } })
-    .on("change", (event) => mainScene.materialController.setBackend(event.value));
+    .on("change", (event) => mainScene.treeSurface.setBackend(event.value));
   // Preset graph selector — loads a named starter document (configs are authored here; future presets too).
   materialFolder
     .addBinding(materialState, "preset", {
@@ -1156,7 +1185,7 @@ function buildTextureLayers(): void {
   // visible = the normal map is perturbing the surface.
   materialFolder
     .addBinding(materialState, "debugNormals", { label: "debug normals" })
-    .on("change", (event) => mainScene.materialController.setNormalDebug(event.value));
+    .on("change", (event) => mainScene.treeSurface.setNormalDebug(event.value));
   // The dockable node editor (src/node-editor/) shows the live material graph, generated from the
   // registry. Param/toggle edits flow into the controller and recompile the surface.
   materialFolder.addButton({ title: "Open Node Editor" }).on("click", () => rebuildEditor());
@@ -1172,13 +1201,13 @@ function buildTextureLayers(): void {
   // Factors multiplied into the baked channels (the scalar props are ignored once the graph drives them).
   surface
     .addBinding(surfaceMaterialState, "baseColorTint", { label: "color tint", view: "color" })
-    .on("change", (e) => mainScene.materialController.setColorTint(e.value));
+    .on("change", (e) => mainScene.treeSurface.setColorTint(e.value));
   surface
     .addBinding(surfaceMaterialState, "roughnessFactor", { label: "roughness ×", min: 0, max: 2, step: 0.01 })
-    .on("change", (e) => mainScene.materialController.setRoughnessFactor(e.value));
+    .on("change", (e) => mainScene.treeSurface.setRoughnessFactor(e.value));
   surface
     .addBinding(surfaceMaterialState, "metalnessFactor", { label: "metalness ×", min: 0, max: 1, step: 0.01 })
-    .on("change", (e) => mainScene.materialController.setMetalnessFactor(e.value));
+    .on("change", (e) => mainScene.treeSurface.setMetalnessFactor(e.value));
 
   const coat = surface.addFolder({ title: "Clearcoat", expanded: false });
   coat
@@ -1222,29 +1251,24 @@ function buildTextureLayers(): void {
   const triplanarFolder = texturePage.addFolder({ title: "Triplanar", expanded: true });
   triplanarFolder
     .addBinding(triplanarState, "enabled", { label: "enabled" })
-    .on("change", (event) => mainScene.materialController.setTriplanarEnabled(event.value));
+    .on("change", (event) => mainScene.treeSurface.setTriplanar(event.value));
   triplanarFolder
     .addBinding(triplanarState, "worldPerTile", { label: "world / tile", min: 0.2, max: 6, step: 0.05 })
-    .on("change", (event) => mainScene.materialController.setTriplanarScale(event.value));
+    .on("change", (event) => mainScene.treeSurface.setScale(event.value));
   triplanarFolder
     .addBinding(triplanarState, "sharpness", { label: "sharpness", min: 1, max: 24, step: 0.5 })
-    .on("change", (event) => mainScene.materialController.setTriplanarSharpness(event.value));
+    .on("change", (event) => mainScene.treeSurface.setSharpness(event.value));
   // Parallax-occlusion depth (UV-space path — disable triplanar to see it). Needs a Height channel baked.
   triplanarFolder
     .addBinding(triplanarState, "parallax", { label: "parallax", min: 0, max: 0.12, step: 0.005 })
-    .on("change", (event) => mainScene.materialController.setParallaxScale(event.value));
+    .on("change", (event) => mainScene.treeSurface.setParallaxScale(event.value));
 
 
   // Export each PBR channel to a PNG (baked from the graph via convertToTexture readback).
   const exportFolder = texturePage.addFolder({ title: "Export PNG", expanded: false });
   for (const channel of ["basecolor", "normal", "ao", "roughness"] as const) {
     exportFolder.addButton({ title: `Export ${channel}` }).on("click", () => {
-      void channelBaker.downloadPng(
-        renderer,
-        mainScene.materialController,
-        PREVIEW_SOCKET[channel],
-        `material-${channel}.png`,
-      );
+      void downloadChannelPng(PREVIEW_SOCKET[channel], `material-${channel}.png`);
     });
   }
 

@@ -1,6 +1,6 @@
-import type { WebGPURenderer } from "three/webgpu";
-import type { ChannelBaker } from "./channel-baker";
-import type { MaterialGraphController } from "./controller";
+import { MaterialGraphController } from "./controller";
+import type { MaterialBakeService } from "./bake-service";
+import type { NodeRegistry } from "./registry";
 import type { MaterialGraphDocument, PbrSocket } from "./types";
 
 // Automated tiling test for the Tileable Noise node (dev diagnostic). For each selectable noise type it bakes
@@ -82,47 +82,40 @@ function seamMetrics(img: ImageData, n: number): Omit<SeamMetrics, "type" | "pas
   };
 }
 
-// Run the test across every Tileable Noise type. Replaces the controller's document per type, then restores
-// the original. Returns one SeamMetrics row per type.
+// Run the test across every Tileable Noise type. Bakes each on a THROWAWAY graph through the service — it
+// never touches a live on-screen material, so no object gets clobbered. Returns one SeamMetrics row per type.
 export async function runTilingTest(
-  renderer: WebGPURenderer,
-  baker: ChannelBaker,
-  controller: MaterialGraphController,
+  service: MaterialBakeService,
+  registry: NodeRegistry,
   options: TilingTestOptions = {},
 ): Promise<SeamMetrics[]> {
   const size = options.size ?? 256;
   const threshold = options.threshold ?? 3;
   const channel = options.channel ?? "baseColor";
-  const registry = controller.getRegistry();
   const noiseType = registry.get("tileable-noise").params.find((p) => p.key === "noiseType");
   const types = options.types ?? (noiseType?.options as string[] | undefined) ?? [];
 
-  const original = structuredClone(controller.document); // restore afterwards
+  const graph = new MaterialGraphController(registry, null); // throwaway, no persistence
   const results: SeamMetrics[] = [];
-  try {
-    for (const type of types) {
-      controller.loadDocument(noiseDoc(type));
-      await new Promise((r) => setTimeout(r, 60)); // let the offline rebake settle
-      const img = await baker.readImageData(renderer, controller, channel, size);
-      if (!img) {
-        results.push({
-          type,
-          ratioH: NaN,
-          ratioV: NaN,
-          wrapH: NaN,
-          wrapV: NaN,
-          interiorH: NaN,
-          interiorV: NaN,
-          pass: false,
-        });
-        continue;
-      }
-      if (options.onTile) await options.onTile(type, img);
-      const m = seamMetrics(img, size);
-      results.push({ type, ...m, pass: m.ratioH <= threshold && m.ratioV <= threshold });
+  for (const type of types) {
+    graph.loadDocument(noiseDoc(type));
+    const img = await service.readImage(graph, channel, size);
+    if (!img) {
+      results.push({
+        type,
+        ratioH: NaN,
+        ratioV: NaN,
+        wrapH: NaN,
+        wrapV: NaN,
+        interiorH: NaN,
+        interiorV: NaN,
+        pass: false,
+      });
+      continue;
     }
-  } finally {
-    controller.loadDocument(original);
+    if (options.onTile) await options.onTile(type, img);
+    const m = seamMetrics(img, size);
+    results.push({ type, ...m, pass: m.ratioH <= threshold && m.ratioV <= threshold });
   }
   return results;
 }

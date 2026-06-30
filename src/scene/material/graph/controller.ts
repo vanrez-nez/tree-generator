@@ -1,20 +1,22 @@
-import * as THREE from "three";
-import type { MeshStandardNodeMaterial, WebGPURenderer } from "three/webgpu";
-import { compileGraph } from "./compiler";
-import { OfflineMaterial } from "./offline-material";
+import { compileSockets, type CompileOptions, type CompiledSockets } from "./compiler";
 import { defaultRegistry, nodePorts, type NodeRegistry } from "./registry";
 import { createDefaultDocument } from "../presets";
-import { coercionFor, curveToArray, GROUP_TYPE, GROUP_INPUT_TYPE, GROUP_OUTPUT_TYPE } from "./types";
+import { coercionFor, GROUP_TYPE, GROUP_INPUT_TYPE, GROUP_OUTPUT_TYPE } from "./types";
 import type {
-  CurveValue,
   GraphEdge,
   GraphNode,
-  MaterialBackend,
   MaterialGraphDocument,
-  MaterialValue,
+  ParamType,
   PortDef,
   PortKind,
 } from "./types";
+
+// A change emitted to surface subscribers. `structural` = topology / document / solo / int-bool-select /
+// group edits (the compiled material must be rebuilt). `param` = a single live-tweakable value edit
+// (float/colour/vec3/curve) the surface can apply as a uniform (live backend) or fold into a re-bake.
+export type GraphChange =
+  | { kind: "structural" }
+  | { kind: "param"; nodeId: string; key: string; paramType: ParamType; value: unknown };
 
 const STORAGE_KEY = "material-graph-document:v1";
 const DOC_VERSION = 2;
@@ -55,24 +57,15 @@ function initStarterGroup(node: GraphNode): void {
   };
 }
 
-// Owns the live MaterialGraphDocument and the material compiled from it. The editor and UI mutate the
-// document through this controller; float/colour param edits update uniforms live, structural edits
-// (topology, int/bool/select params, backend) recompile and notify listeners so the surface swaps the
-// material. Persists to sessionStorage (material-graph-plan.md).
+// Owns the editable MaterialGraphDocument and the editor mutation API. It does NOT own a renderer, render
+// targets, or a THREE material — baking is the MaterialBakeService's job, and the live on-screen material
+// is a TexturedSurface bound to this graph. Edits persist to sessionStorage and emit a GraphChange so the
+// surface(s) react (live-uniform tweak vs re-bake vs rebuild). Splitting these concerns means baking one
+// graph can never knock out another object's material (material-graph-plan.md).
 export class MaterialGraphController {
   private doc: MaterialGraphDocument;
-  private backend: MaterialBackend = "offline";
-  private material_: MeshStandardNodeMaterial;
-  private uniforms: Map<string, Record<string, MaterialValue>>;
-  private readonly listeners = new Set<() => void>();
   private lastError_: string | null = null;
-  // ms of the last offline texture re-bake (0 in live). Surfaced as "Texture (ms)" in the UI.
-  private bakeMs_ = 0;
-  // Offline backend: bakes the graph to textures and samples them on the surface. Needs a renderer, so it
-  // can't run until attachRenderer() — until then we fall back to the live material so the surface is valid.
-  private readonly offline = new OfflineMaterial();
-  private renderer: WebGPURenderer | null = null;
-  private rebakeTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly changeListeners = new Set<(change: GraphChange) => void>();
   // Group navigation: the chain of group node ids from the root to the document currently being edited.
   // Edits target the active (sub)document; compile/persist always run on the root.
   private path: string[] = [];
@@ -81,81 +74,45 @@ export class MaterialGraphController {
   private soloNode_: string | null = null;
 
   // `storageKey` namespaces sessionStorage persistence. The tree's material uses the default key; a second
-  // controller (e.g. the visual floor) passes null to disable persistence so it never clobbers the tree's
-  // saved graph — it's driven entirely by preset selection instead.
+  // graph (e.g. the visual floor, or a throwaway used purely for an export bake) passes null to disable
+  // persistence so it never clobbers the tree's saved graph.
   constructor(
     private readonly registry: NodeRegistry = defaultRegistry,
     private readonly storageKey: string | null = STORAGE_KEY,
   ) {
     this.doc = this.load() ?? createDefaultDocument();
-    // No renderer yet → build the live material as a startup fallback; attachRenderer() switches to offline.
-    // A persisted graph can reference a node type/port that no longer exists (e.g. a removed or refactored
-    // node) — that must not crash boot, so fall back to the default document if the saved one won't compile.
-    let compiled;
+    // A persisted graph can reference a node type/port that no longer exists (a removed/refactored node) —
+    // that must not crash boot, so validate by compiling once and fall back to the default if it won't.
     try {
-      compiled = compileGraph(this.doc, this.registry, { backend: "live" });
+      compileSockets(this.doc, this.registry, { backend: "live" });
     } catch (err) {
       console.warn("[material] persisted graph failed to compile; resetting to default", err);
       this.doc = createDefaultDocument();
-      compiled = compileGraph(this.doc, this.registry, { backend: "live" });
     }
-    this.material_ = compiled.material;
-    this.uniforms = compiled.uniforms;
   }
 
-  // Give the controller the renderer (offline baking needs it). Called once after renderer.init(); triggers
-  // the first offline bake if the backend is offline.
-  attachRenderer(renderer: WebGPURenderer): void {
-    this.renderer = renderer;
-    this.offline.setScale(this.offline.scaleUniform.value);
-    this.recompile();
+  // Compile the graph to a Principled bundle (+ per-node uniforms). The single compile entrypoint shared by
+  // the bake service (offline channels) and the TexturedSurface (live material). Records lastError on throw.
+  compileBundle(opts: CompileOptions): CompiledSockets {
+    try {
+      const result = compileSockets(this.doc, this.registry, opts);
+      this.lastError_ = null;
+      return result;
+    } catch (err) {
+      this.lastError_ = err instanceof Error ? err.message : String(err);
+      throw err;
+    }
   }
 
-  // Triplanar world scale for the offline surface (the "world / tile" control). Live uniform on the surface
-  // material — no re-bake needed.
-  setTriplanarScale(value: number): void {
-    this.offline.setScale(value);
+  // Subscribe to graph edits. Returns an unsubscribe fn. The TexturedSurface uses this to re-bake/recompile.
+  onChange(fn: (change: GraphChange) => void): () => void {
+    this.changeListeners.add(fn);
+    return () => this.changeListeners.delete(fn);
   }
-
-  // Triplanar blend sharpness for the offline surface — higher narrows the wash band on faces angled
-  // between world axes (very visible on high-contrast patterns). Live uniform; no re-bake.
-  setTriplanarSharpness(value: number): void {
-    this.offline.setSharpness(value);
-  }
-
-  // Enable/disable the triplanar projection step (off → plain UV sampling of the baked maps).
-  setTriplanarEnabled(on: boolean): void {
-    this.offline.setTriplanar(on);
-  }
-
-  // Parallax-occlusion depth for the offline surface (UV-space path). Live uniform; no re-bake. Only has a
-  // visible effect when the graph bakes a height map (Principled's Height input) and triplanar is off.
-  setParallaxScale(value: number): void {
-    this.offline.setParallaxScale(value);
-  }
-
-  // Surface-material factors for the offline backend: scale the baked roughness/metalness channels and tint
-  // the basecolor. Live uniforms (no re-bake). A node material ignores the plain `material.roughness` scalar
-  // once a roughness channel is baked, so these multipliers are how the Texture > Material sliders take
-  // effect. No-op influence in the live backend (it has no baked channels).
-  setRoughnessFactor(value: number): void {
-    this.offline.setRoughnessFactor(value);
-  }
-  setMetalnessFactor(value: number): void {
-    this.offline.setMetalnessFactor(value);
-  }
-  setColorTint(hex: string): void {
-    this.offline.setColorTint(hex);
-  }
-
-  // Debug: paint the offline surface with its shading normal (geometry + normal map) as RGB to verify the
-  // normal is actually perturbing the surface. No-op in the live backend.
-  setNormalDebug(on: boolean): void {
-    this.offline.setNormalDebug(on);
-  }
-
-  get material(): MeshStandardNodeMaterial {
-    return this.material_;
+  // Persist the document and notify subscribers of the change. Every doc mutation routes through here.
+  private emit(change: GraphChange): void {
+    this.persist();
+    for (const fn of this.changeListeners) fn(change);
   }
   get document(): MaterialGraphDocument {
     return this.doc;
@@ -256,7 +213,7 @@ export class MaterialGraphController {
     const port: PortDef = { key, label: label.trim() || key, kind };
     existing.push(port);
     MaterialGraphController.boundaryPorts(b, side).push({ ...port });
-    this.recompile();
+    this.emit({ kind: "structural" });
     return key;
   }
 
@@ -272,7 +229,7 @@ export class MaterialGraphController {
       const p = ports.find((p) => p.key === key);
       if (p) p.label = label.trim() || key;
     }
-    this.recompile();
+    this.emit({ kind: "structural" });
   }
 
   // Remove an exposed socket and prune the wires it leaves dangling — both in the parent (edges on the
@@ -295,26 +252,13 @@ export class MaterialGraphController {
       parent.edges = parent.edges.filter((e) => !(e.fromNode === group.id && e.fromOutput === key));
       sub.edges = sub.edges.filter((e) => !(e.toNode === b.id && e.toInput === key));
     }
-    this.recompile();
+    this.emit({ kind: "structural" });
   }
   get lastError(): string | null {
     return this.lastError_;
   }
-  getBackend(): MaterialBackend {
-    return this.backend;
-  }
-  // ms of the last offline texture re-bake (0 in live). Surfaced as the Tree "Texture (ms)" readout.
-  get lastBakeMs(): number {
-    return this.backend === "offline" ? this.bakeMs_ : 0;
-  }
   getRegistry(): NodeRegistry {
     return this.registry;
-  }
-
-  // Subscribe to recompiles (a new material object). Returns an unsubscribe fn.
-  onRecompile(fn: () => void): () => void {
-    this.listeners.add(fn);
-    return () => this.listeners.delete(fn);
   }
 
   // --- param edits -------------------------------------------------------------------------------
@@ -323,50 +267,21 @@ export class MaterialGraphController {
     if (!node) return;
     node.params[key] = value;
     const def = this.registry.get(node.type);
+    const paramType = def.params.find((p) => p.key === key)?.type;
 
-    // Offline: param values are baked into textures (not live uniforms), so any edit needs a re-bake.
-    // Debounced so dragging a slider re-bakes once on settle. Declare-driven port changes still prune.
-    if (this.backend === "offline") {
-      if (def.declare && (def.params.find((p) => p.key === key)?.type ?? "") !== "float") {
-        this.pruneDanglingEdges(node);
-      }
-      this.persist();
-      this.scheduleRebake();
+    // Declare-driven select/bool can add/remove ports → prune now-dangling edges, then it's structural.
+    if (def.declare && (paramType === "select" || paramType === "bool")) {
+      this.pruneDanglingEdges(node);
+      this.emit({ kind: "structural" });
       return;
     }
-
-    // Live: float/colour/vec3/curve params are live uniforms — update in place, no recompile.
-    const param = def.params.find((p) => p.key === key);
-    const uniform = this.uniforms.get(nodeId)?.[key];
-    if (uniform && (param?.type === "float" || param?.type === "color" || param?.type === "vec3")) {
-      if (param.type === "color") uniform.value = new THREE.Color(value as THREE.ColorRepresentation);
-      else if (param.type === "vec3") {
-        const v = value as { x: number; y: number; z: number };
-        uniform.value.set(v.x, v.y, v.z);
-      } else uniform.value = Number(value);
-      this.persist();
-      return;
+    // float/colour/vec3/curve are live-tweakable values (the surface updates a uniform live, or folds the
+    // value into a re-bake). Everything else (int loop counts, plain bool/select) needs a structural rebuild.
+    if (paramType === "float" || paramType === "color" || paramType === "vec3" || paramType === "curve") {
+      this.emit({ kind: "param", nodeId, key, paramType, value });
+    } else {
+      this.emit({ kind: "structural" });
     }
-    if (uniform && param?.type === "curve") {
-      const flat = curveToArray(value as CurveValue);
-      const arr = (uniform as unknown as { array: number[] }).array;
-      for (let i = 0; i < flat.length; i++) arr[i] = flat[i];
-      this.persist();
-      return;
-    }
-    // int (loop counts), bool, select: recompile. If the node declares dynamic ports, a param change may
-    // have added/removed sockets — drop any edges that now reference a missing port first.
-    if (def.declare) this.pruneDanglingEdges(node);
-    this.recompile();
-  }
-
-  // Coalesce offline re-bakes from rapid edits (slider drags) into one render on settle.
-  private scheduleRebake(): void {
-    if (this.rebakeTimer !== undefined) clearTimeout(this.rebakeTimer);
-    this.rebakeTimer = setTimeout(() => {
-      this.rebakeTimer = undefined;
-      this.recompile();
-    }, 150);
   }
 
   // Remove edges on the active document that reference ports `node` no longer has (after a declare change).
@@ -391,7 +306,7 @@ export class MaterialGraphController {
     const node: GraphNode = { id, type, params, position, enabled: true };
     if (type === GROUP_TYPE) initStarterGroup(node);
     this.active().nodes.push(node);
-    this.recompile();
+    this.emit({ kind: "structural" });
     return id;
   }
 
@@ -405,7 +320,7 @@ export class MaterialGraphController {
     if (this.soloNode_ === id) this.soloNode_ = null; // don't preview a node that no longer exists
     doc.nodes = doc.nodes.filter((n) => n.id !== id);
     doc.edges = doc.edges.filter((e) => e.fromNode !== id && e.toNode !== id);
-    this.recompile();
+    this.emit({ kind: "structural" });
   }
 
   // The node currently soloed to the surface, or null.
@@ -417,14 +332,14 @@ export class MaterialGraphController {
   // was already soloed. Recompiles so the surface swaps to/from the preview.
   toggleSolo(id: string): void {
     this.soloNode_ = this.soloNode_ === id ? null : id;
-    this.recompile();
+    this.emit({ kind: "structural" });
   }
 
   // Clear any active solo (e.g. before a structural change). Recompiles only if something was soloed.
   clearSolo(): void {
     if (this.soloNode_ === null) return;
     this.soloNode_ = null;
-    this.recompile();
+    this.emit({ kind: "structural" });
   }
 
   setNodePosition(id: string, position: { x: number; y: number }): void {
@@ -450,7 +365,7 @@ export class MaterialGraphController {
     // One connection per single-input socket: drop any existing edge into the same input.
     doc.edges = doc.edges.filter((e) => !(e.toNode === edge.toNode && e.toInput === edge.toInput));
     doc.edges.push(edge);
-    this.recompile();
+    this.emit({ kind: "structural" });
     return true;
   }
 
@@ -465,7 +380,7 @@ export class MaterialGraphController {
           e.toInput === edge.toInput
         ),
     );
-    this.recompile();
+    this.emit({ kind: "structural" });
   }
 
   // Permissive linking: a connection is allowed when a coercion exists from the output kind to the
@@ -488,50 +403,21 @@ export class MaterialGraphController {
     return (dir === "input" ? ports.inputs : ports.outputs).find((p) => p.key === port)?.kind;
   }
 
-  // --- backend + lifecycle -----------------------------------------------------------------------
-  setBackend(backend: MaterialBackend): void {
-    if (backend === this.backend) return;
-    this.backend = backend;
-    this.recompile();
-  }
-
+  // --- lifecycle ---------------------------------------------------------------------------------
   reset(): void {
     this.doc = createDefaultDocument();
     this.path = [];
-    this.recompile();
+    this.soloNode_ = null;
+    this.emit({ kind: "structural" });
   }
 
-  // Replace the whole graph with an externally-supplied document (a saved/test config) and recompile.
-  // Used by the dual-system bake pipeline (__bakeConfig) to drive the graph from a single JSON.
+  // Replace the whole graph with an externally-supplied document (a saved/test config). Used by preset
+  // selection and by throwaway graphs the bake service compiles for export.
   loadDocument(doc: MaterialGraphDocument): void {
     this.doc = doc;
     this.path = [];
     this.soloNode_ = null;
-    this.recompile();
-  }
-
-  private recompile(): void {
-    try {
-      const soloNodeId = this.soloNode_ ?? undefined;
-      if (this.backend === "offline" && this.renderer) {
-        // Bake the graph to textures and present the triplanar sampler material.
-        this.bakeMs_ = this.offline.rebake(this.renderer, this.doc, this.registry, soloNodeId);
-        this.material_ = this.offline.material;
-        this.uniforms = new Map(); // offline edits re-bake (textures aren't live uniforms)
-      } else {
-        // live, or offline before the renderer attaches → procedural material so the surface is valid.
-        const compiled = compileGraph(this.doc, this.registry, { backend: "live", soloNodeId });
-        this.material_ = compiled.material;
-        this.uniforms = compiled.uniforms;
-      }
-      this.lastError_ = null;
-    } catch (err) {
-      // Keep the previous material so a bad edit doesn't blank the surface; surface the error instead.
-      this.lastError_ = err instanceof Error ? err.message : String(err);
-      console.warn("[material-graph] compile failed:", this.lastError_);
-    }
-    this.persist();
-    for (const fn of this.listeners) fn();
+    this.emit({ kind: "structural" });
   }
 
   private persist(): void {
