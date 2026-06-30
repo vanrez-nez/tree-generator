@@ -17,7 +17,6 @@ import {
   type MaterialGraphDocument,
   type MaterialNodeDef,
   type MaterialValue,
-  type PortDef,
   type PortKind,
 } from "./types";
 import { nodePorts, type NodeRegistry } from "./registry";
@@ -30,6 +29,19 @@ export interface CompiledMaterial {
 
 export interface CompileOptions {
   backend: MaterialBackend;
+  // Solo/preview: when set, the surface shows ONLY this node's first output (Blender's "connect to
+  // viewer"). The node can be at any nesting depth; its value is captured during compile and routed to
+  // baseColor (flat: roughness 1, metallic 0, no normal/height). Ignored if the id isn't found or its
+  // first output is a shader closure.
+  soloNodeId?: string;
+}
+
+// Mutable holder threaded through the recursive compile so a soloed node at any nesting depth can have its
+// first-output value captured. `kind` drives the coercion to colour for the preview bundle.
+interface SoloCapture {
+  id: string;
+  value?: MaterialValue;
+  kind?: PortKind;
 }
 
 export interface CompiledSockets {
@@ -49,8 +61,21 @@ export function compileSockets(
   // Domain: 3D world position (live, seamless) or a 2D uv slice (offline bake). Shared by every (sub)document.
   const coord: MaterialValue =
     opts.backend === "live" ? positionWorld : vec3(uv().x, uv().y, float(0));
-  const { outputs, uniforms } = compileDocument(doc, registry, opts, coord);
-  return { bundle: resolveBundle(doc, registry, outputs), uniforms };
+  const solo: SoloCapture | undefined = opts.soloNodeId ? { id: opts.soloNodeId } : undefined;
+  const { outputs, uniforms } = compileDocument(doc, registry, opts, coord, undefined, solo);
+  // Solo preview overrides the normal Material Output bundle, but only for a previewable (non-shader) value.
+  const bundle =
+    solo && solo.value !== undefined && solo.kind && solo.kind !== "shader"
+      ? soloBundle(solo.value, solo.kind)
+      : resolveBundle(doc, registry, outputs);
+  return { bundle, uniforms };
+}
+
+// The flat preview bundle for a soloed node: its output as baseColor (floats broadcast to grey), fully
+// rough + non-metallic, no normal/height so the raw value reads cleanly on the surface.
+function soloBundle(value: MaterialValue, kind: PortKind): MaterialBundle {
+  const baseColor = kind === "float" ? vec3(value) : value; // vector/color are already vec3
+  return { baseColor, roughness: float(1), metallic: float(0) };
 }
 
 interface CompiledDocument {
@@ -67,6 +92,7 @@ function compileDocument(
   opts: CompileOptions,
   coord: MaterialValue,
   seededInputs?: Record<string, MaterialValue | undefined>,
+  solo?: SoloCapture,
 ): CompiledDocument {
   validate(doc, registry, seededInputs !== undefined);
   const order = topoSort(doc);
@@ -88,21 +114,27 @@ function compileDocument(
     }
     if (node.type === GROUP_TYPE) {
       const ext = resolveInputs(node, doc, outputsByNode, byId, registry);
-      outputsByNode.set(id, compileGroup(node, registry, opts, coord, ext));
+      outputsByNode.set(id, compileGroup(node, registry, opts, coord, ext, solo));
       continue;
     }
 
     const inputs = resolveInputs(node, doc, outputsByNode, byId, registry);
-    // Disabled chain nodes pass their first input through (preserves the on/off bypass semantics).
-    if (!node.enabled && ports.inputs.length > 0) {
-      outputsByNode.set(id, bypassOutputs(ports, inputs));
-      continue;
-    }
     const def = registry.get(node.type);
     const uniforms = buildUniforms(def, node);
     uniformsByNode.set(id, uniforms);
     const ctx: BuildCtx = { inputs, uniforms, params: node.params, coord, backend: opts.backend };
     outputsByNode.set(id, def.build(ctx));
+  }
+
+  // Solo capture: if the previewed node lives at this level, grab its first output. First capture wins, so
+  // nested levels (compiled via compileGroup) don't clobber an outer match.
+  if (solo && solo.value === undefined) {
+    const node = byId.get(solo.id);
+    const firstOut = node ? nodePorts(node, registry).outputs[0] : undefined;
+    if (node && firstOut) {
+      solo.value = outputsByNode.get(solo.id)?.[firstOut.key];
+      solo.kind = firstOut.kind;
+    }
   }
 
   return { outputs: outputsByNode, uniforms: uniformsByNode };
@@ -116,10 +148,11 @@ function compileGroup(
   opts: CompileOptions,
   coord: MaterialValue,
   externalInputs: Record<string, MaterialValue | undefined>,
+  solo?: SoloCapture,
 ): Record<string, MaterialValue> {
   const sub = groupNode.subgraph;
   if (!sub) return {};
-  const { outputs } = compileDocument(sub, registry, opts, coord, externalInputs);
+  const { outputs } = compileDocument(sub, registry, opts, coord, externalInputs, solo);
   const goNode = sub.nodes.find((n) => n.type === GROUP_OUTPUT_TYPE);
   const result: Record<string, MaterialValue> = {};
   if (!goNode) return result;
@@ -242,18 +275,6 @@ function coerce(value: MaterialValue, conversion: Coercion): MaterialValue {
     case "color-to-vector":
       return value;
   }
-}
-
-function bypassOutputs(
-  ports: { inputs: PortDef[]; outputs: PortDef[] },
-  inputs: Record<string, MaterialValue | undefined>,
-): Record<string, MaterialValue> {
-  const firstIn = ports.inputs[0];
-  const firstOut = ports.outputs[0];
-  if (firstIn && firstOut && inputs[firstIn.key] !== undefined) {
-    return { [firstOut.key]: inputs[firstIn.key] };
-  }
-  return {};
 }
 
 function buildUniforms(def: MaterialNodeDef, node: GraphNode): Record<string, MaterialValue> {

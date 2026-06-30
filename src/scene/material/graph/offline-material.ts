@@ -105,9 +105,14 @@ export class OfflineMaterial {
 
   // Compile the graph (offline/uv), render each connected channel into its RT, and (re)wire the surface
   // sampling if the connected set changed. Returns the bake duration (ms).
-  rebake(renderer: WebGPURenderer, doc: MaterialGraphDocument, registry: NodeRegistry): number {
+  rebake(
+    renderer: WebGPURenderer,
+    doc: MaterialGraphDocument,
+    registry: NodeRegistry,
+    soloNodeId?: string,
+  ): number {
     const t0 = performance.now();
-    const { bundle } = compileSockets(doc, registry, { backend: "offline" });
+    const { bundle } = compileSockets(doc, registry, { backend: "offline", soloNodeId });
     const present: PbrSocket[] = [];
     for (const ch of SURFACE_CHANNELS) {
       const node = (bundle as Partial<Record<string, MaterialValue>>)[ch];

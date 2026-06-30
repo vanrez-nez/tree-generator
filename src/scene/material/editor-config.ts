@@ -139,10 +139,11 @@ function nodeToConfig(
       p.type === "vec3" ? { ...(v as object) } : p.type === "curve" ? structuredClone(v) : v;
   }
 
-  // Shader + output nodes aren't disable-able: bypassing a Principled/Emission would pass a raw colour
-  // (not a bundle) to Material Output and break the unpack.
-  const canToggle =
-    ports.inputs.length > 0 && def.nodeClass !== "output" && def.nodeClass !== "shader";
+  // Solo/preview routes a node's FIRST output to the surface. Only previewable values qualify: a node with
+  // no outputs (Material Output, Group Output) or a shader-closure first output (Principled/Emission) can't
+  // be shown as colour, so it gets no solo button.
+  const firstOut = ports.outputs[0];
+  const canSolo = Boolean(firstOut) && firstOut.kind !== "shader";
 
   return {
     id: node.id,
@@ -160,8 +161,15 @@ function nodeToConfig(
               bindParam(pane, controller, node.id, p, local, def.declare ? rerender : undefined);
           })
         : undefined),
-    enabled: node.enabled,
-    onToggle: canToggle ? (enabled) => controller.setNodeEnabled(node.id, enabled) : undefined,
+    // Exclusive solo: reflect whether this node is the previewed one; toggling rebuilds the editor so the
+    // previously-soloed node's button clears too.
+    soloed: controller.soloNode === node.id,
+    onSolo: canSolo
+      ? () => {
+          controller.toggleSolo(node.id);
+          rerender();
+        }
+      : undefined,
     deletable: !UNDELETABLE.has(node.type),
     // Group nodes are enterable: double-click descends into the subgraph, then re-render the canvas.
     onEnter:

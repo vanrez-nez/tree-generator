@@ -76,6 +76,9 @@ export class MaterialGraphController {
   // Group navigation: the chain of group node ids from the root to the document currently being edited.
   // Edits target the active (sub)document; compile/persist always run on the root.
   private path: string[] = [];
+  // Solo/preview: the single node whose output is routed straight to the surface (Blender-style viewer),
+  // or null. Exclusive — soloing one node clears any other. Transient (not persisted to the document).
+  private soloNode_: string | null = null;
 
   // `storageKey` namespaces sessionStorage persistence. The tree's material uses the default key; a second
   // controller (e.g. the visual floor) passes null to disable persistence so it never clobbers the tree's
@@ -399,15 +402,28 @@ export class MaterialGraphController {
     const doc = this.active();
     const node = doc.nodes.find((n) => n.id === id);
     if (!node || MaterialGraphController.UNDELETABLE.has(node.type)) return;
+    if (this.soloNode_ === id) this.soloNode_ = null; // don't preview a node that no longer exists
     doc.nodes = doc.nodes.filter((n) => n.id !== id);
     doc.edges = doc.edges.filter((e) => e.fromNode !== id && e.toNode !== id);
     this.recompile();
   }
 
-  setNodeEnabled(id: string, enabled: boolean): void {
-    const node = this.active().nodes.find((n) => n.id === id);
-    if (!node) return;
-    node.enabled = enabled;
+  // The node currently soloed to the surface, or null.
+  get soloNode(): string | null {
+    return this.soloNode_;
+  }
+
+  // Toggle solo/preview for a node (exclusive): routes its first output to the surface, or clears it if it
+  // was already soloed. Recompiles so the surface swaps to/from the preview.
+  toggleSolo(id: string): void {
+    this.soloNode_ = this.soloNode_ === id ? null : id;
+    this.recompile();
+  }
+
+  // Clear any active solo (e.g. before a structural change). Recompiles only if something was soloed.
+  clearSolo(): void {
+    if (this.soloNode_ === null) return;
+    this.soloNode_ = null;
     this.recompile();
   }
 
@@ -490,19 +506,21 @@ export class MaterialGraphController {
   loadDocument(doc: MaterialGraphDocument): void {
     this.doc = doc;
     this.path = [];
+    this.soloNode_ = null;
     this.recompile();
   }
 
   private recompile(): void {
     try {
+      const soloNodeId = this.soloNode_ ?? undefined;
       if (this.backend === "offline" && this.renderer) {
         // Bake the graph to textures and present the triplanar sampler material.
-        this.bakeMs_ = this.offline.rebake(this.renderer, this.doc, this.registry);
+        this.bakeMs_ = this.offline.rebake(this.renderer, this.doc, this.registry, soloNodeId);
         this.material_ = this.offline.material;
         this.uniforms = new Map(); // offline edits re-bake (textures aren't live uniforms)
       } else {
         // live, or offline before the renderer attaches → procedural material so the surface is valid.
-        const compiled = compileGraph(this.doc, this.registry, { backend: "live" });
+        const compiled = compileGraph(this.doc, this.registry, { backend: "live", soloNodeId });
         this.material_ = compiled.material;
         this.uniforms = compiled.uniforms;
       }

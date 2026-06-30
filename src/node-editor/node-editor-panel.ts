@@ -617,9 +617,8 @@ export class NodeEditorPanel {
     const area = this.area!
     const node = new EditorNode(def.title)
     node.nodeClass = def.nodeClass
-    node.enabled = def.enabled ?? true
-    node.enableable = Boolean(def.onToggle)
-    node.onToggle = def.onToggle
+    node.soloed = def.soloed ?? false
+    node.onSolo = def.onSolo
     node.onDelete =
       def.deletable && this.config?.onDeleteNode ? () => void this.deleteNode(def.id, node.id) : undefined
     node.onEnter = def.onEnter

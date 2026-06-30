@@ -10,7 +10,6 @@ import { LitElement, html, nothing, type PropertyValues } from 'lit'
 import {
   createElement as createLucideElement,
   Eye,
-  EyeOff,
   Pencil,
   Trash2,
   type IconNode,
@@ -21,10 +20,9 @@ const NODE_WIDTH = 288
 export class EditorNode extends ClassicPreset.Node {
   width = NODE_WIDTH
   height = 0 // auto
-  enabled = true
-  enableable = false
+  soloed = false
   nodeClass?: string
-  onToggle?: (enabled: boolean) => void
+  onSolo?: () => void
   onDelete?: () => void
   onEnter?: () => void
   onRename?: (label: string) => void
@@ -144,25 +142,23 @@ export class EditorNodeElement extends LitElement {
     this.sortByIndex(controls)
 
     this.classList.toggle('selected', Boolean(this.data.selected))
-    this.classList.toggle('disabled', this.data.enableable && !this.data.enabled)
+    this.classList.toggle('soloed', Boolean(this.data.soloed))
 
-    const eye =
-      this.data.enableable && this.data.onToggle
-        ? html`<button
-            class="eye ${this.data.enabled ? '' : 'off'}"
-            title=${this.data.enabled ? 'Disable node' : 'Enable node'}
-            @pointerdown=${(e: Event) => e.stopPropagation()}
-            @click=${(e: Event) => {
-              e.stopPropagation()
-              const next = !this.data.enabled
-              this.data.enabled = next
-              this.data.onToggle?.(next)
-              this.requestUpdate() // `data` is mutated in place, so prompt a re-render of the eye
-            }}
-          >
-            ${lucideIcon(this.data.enabled ? Eye : EyeOff)}
-          </button>`
-        : nothing
+    // Solo/preview (Blender-style "connect to viewer"): routes this node's output to the surface. Exclusive,
+    // so the highlight follows whichever node is currently soloed.
+    const solo = this.data.onSolo
+      ? html`<button
+          class="eye ${this.data.soloed ? 'on' : ''}"
+          title=${this.data.soloed ? 'Stop previewing this node' : 'Preview this node on the surface'}
+          @pointerdown=${(e: Event) => e.stopPropagation()}
+          @click=${(e: Event) => {
+            e.stopPropagation()
+            this.data.onSolo?.()
+          }}
+        >
+          ${lucideIcon(Eye)}
+        </button>`
+      : nothing
 
     const del = this.data.onDelete
       ? html`<button
@@ -212,7 +208,7 @@ export class EditorNodeElement extends LitElement {
         title=${enterable ? 'Double-click to enter group' : 'Double-click to zoom to node'}
       >
         ${titleText}
-        ${rename}${eye}${del}
+        ${rename}${solo}${del}
       </div>
       <div class="ports outputs" @pointerdown=${this.stopDrag}>
         ${outputs.map(([key, output]) =>

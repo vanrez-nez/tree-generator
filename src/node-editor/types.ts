@@ -28,10 +28,10 @@ export type EditorNodeConfig = {
    * Return a disposer invoked when the node element unmounts.
    */
   mountControls?: (host: HTMLElement) => () => void
-  /** Current on/off state for the header eye toggle. */
-  enabled?: boolean
-  /** Provide to render the eye toggle. Omit for nodes that can't be disabled (e.g. a root). */
-  onToggle?: (enabled: boolean) => void
+  /** Whether this node is currently soloed (its output previewed on the surface). Drives the eye highlight. */
+  soloed?: boolean
+  /** Provide to render the solo/preview (eye) button. Omit for nodes whose output can't be previewed. */
+  onSolo?: () => void
   /** Whether the node shows a delete (×) button. Omit/false for terminal nodes (e.g. the output). */
   deletable?: boolean
   /** Provide to make the node "enterable" (double-click) — e.g. descend into a group's subgraph. */

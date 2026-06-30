@@ -192,8 +192,10 @@ ne-node {
 ne-node.selected {
   border-color: #5b8fd6;
 }
-ne-node.disabled {
-  opacity: 0.55;
+/* Soloed node (its output previewed on the surface): highlight the border so it's easy to spot. */
+ne-node.soloed {
+  border-color: #e0a64b;
+  box-shadow: 0 0 0 1px #e0a64b;
 }
 ne-node .title {
   display: flex;
@@ -266,6 +268,10 @@ ne-node .eye {
   border: none;
   padding: 2px;
   cursor: pointer;
+  /* Dim by default; brightens on hover and when soloed (.on) so the active preview reads clearly. */
+  color: #9aa0a8;
+}
+ne-node .eye:hover {
   color: #d6d9df;
 }
 ne-node .eye .lucide-icon {
@@ -275,8 +281,8 @@ ne-node .eye .lucide-icon {
   stroke: currentColor;
   stroke-width: 2;
 }
-ne-node .eye.off {
-  opacity: 0.4;
+ne-node .eye.on {
+  color: #e0a64b;
 }
 ne-node .ne-rename {
   display: inline-flex;
