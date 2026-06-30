@@ -8,13 +8,13 @@ const PARAMS: ParamDef[] = [
   { key: "metallic", label: "metallic", type: "float", min: 0, max: 1, step: 0.01, default: 0 },
   { key: "roughness", label: "roughness", type: "float", min: 0, max: 1, step: 0.01, default: 0.5 },
   { key: "ior", label: "IOR", type: "float", min: 1, max: 2.5, step: 0.01, default: 1.5 },
-  { key: "alpha", label: "alpha", type: "float", min: 0, max: 1, step: 0.01, default: 1 },
+  { key: "alpha", label: "alpha", type: "float", min: 0, max: 1, step: 0.01, default: 1, bakeStructural: true },
   { key: "coat", label: "coat weight", type: "float", min: 0, max: 1, step: 0.01, default: 0 },
   { key: "coatRoughness", label: "coat rough", type: "float", min: 0, max: 1, step: 0.01, default: 0.03 },
   { key: "sheen", label: "sheen weight", type: "float", min: 0, max: 1, step: 0.01, default: 0 },
   { key: "sheenRoughness", label: "sheen rough", type: "float", min: 0, max: 1, step: 0.01, default: 0.3 },
   { key: "transmission", label: "transmission", type: "float", min: 0, max: 1, step: 0.01, default: 0 },
-  { key: "emission", label: "emission", type: "color", default: "#000000" },
+  { key: "emission", label: "emission", type: "color", default: "#000000", bakeStructural: true },
   { key: "emissionStrength", label: "emission str", type: "float", min: 0, max: 10, step: 0.1, default: 1 },
 ];
 const NUM_DEFAULTS: Record<string, number> = Object.fromEntries(

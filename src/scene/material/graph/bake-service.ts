@@ -1,7 +1,13 @@
 import * as THREE from "three";
-import { RenderTarget, type WebGPURenderer } from "three/webgpu";
+import { RenderTarget, type WebGPURenderer, type MeshBasicNodeMaterial } from "three/webgpu";
 import { vec3 } from "three/tsl";
-import { encodeChannel, renderColorNodeToTarget, COLOR_CHANNELS } from "./channel-baker";
+import {
+  encodeChannel,
+  renderColorNodeToTarget,
+  renderMaterialToTarget,
+  makeChannelMaterial,
+  COLOR_CHANNELS,
+} from "./channel-baker";
 import type { MaterialGraphController } from "./controller";
 import type { MaterialValue, PbrSocket } from "./types";
 
@@ -10,6 +16,9 @@ import type { MaterialValue, PbrSocket } from "./types";
 // hijacking a live controller's document. Work is SERIALISED through one queue — the channel-baker uses
 // shared module-level quads/RTs, so two bakes can't safely run at once anyway — and aggregate progress is
 // reported (onProgress + console) so "bake N textures from different points" queues and reports as one.
+
+// Minimal shape of the WebGPU queue's completion signal (three's backend type isn't exported here).
+type GPUQueueLike = { onSubmittedWorkDone?: () => Promise<void> };
 
 const BAKE_SIZE = 1024;
 // Anisotropic-filter taps for baked channel textures (within every desktop GPU's cap; driver clamps down).
@@ -49,6 +58,12 @@ export interface BakeOptions {
 // changes. A one-off export bake gets a transient set the caller disposes.
 export class BakedTextureSet {
   private readonly targets = new Map<PbrSocket, RenderTarget>();
+  // Persistent per-channel bake material (colorNode assigned at compile time). Re-rendering these without
+  // reassigning colorNode reuses their pipelines — the uniform fast path (no recompile on a slider drag).
+  private readonly mats = new Map<PbrSocket | "height", MeshBasicNodeMaterial>();
+  // Per-node param uniforms from the last compile (nodeId -> { paramKey -> uniform node }). The colorNodes
+  // above reference these, so updating a uniform's `.value` and re-rendering reflects it with no recompile.
+  uniforms: Map<string, Record<string, MaterialValue>> = new Map();
   heightTarget: RenderTarget | null = null;
   hasHeight = false;
   // The set of channels that were actually connected at the last bake, plus a height flag — folded into a
@@ -70,6 +85,24 @@ export class BakedTextureSet {
     return rt;
   }
 
+  // The persistent bake material for a channel (created on first use). `bakeInto` sets its colorNode;
+  // `rerenderInto` reuses it as-is.
+  channelMaterial(ch: PbrSocket | "height"): MeshBasicNodeMaterial {
+    let m = this.mats.get(ch);
+    if (!m) {
+      m = makeChannelMaterial();
+      this.mats.set(ch, m);
+    }
+    return m;
+  }
+
+  // Any already-allocated render target, for a 1px GPU-completion readback (back-pressure). Null if nothing
+  // has been baked yet.
+  firstTarget(): RenderTarget | null {
+    for (const rt of this.targets.values()) return rt;
+    return this.heightTarget;
+  }
+
   ensureHeightTarget(): RenderTarget {
     if (!this.heightTarget) this.heightTarget = makeChannelTarget("height", this.size);
     return this.heightTarget;
@@ -83,6 +116,8 @@ export class BakedTextureSet {
   dispose(): void {
     for (const rt of this.targets.values()) rt.dispose();
     this.targets.clear();
+    for (const m of this.mats.values()) m.dispose();
+    this.mats.clear();
     this.heightTarget?.dispose();
     this.heightTarget = null;
   }
@@ -160,29 +195,79 @@ export class MaterialBakeService {
   // Render a graph's connected channels into `set`, in place (queued). Resolves true when the present
   // channel set changed since the last bake (so the caller rewires its samplers), false to just re-render.
   bakeInto(set: BakedTextureSet, graph: MaterialGraphController, opts: BakeOptions = {}): Promise<boolean> {
-    return this.enqueue(opts.label ?? "surface", () => {
+    return this.enqueue(opts.label ?? "surface", async () => {
       const renderer = this.renderer;
       if (!renderer) return false;
-      const { bundle } = graph.compileBundle({ backend: "offline", soloNodeId: opts.soloNodeId });
+      const { bundle, uniforms } = graph.compileBundle({ backend: "offline", soloNodeId: opts.soloNodeId });
+      set.uniforms = uniforms; // retained so a uniform-only edit can re-render without recompiling
       const channels = opts.channels ?? set.channels;
       const present = new Set<PbrSocket>();
       for (const ch of channels) {
         const node = (bundle as Partial<Record<string, MaterialValue>>)[ch];
         if (!node) continue;
-        renderColorNodeToTarget(renderer, encodeChannel(node, ch), set.target(ch), ch === "normal");
+        // Assign the channel's colorNode ONCE here (this is the compile); rerenderInto reuses it as-is.
+        const mat = set.channelMaterial(ch);
+        mat.colorNode = encodeChannel(node, ch);
+        mat.needsUpdate = true;
+        renderMaterialToTarget(renderer, mat, set.target(ch), ch === "normal");
         present.add(ch);
       }
       // Height drives the parallax UV offset (its own linear target), not a lit channel.
       set.hasHeight = bundle.height !== undefined;
       if (set.hasHeight) {
-        renderColorNodeToTarget(renderer, vec3(bundle.height), set.ensureHeightTarget(), false);
+        const hm = set.channelMaterial("height");
+        hm.colorNode = vec3(bundle.height);
+        hm.needsUpdate = true;
+        renderMaterialToTarget(renderer, hm, set.ensureHeightTarget(), false);
       }
       const signature = [...present].sort().join(",") + (set.hasHeight ? "|h" : "");
       const changed = signature !== set.signature;
       set.present = present;
       set.signature = signature;
+      // Wait for the GPU to actually finish before resolving — gives the caller real back-pressure so it
+      // can't submit the next bake while this one is still executing (the cause of the editing GPU backlog).
+      await this.gpuSync(set);
       return changed;
     });
+  }
+
+  // Resolve only once the GPU has finished the preceding renders — turning "submitted" into "completed" so
+  // the caller has real back-pressure. Prefer the WebGPU queue's transfer-free `onSubmittedWorkDone`; fall
+  // back to a 1px readback (also forces a GPU sync) when the backend doesn't expose it.
+  private async gpuSync(set: BakedTextureSet): Promise<void> {
+    const renderer = this.renderer;
+    if (!renderer) return;
+    const queue = (renderer as unknown as { backend?: { device?: { queue?: GPUQueueLike } } }).backend
+      ?.device?.queue;
+    if (queue?.onSubmittedWorkDone) {
+      await queue.onSubmittedWorkDone();
+      return;
+    }
+    const rt = set.firstTarget();
+    if (rt) await renderer.readRenderTargetPixelsAsync(rt, 0, 0, 1, 1);
+  }
+
+  // Re-render the LAST-compiled per-channel materials into `set`'s targets WITHOUT recompiling. The caller
+  // has updated uniform values in place (set.uniforms), so the existing pipelines just draw with new values
+  // — the fast path for slider drags. Serialised after any in-flight bake (shared GPU quads); no progress
+  // counter (this isn't a "bake" the UI should report).
+  rerenderInto(set: BakedTextureSet): Promise<void> {
+    const run = this.queue.then(async () => {
+      const renderer = this.renderer;
+      if (!renderer) return;
+      for (const ch of set.present) {
+        renderMaterialToTarget(renderer, set.channelMaterial(ch), set.target(ch), ch === "normal");
+      }
+      if (set.hasHeight && set.heightTarget) {
+        renderMaterialToTarget(renderer, set.channelMaterial("height"), set.heightTarget, false);
+      }
+      await this.gpuSync(set); // back-pressure: resolve only after the GPU finishes (see bakeInto)
+    });
+    this.queue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   // Convenience pipeline: instantiate a texture set, bake the graph into it, hand it back (caller disposes).

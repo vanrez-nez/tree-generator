@@ -24,9 +24,17 @@ export function encodeChannel(node: MaterialValue, channel: PbrSocket): Material
 // the target into a raw high-res RT, then box-downsample SS×SS taps into the destination — matching
 // Blender's anti-aliased bake. (MSAA on the RT would not help: it only anti-aliases geometry edges, not
 // the shader content of a fullscreen quad.) Module-level singletons: bakes are synchronous.
-const SS = 4;
-const bakeMaterial = new MeshBasicNodeMaterial();
-const bakeQuad = new QuadMesh(bakeMaterial);
+// SS=2 (2×2) renders the intermediate at 2× the target, not 4× — 4× less GPU work than SS=4 — and combined
+// with the channel mipmaps + anisotropy is adequate AA. (SS is a build-time constant: the downsample node
+// below unrolls SS×SS taps, so changing it rebuilds those quads, not a runtime knob.)
+const SS = 2;
+// One reusable fullscreen quad; its material is SWAPPED per render. Each channel keeps its OWN persistent
+// material (makeChannelMaterial), so re-rendering after only a uniform changed reuses the compiled pipeline
+// — no WGSL/pipeline recompile. (Reassigning a material's colorNode + needsUpdate is what forces a recompile.)
+const bakeQuad = new QuadMesh(new MeshBasicNodeMaterial());
+// Scratch material for one-off raw-colorNode renders (PNG export / 2D preview via renderColorNodeToTarget).
+// That path recompiles per call, which is fine for non-interactive one-offs.
+const scratchMat = new MeshBasicNodeMaterial();
 
 // Raw high-res intermediate: stores the already-encoded channel values verbatim (no colorspace / filtering
 // so the box taps read exact texels). Resized in place so the prebuilt downsample nodes keep referencing it.
@@ -58,10 +66,18 @@ downNormalMat.colorNode = downsampleNode(true);
 const downColorQuad = new QuadMesh(downColorMat);
 const downNormalQuad = new QuadMesh(downNormalMat);
 
-// Render `colorNode` into `rt`, supersampled. `isNormal` switches the downsample to vector-correct averaging.
-export function renderColorNodeToTarget(
+// A persistent per-channel bake material. The caller assigns `.colorNode` (+ `needsUpdate`) ONCE per compile;
+// re-rendering it later with only changed uniform values reuses its pipeline (no recompile).
+export function makeChannelMaterial(): MeshBasicNodeMaterial {
+  return new MeshBasicNodeMaterial();
+}
+
+// Render `material` (its colorNode already assigned) into `rt`, supersampled + box-downsampled. This does NOT
+// touch colorNode/needsUpdate — so when the material is unchanged since its last compile it is a pure
+// re-render (the uniform fast path). `isNormal` switches the downsample to vector-correct averaging.
+export function renderMaterialToTarget(
   renderer: WebGPURenderer,
-  colorNode: MaterialValue,
+  material: MeshBasicNodeMaterial,
   rt: RenderTarget,
   isNormal = false,
 ): void {
@@ -69,12 +85,24 @@ export function renderColorNodeToTarget(
   const h = rt.height;
   if (ssRT.width !== w * SS || ssRT.height !== h * SS) ssRT.setSize(w * SS, h * SS);
   ssTexel.value.set(1 / (w * SS), 1 / (h * SS));
-  bakeMaterial.colorNode = colorNode;
-  bakeMaterial.needsUpdate = true;
+  bakeQuad.material = material;
   const previous = renderer.getRenderTarget();
   renderer.setRenderTarget(ssRT); // 1) render the channel at SS×
   bakeQuad.render(renderer);
   renderer.setRenderTarget(rt); // 2) box-downsample into the destination
   (isNormal ? downNormalQuad : downColorQuad).render(renderer);
   renderer.setRenderTarget(previous);
+}
+
+// One-off: render a raw `colorNode` into `rt` via the scratch material (recompiles each call). For PNG
+// export / 2D preview — not the interactive surface path.
+export function renderColorNodeToTarget(
+  renderer: WebGPURenderer,
+  colorNode: MaterialValue,
+  rt: RenderTarget,
+  isNormal = false,
+): void {
+  scratchMat.colorNode = colorNode;
+  scratchMat.needsUpdate = true;
+  renderMaterialToTarget(renderer, scratchMat, rt, isNormal);
 }

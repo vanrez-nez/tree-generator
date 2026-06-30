@@ -845,18 +845,32 @@ async function postBakeFile(file: string, body: BodyInit): Promise<boolean> {
   }
 }
 
-async function saveChannelToBake(channel: PbrSocket, size = 1024): Promise<void> {
-  const image = await bakeService.readImage(mainScene.materialController, channel, size);
+// Bake-to-disk is an ephemeral PREVIEW tool: it compiles the document on a throwaway, non-persisting
+// controller (exportGraph) so inspecting a channel never reads, mutates, or persists any on-screen
+// material. `doc` defaults to a clone of the current tree graph (loadDocument mutates its input, so the
+// live doc must never be passed directly); pass any document to bake something off-screen.
+async function saveChannelToBake(
+  channel: PbrSocket,
+  size = 1024,
+  doc: MaterialGraphDocument = structuredClone(mainScene.materialController.document),
+): Promise<void> {
+  const image = await bakeService.readImage(exportGraph(doc), channel, size);
   if (!image) return;
   const blob = await canvasToPngBlob(imageDataToCanvas(image));
   if (!blob) return;
   await postBakeFile(`${channel}.png`, blob);
 }
 
-// Bake a channel of the tree's graph (via the service) and trigger a browser download. Replaces the old
-// ChannelBaker.downloadPng; uses a transient object URL + synthetic anchor (revoked next tick).
-async function downloadChannelPng(channel: PbrSocket, filename: string, size = 1024): Promise<void> {
-  const image = await bakeService.readImage(mainScene.materialController, channel, size);
+// Bake a channel of a graph (via the service) and trigger a browser download. Replaces the old
+// ChannelBaker.downloadPng; uses a transient object URL + synthetic anchor (revoked next tick). Like
+// saveChannelToBake, this is ephemeral — it bakes a throwaway clone, never the live material.
+async function downloadChannelPng(
+  channel: PbrSocket,
+  filename: string,
+  size = 1024,
+  doc: MaterialGraphDocument = structuredClone(mainScene.materialController.document),
+): Promise<void> {
+  const image = await bakeService.readImage(exportGraph(doc), channel, size);
   if (!image) return;
   const blob = await canvasToPngBlob(imageDataToCanvas(image));
   if (!blob) return;
@@ -947,7 +961,7 @@ async function renderStandardMaterialDemo(material: THREE.Material, size = 512):
 // tree's or floor's live material — this is the whole point of the bake-service split (no more clobber).
 function exportGraph(doc: MaterialGraphDocument): MaterialGraphController {
   const graph = new MaterialGraphController(mainScene.materialController.getRegistry(), null);
-  graph.loadDocument(doc);
+  graph.loadDocument(doc, { persist: false });
   if (graph.lastError) console.warn(`[bake] config compiled with error: ${graph.lastError}`);
   return graph;
 }

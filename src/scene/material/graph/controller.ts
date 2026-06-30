@@ -16,7 +16,16 @@ import type {
 // (float/colour/vec3/curve) the surface can apply as a uniform (live backend) or fold into a re-bake.
 export type GraphChange =
   | { kind: "structural" }
-  | { kind: "param"; nodeId: string; key: string; paramType: ParamType; value: unknown };
+  | {
+      kind: "param";
+      nodeId: string;
+      key: string;
+      paramType: ParamType;
+      value: unknown;
+      // The param def's bakeStructural flag (see ParamDef): a float that's build-time in the offline bake.
+      // The surface uses it to skip its offline uniform fast-path and re-bake instead.
+      bakeStructural?: boolean;
+    };
 
 const STORAGE_KEY = "material-graph-document:v1";
 const DOC_VERSION = 2;
@@ -267,7 +276,8 @@ export class MaterialGraphController {
     if (!node) return;
     node.params[key] = value;
     const def = this.registry.get(node.type);
-    const paramType = def.params.find((p) => p.key === key)?.type;
+    const paramDef = def.params.find((p) => p.key === key);
+    const paramType = paramDef?.type;
 
     // Declare-driven select/bool can add/remove ports → prune now-dangling edges, then it's structural.
     if (def.declare && (paramType === "select" || paramType === "bool")) {
@@ -278,7 +288,7 @@ export class MaterialGraphController {
     // float/colour/vec3/curve are live-tweakable values (the surface updates a uniform live, or folds the
     // value into a re-bake). Everything else (int loop counts, plain bool/select) needs a structural rebuild.
     if (paramType === "float" || paramType === "color" || paramType === "vec3" || paramType === "curve") {
-      this.emit({ kind: "param", nodeId, key, paramType, value });
+      this.emit({ kind: "param", nodeId, key, paramType, value, bakeStructural: paramDef?.bakeStructural });
     } else {
       this.emit({ kind: "structural" });
     }
@@ -413,11 +423,17 @@ export class MaterialGraphController {
 
   // Replace the whole graph with an externally-supplied document (a saved/test config). Used by preset
   // selection and by throwaway graphs the bake service compiles for export.
-  loadDocument(doc: MaterialGraphDocument): void {
+  //
+  // `persist` (default true) controls whether the new document is written to storage. Authoring actions
+  // (e.g. picking a preset for the tree) persist; ephemeral/preview/bake loads pass `persist: false` so
+  // inspecting a material never clobbers the saved graph. Listeners are always notified so any bound
+  // surface rebuilds. (A null-storageKey controller never persists regardless of this flag.)
+  loadDocument(doc: MaterialGraphDocument, { persist = true }: { persist?: boolean } = {}): void {
     this.doc = doc;
     this.path = [];
     this.soloNode_ = null;
-    this.emit({ kind: "structural" });
+    if (persist) this.persist();
+    for (const fn of this.changeListeners) fn({ kind: "structural" });
   }
 
   private persist(): void {

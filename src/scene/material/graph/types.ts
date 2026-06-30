@@ -82,6 +82,12 @@ export interface ParamDef {
   step?: number;
   options?: string[];
   default: unknown;
+  // True for a float/colour param the OFFLINE bake reads at build time (baked into the shader / CPU
+  // precompute) rather than as a live uniform — e.g. Voronoi `scale` (→ integer period), Voronoi
+  // `randomness` (relaxed seed precompute), Tileable Noise `aspect`. Changing it must recompile the offline
+  // bake, so the surface's offline uniform fast-path skips it and re-bakes. (In the LIVE backend such params
+  // may still be real uniforms; that path is unaffected.)
+  bakeStructural?: boolean;
 }
 
 // live  = procedural node material over positionWorld (seamless 3D field; a power/debug toggle).

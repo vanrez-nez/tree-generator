@@ -114,7 +114,11 @@ function compileDocument(
     }
     if (node.type === GROUP_TYPE) {
       const ext = resolveInputs(node, doc, outputsByNode, byId, registry);
-      outputsByNode.set(id, compileGroup(node, registry, opts, coord, ext, solo));
+      const g = compileGroup(node, registry, opts, coord, ext, solo);
+      outputsByNode.set(id, g.outputs);
+      // Surface the subgraph's uniforms by node id (ids are unique across the doc tree in practice) so a
+      // grouped param can be live-tweaked / re-rendered without a recompile.
+      for (const [childId, u] of g.uniforms) uniformsByNode.set(childId, u);
       continue;
     }
 
@@ -149,19 +153,21 @@ function compileGroup(
   coord: MaterialValue,
   externalInputs: Record<string, MaterialValue | undefined>,
   solo?: SoloCapture,
-): Record<string, MaterialValue> {
+): { outputs: Record<string, MaterialValue>; uniforms: Map<string, Record<string, MaterialValue>> } {
   const sub = groupNode.subgraph;
-  if (!sub) return {};
-  const { outputs } = compileDocument(sub, registry, opts, coord, externalInputs, solo);
+  if (!sub) return { outputs: {}, uniforms: new Map() };
+  // Keep the subgraph's per-node uniforms (recursively, incl. deeper groups) so the parent can surface them
+  // — without this the editor's live-tweak / offline re-render fast paths never see params inside a group.
+  const { outputs, uniforms } = compileDocument(sub, registry, opts, coord, externalInputs, solo);
   const goNode = sub.nodes.find((n) => n.type === GROUP_OUTPUT_TYPE);
   const result: Record<string, MaterialValue> = {};
-  if (!goNode) return result;
+  if (!goNode) return { outputs: result, uniforms };
   const subById = new Map(sub.nodes.map((n) => [n.id, n]));
   for (const p of nodePorts(goNode, registry).inputs) {
     const edge = sub.edges.find((e) => e.toNode === goNode.id && e.toInput === p.key);
     result[p.key] = edge ? resolveEdgeValue(edge, p.kind, outputs, subById, registry) : undefined;
   }
-  return result;
+  return { outputs: result, uniforms };
 }
 
 // A bare MeshPhysicalNodeMaterial with the surface-contract defaults (DoubleSide, polygon offset). Shared

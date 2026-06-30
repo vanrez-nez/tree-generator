@@ -56,8 +56,8 @@ export const voronoiNode: MaterialNodeDef = {
   inputs: COORD_INPUT,
   outputs: FULL_OUTPUTS,
   params: [
-    { key: "scale", label: "scale", type: "float", min: 0.1, max: 8, step: 0.05, default: 1 },
-    { key: "randomness", label: "randomness", type: "float", min: 0, max: 1, step: 0.01, default: 1 },
+    { key: "scale", label: "scale", type: "float", min: 0.1, max: 8, step: 0.05, default: 1, bakeStructural: true },
+    { key: "randomness", label: "randomness", type: "float", min: 0, max: 1, step: 0.01, default: 1, bakeStructural: true },
     { key: "metric", label: "metric", type: "select", options: METRICS, default: "euclidean" },
     { key: "feature", label: "feature", type: "select", options: FEATURES, default: "f1" },
     { key: "exponent", label: "exponent", type: "float", min: 0.1, max: 8, step: 0.1, default: 2 },

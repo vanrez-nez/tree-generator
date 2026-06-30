@@ -7,13 +7,15 @@ import { triplanarNormalMap } from "../tsl/triplanar-normal";
 import { parallaxOcclusionUV } from "../tsl/parallax";
 import { curveToArray, type CurveValue, type MaterialBackend, type MaterialValue, type PbrSocket } from "./types";
 import type { MaterialGraphController, GraphChange } from "./controller";
-import { type MaterialBakeService, type BakedTextureSet } from "./bake-service";
+import { SURFACE_CHANNELS, type MaterialBakeService, type BakedTextureSet } from "./bake-service";
 
 // Parallax-occlusion march steps (LINEAR cost, paid per floor fragment — the dominant GPU cost of the
 // effect). 12 is the perf/quality balance.
 const PARALLAX_LAYERS = 12;
-// Coalesce offline re-bakes from rapid edits (slider drags) into one render on settle.
-const REBAKE_DEBOUNCE_MS = 150;
+// The on-screen surface bakes at this size (NOT the 1024 export size). It's a tiled, mip/aniso-sampled
+// surface, so 512 is plenty on screen and bakes ~4× cheaper than 1024. Export/proof/PNG paths pass their
+// own (1024) size and are unaffected.
+const SURFACE_BAKE_SIZE = 512;
 
 // A live, on-screen material driven by a MaterialGraphController. In the OFFLINE backend (default) it bakes
 // the graph to per-channel textures THROUGH the shared MaterialBakeService and samples them (triplanar /
@@ -44,7 +46,11 @@ export class TexturedSurface {
   private triplanar = false; // off by default — plain mesh-UV sampling until enabled
   private wiredOnce = false;
   private lastPresent = new Set<PbrSocket>();
-  private rebakeTimer: ReturnType<typeof setTimeout> | undefined;
+  // Single-flight coalescing for offline edits: at most one bake/re-render runs at a time (each awaits GPU
+  // completion), and edits arriving while it runs collapse into ONE trailing update with the latest values.
+  // This is what stops the editing GPU backlog — submissions can never outrun the GPU.
+  private updateInFlight = false;
+  private pendingKind: "none" | "rerender" | "rebuild" = "none";
   private readonly listeners = new Set<() => void>();
   private lastError_: string | null = null;
 
@@ -52,7 +58,7 @@ export class TexturedSurface {
     private readonly graph: MaterialGraphController,
     private readonly service: MaterialBakeService,
   ) {
-    this.set = service.createTextureSet();
+    this.set = service.createTextureSet(SURFACE_CHANNELS, SURFACE_BAKE_SIZE);
     // Startup fallback: no renderer yet → procedural live material so the surface is valid; the first
     // refresh() (after the service gets a renderer) switches to the baked offline surface.
     this.material_ = this.buildLive();
@@ -135,20 +141,27 @@ export class TexturedSurface {
   private onGraphChange(change: GraphChange): void {
     if (change.kind === "param") {
       // Live backend: float/colour/vec3/curve params are live uniforms — update in place, no re-bake.
-      if (this.backend === "live" && this.updateLiveUniform(change)) return;
-      // Offline: the value is baked into a texture, so any param edit needs a (debounced) re-bake.
-      this.scheduleRebuild();
+      if (this.backend === "live") {
+        if (this.updateLiveUniform(change)) return;
+        this.requestUpdate("rebuild");
+        return;
+      }
+      // Offline FAST PATH: the param is a live uniform that the last bake's channel materials reference, so
+      // update its value in place and just RE-RENDER the channels (no compileBundle, no WGSL recompile). Only
+      // structural params (int/select/bool — no matching uniform) fall through to a full re-bake.
+      if (this.updateOfflineUniform(change)) {
+        this.requestUpdate("rerender");
+        return;
+      }
+      this.requestUpdate("rebuild");
       return;
     }
-    // Structural (topology / load / solo / backend / int-bool-select / group): rebuild promptly.
-    void this.rebuild();
+    // Structural (topology / load / solo / int-bool-select / group): needs a full recompile.
+    this.requestUpdate("rebuild");
   }
 
-  // Apply a single live param to its uniform without recompiling. Returns false if no matching uniform
-  // exists (caller falls back to a re-bake/recompile).
-  private updateLiveUniform(change: Extract<GraphChange, { kind: "param" }>): boolean {
-    const u = this.liveUniforms.get(change.nodeId)?.[change.key];
-    if (!u) return false;
+  // Apply a param's value to its uniform node in place (no recompile). Shared by the live and offline paths.
+  private applyUniformValue(u: MaterialValue, change: Extract<GraphChange, { kind: "param" }>): void {
     if (change.paramType === "color") {
       u.value = new THREE.Color(change.value as THREE.ColorRepresentation);
     } else if (change.paramType === "vec3") {
@@ -161,15 +174,65 @@ export class TexturedSurface {
     } else {
       u.value = Number(change.value);
     }
+  }
+
+  // Live backend: update the compiled live material's uniform. Returns false if no matching uniform exists.
+  private updateLiveUniform(change: Extract<GraphChange, { kind: "param" }>): boolean {
+    const u = this.liveUniforms.get(change.nodeId)?.[change.key];
+    if (!u) return false;
+    this.applyUniformValue(u, change);
     return true;
   }
 
-  private scheduleRebuild(): void {
-    if (this.rebakeTimer !== undefined) clearTimeout(this.rebakeTimer);
-    this.rebakeTimer = setTimeout(() => {
-      this.rebakeTimer = undefined;
-      void this.rebuild();
-    }, REBAKE_DEBOUNCE_MS);
+  // Offline backend: update the retained uniform that the last bake's channel materials reference. Returns
+  // false if there's no matching uniform (structural param, or no bake has happened yet) → caller re-bakes.
+  private updateOfflineUniform(change: Extract<GraphChange, { kind: "param" }>): boolean {
+    // Build-time-in-offline floats (e.g. Voronoi scale/randomness, noise aspect) aren't live uniforms in the
+    // bake — updating one wouldn't change the output, so force a re-bake instead of a (no-op) re-render.
+    if (change.bakeStructural) return false;
+    const u = this.set.uniforms.get(change.nodeId)?.[change.key];
+    if (!u) return false;
+    this.applyUniformValue(u, change);
+    return true;
+  }
+
+  // Request an offline update, coalescing into the single-flight loop. "rebuild" (recompile) supersedes a
+  // pending "rerender" (a rebuild is a superset); a rerender never downgrades a pending rebuild.
+  private requestUpdate(kind: "rerender" | "rebuild"): void {
+    if (kind === "rebuild" || this.pendingKind === "none") this.pendingKind = kind;
+    void this.pump();
+  }
+
+  // Single-flight pump: run at most one bake/re-render at a time. Each awaits GPU completion (via the bake
+  // service's gpuSync), so the next iteration can't start until the GPU has drained — no submission backlog.
+  // Edits during a run set `pendingKind`; the loop then runs ONCE more with the latest graph/uniform values.
+  private async pump(): Promise<void> {
+    if (this.updateInFlight) return;
+    this.updateInFlight = true;
+    try {
+      while (this.pendingKind !== "none") {
+        const kind = this.pendingKind;
+        this.pendingKind = "none";
+        if (kind === "rebuild") await this.rebuild();
+        else await this.rerenderOffline();
+      }
+    } finally {
+      this.updateInFlight = false;
+    }
+  }
+
+  // Re-render the offline channel textures from the retained materials (uniforms already updated). No
+  // recompile. The 3D surface samples the same texture objects, so it updates on the next animation frame —
+  // no `notify()` needed (and skipping it avoids kicking off a preview re-bake on every drag tick).
+  private async rerenderOffline(): Promise<void> {
+    if (this.backend !== "offline" || !this.service.hasRenderer) return;
+    try {
+      await this.service.rerenderInto(this.set);
+      this.lastError_ = this.graph.lastError;
+    } catch (err) {
+      this.lastError_ = err instanceof Error ? err.message : String(err);
+      console.warn("[textured-surface] re-render failed:", this.lastError_);
+    }
   }
 
   // Re-derive the presented material. Offline (with a renderer): bake the graph into the texture set via the

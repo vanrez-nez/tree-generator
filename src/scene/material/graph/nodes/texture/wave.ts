@@ -15,14 +15,14 @@ export const waveNode: MaterialNodeDef = {
   inputs: [{ key: "coord", kind: "vector" }],
   outputs: [{ key: "field", kind: "float" }],
   params: [
-    { key: "scale", label: "scale", type: "float", min: 0.1, max: 8, step: 0.05, default: 1 },
+    { key: "scale", label: "scale", type: "float", min: 0.1, max: 8, step: 0.05, default: 1, bakeStructural: true },
     { key: "waveType", label: "type", type: "select", options: WAVE_TYPES, default: "bands" },
     { key: "direction", label: "direction", type: "select", options: DIRS, default: "x" },
     { key: "profile", label: "profile", type: "select", options: PROFILES, default: "sine" },
     { key: "phase", label: "phase", type: "float", min: 0, max: 20, step: 0.1, default: 0 },
-    { key: "distortion", label: "distortion", type: "float", min: 0, max: 10, step: 0.1, default: 0 },
+    { key: "distortion", label: "distortion", type: "float", min: 0, max: 10, step: 0.1, default: 0, bakeStructural: true },
     { key: "detail", label: "detail", type: "int", min: 0, max: 8, step: 1, default: 2 },
-    { key: "detailScale", label: "detail scale", type: "float", min: 0, max: 8, step: 0.1, default: 1 },
+    { key: "detailScale", label: "detail scale", type: "float", min: 0, max: 8, step: 0.1, default: 1, bakeStructural: true },
     { key: "detailRoughness", label: "detail rough", type: "float", min: 0, max: 1, step: 0.01, default: 0.5 },
   ],
   build(ctx) {
