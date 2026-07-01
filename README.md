@@ -63,6 +63,59 @@ Note: channels are baked through the graph's **baked** backend (a 2D uv slice). 
 3D world-space (live) domain — e.g. the angular `anisotropic-stripes` — can show artifacts/seams when
 baked this way; the bake is faithful to the graph, not necessarily a tileable texture yet.
 
+## Bake on the fly via POST (`/export-bake` worker)
+
+For automated/headless baking of an **arbitrary document** (the actual `MaterialGraphDocument` content,
+not a registered preset), the app exposes an isolated `/export-bake` route that bakes with **no tree/floor
+scene and no Tweakpane**. Because the GPU bake only runs in the browser (and a browser tab can't listen
+for HTTP), the flow is a small relay: you POST the document to the bake server, which pushes it over SSE
+to an open `/export-bake` tab that bakes it and posts the result back.
+
+1. Start the bake server (`npm run bake:server`) and the dev server (`npm run dev` / `npm run dev:proxy`).
+2. Open **`/export-bake`** in a browser (e.g. `http://tree-graph.localhost/export-bake`). The page boots
+   an isolated renderer and connects — the status log shows `connected to bake server — waiting for POST
+   jobs`. Leave the tab open; it is the persistent bake **worker**.
+3. POST the document to the server's `/export-bake` endpoint. The request blocks until the bake finishes
+   (~180 s timeout) and returns the written channels:
+
+   ```sh
+   curl -X POST http://127.0.0.1:8788/export-bake \
+     -H 'content-type: application/json' \
+     -d "$(jq -n --slurpfile d src/scene/material/presets/bark.json \
+            '{name:"bark", size:512, doc:$d[0]}')"
+   # → {"id":1,"ok":true,"name":"bark-01","channels":["baseColor","normal","roughness","metallic"]}
+   ```
+
+   Payload: `{ doc: MaterialGraphDocument, name: string, size?: number, channels?: string[],
+   overwrite?: boolean, render?: { size?, samples?, shadows?, background?, environmentIntensity?,
+   profiles? } }`.
+   - `name` may nest with `/` (e.g. `materials/earth-and-ground/cracked-clay`).
+   - `size` is rounded to a multiple of 64 (readback alignment); defaults to 1024.
+   - `channels` defaults to all PBR channels; channels the graph doesn't drive are skipped.
+   - `overwrite` defaults to `false`: if `bake/<name>` already exists, a numeric postfix is appended at the
+     end (`bark` → `bark-01` → `bark-02`, …) so a re-bake never clobbers a previous run. Pass
+     `"overwrite": true` to write into `bake/<name>` in place. The response's `name` is the folder actually
+     written.
+   - `render` configures the lit sphere/plane demo. Global defaults: `size` (default 512, rounded to a
+     multiple of 64), `samples` (MSAA — WebGPU supports 4× or off, so ≥2 → 4×, else off; default 4),
+     `shadows`, `background` (CSS hex), `environmentIntensity`. `render.profiles` selects which named
+     lighting profiles to render (default: all four below); a string picks a built-in, an object
+     overrides/extends one via `{ name, lightPosition:[x,y,z], lightIntensity, ambientStrength,
+     environmentIntensity, shadows, background, size, samples }`.
+   - An invalid `doc` (missing `nodes`/`edges`) returns `400` and writes nothing.
+
+   This runs the same `bakeMaterialTask` pipeline as `__bakeMaterialTask`, so each bake produces the full
+   set under `bake/<name>/`: `preset.json`, `channels/<channel>.png`, `renders/tiled-2x2.png`, and one
+   render per lighting profile — by default `renders/{standard,normals,metallic,ao}.png`:
+   - `standard` — balanced key + fill with a soft shadow.
+   - `normals` — low raking light + low ambient to reveal the normal-map surface relief.
+   - `metallic` — adds an IBL environment (RoomEnvironment) so metallic surfaces read as reflective.
+   - `ao` — ambient-dominant, no shadow, so baked ambient occlusion darkening reads.
+
+Notes: one worker tab at a time (last connection wins); jobs run sequentially. A POST with **no** worker
+tab open returns `503`. Visiting `/export-bake?preset=<key|all>[&size=&channels=]` also runs a one-shot
+bake of built-in registry presets at startup.
+
 ## Material task preview pipeline
 
 Catalog render tasks should use the shared dev helper instead of rebuilding preview scenes per task.
@@ -79,8 +132,8 @@ await __bakeMaterialTask(
 
 The helper loads the graph, writes `preset.json`, bakes `channels/baseColor.png`,
 `channels/roughness.png`, `channels/normal.png`, `channels/metallic.png`,
-`channels/ambientOcclusion.png`, writes `proof/tileability-2x2.png`, and renders
-`renders/standard-demo-512.png` as a 512x512 sphere with a plane below using the same material.
+`channels/ambientOcclusion.png`, writes `renders/tiled-2x2.png`, and renders one lit sphere+plane per
+lighting profile — `renders/{standard,normals,metallic,ao}.png` — using the same material.
 
 ## Batch material preset generation with an agent
 
@@ -129,8 +182,11 @@ bake/materials/<catalog-relative-path>/channels/roughness.png
 bake/materials/<catalog-relative-path>/channels/normal.png
 bake/materials/<catalog-relative-path>/channels/metallic.png
 bake/materials/<catalog-relative-path>/channels/ambientOcclusion.png
-bake/materials/<catalog-relative-path>/proof/tileability-2x2.png
-bake/materials/<catalog-relative-path>/renders/standard-demo-512.png
+bake/materials/<catalog-relative-path>/renders/tiled-2x2.png
+bake/materials/<catalog-relative-path>/renders/standard.png
+bake/materials/<catalog-relative-path>/renders/normals.png
+bake/materials/<catalog-relative-path>/renders/metallic.png
+bake/materials/<catalog-relative-path>/renders/ao.png
 ```
 
 Logs and JSONL summaries are written under `bake/_material-agent-runs/`.

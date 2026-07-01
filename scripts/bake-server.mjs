@@ -31,6 +31,59 @@ function safeFile(rel) {
   return null;
 }
 
+// ---- /export-bake job relay ----
+// The GPU bake only runs in the browser (three.js WebGPURenderer), and a browser tab can't listen for
+// HTTP — so a POSTed document is relayed over SSE to an open /export-bake worker tab, which bakes it and
+// POSTs the result back here. The agent's POST is held open until that result (or a timeout) arrives.
+// One worker at a time (last connection wins); the worker processes jobs sequentially.
+let worker = null; // the connected SSE response, or null
+let nextJobId = 1;
+const pending = new Map(); // jobId -> { res, timer }: agent requests awaiting a worker result
+const JOB_TIMEOUT_MS = 180_000;
+
+function sendJson(res, status, body) {
+  res.statusCode = status;
+  res.setHeader("content-type", "application/json");
+  res.end(JSON.stringify(body));
+}
+
+function readJson(req) {
+  return new Promise((res, rej) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      try {
+        res(JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"));
+      } catch (err) {
+        rej(err);
+      }
+    });
+    req.on("error", rej);
+  });
+}
+
+// Sanitize a (possibly nested) bake name: strip unsafe chars per path segment, drop . / .. / empties.
+function sanitizeName(raw, fallback = "bake") {
+  return (
+    (raw || "")
+      .split("/")
+      .map((seg) => seg.replace(/[^a-zA-Z0-9._-]/g, "_"))
+      .filter((seg) => seg && seg !== "." && seg !== "..")
+      .join("/") || fallback
+  );
+}
+
+// Resolve a job's output folder once. When `overwrite` is off and `bake/<name>` already exists, append a
+// numeric postfix at the END (bark → bark-01 → bark-02 …) so a re-bake never clobbers a previous run.
+function resolveBakeFolder(name, overwrite) {
+  const base = sanitizeName(name, "on-the-fly");
+  if (overwrite || !existsSync(resolve(BAKE_DIR, base))) return base;
+  for (let n = 1; ; n++) {
+    const candidate = `${base}-${String(n).padStart(2, "0")}`;
+    if (!existsSync(resolve(BAKE_DIR, candidate))) return candidate;
+  }
+}
+
 // HTML comparison gallery: each baked config (bake/NN/) beside its Blender reference (external/renders/NN.png).
 function galleryHtml() {
   const dirs = existsSync(BAKE_DIR)
@@ -93,6 +146,24 @@ createServer((req, res) => {
       res.setHeader("content-type", MIME[extname(file)] || "application/octet-stream");
       return res.end(readFileSync(file));
     }
+    // SSE stream the /export-bake worker tab connects to; jobs are pushed as `event: job`.
+    if (url.pathname === "/export-bake/stream") {
+      res.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      });
+      res.write("retry: 2000\n\n");
+      worker = res;
+      console.log("export-bake worker connected");
+      const ping = setInterval(() => res.write(": ping\n\n"), 15000);
+      req.on("close", () => {
+        clearInterval(ping);
+        if (worker === res) worker = null;
+        console.log("export-bake worker disconnected");
+      });
+      return;
+    }
     res.statusCode = 404;
     return res.end("not found");
   }
@@ -100,15 +171,53 @@ createServer((req, res) => {
     res.statusCode = 405;
     return res.end("GET or POST");
   }
+  // Submit a bake job: relay the document payload to the connected worker tab and hold this response open
+  // until the worker reports a result (or the job times out).
+  // Body: { doc, name, size?, channels?, overwrite?, render? } (render = demo lighting profiles).
+  if (url.pathname === "/export-bake") {
+    if (!worker) {
+      return sendJson(res, 503, {
+        ok: false,
+        error: "no /export-bake worker connected — open the /export-bake page in a browser first",
+      });
+    }
+    return readJson(req)
+      .then((job) => {
+        const { doc, name, size, channels, overwrite, render } = job;
+        // Validate the document up front so a bad payload never reaches the worker or touches disk.
+        if (!doc || !Array.isArray(doc.nodes) || !Array.isArray(doc.edges)) {
+          return sendJson(res, 400, { ok: false, error: "invalid document (missing nodes/edges)" });
+        }
+        // Resolve the output folder once (overwrite → clobber; else postfix -NN) and send that to the worker.
+        const folder = resolveBakeFolder(name, !!overwrite);
+        const id = nextJobId++;
+        const timer = setTimeout(() => {
+          if (pending.delete(id)) sendJson(res, 504, { ok: false, error: "bake timed out" });
+        }, JOB_TIMEOUT_MS);
+        pending.set(id, { res, timer });
+        worker.write(`event: job\ndata: ${JSON.stringify({ id, doc, name: folder, size, channels, render })}\n\n`);
+        console.log(`export-bake job ${id} → worker (name: ${folder}${overwrite ? ", overwrite" : ""})`);
+      })
+      .catch((err) => sendJson(res, 400, { ok: false, error: `bad JSON: ${err.message}` }));
+  }
+  // The worker reports a finished job here; resolve the agent's held response with the result.
+  if (url.pathname === "/export-bake/result") {
+    return readJson(req)
+      .then((result) => {
+        sendJson(res, 200, { ok: true }); // ack the worker
+        const job = pending.get(result.id);
+        if (!job) return;
+        clearTimeout(job.timer);
+        pending.delete(result.id);
+        sendJson(job.res, result.ok ? 200 : 500, result);
+        console.log(`export-bake job ${result.id} ← worker (${result.ok ? "ok" : "error"})`);
+      })
+      .catch((err) => sendJson(res, 400, { ok: false, error: `bad JSON: ${err.message}` }));
+  }
   // `name` may contain `/` to nest under bake/ (e.g. "noise/baseColor.ours.png"). Sanitize each path
   // segment and resolve under bake/, rejecting any traversal that escapes the bake directory.
   const rawName = new URL(req.url, "http://x").searchParams.get("name") || "bake.png";
-  const name =
-    rawName
-      .split("/")
-      .map((seg) => seg.replace(/[^a-zA-Z0-9._-]/g, "_"))
-      .filter((seg) => seg && seg !== "." && seg !== "..")
-      .join("/") || "bake.png";
+  const name = sanitizeName(rawName, "bake.png");
   const bakeDir = resolve(ROOT, "bake");
   const out = resolve(bakeDir, name);
   if (out !== bakeDir && !out.startsWith(bakeDir + "/")) {

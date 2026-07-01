@@ -1,8 +1,9 @@
 import * as THREE from "three";
-import type { WebGPURenderer } from "three/webgpu";
-import type { MainScene } from "../scene/main";
+import { RenderTarget, PMREMGenerator, type WebGPURenderer } from "three/webgpu";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { bakeService } from "../scene/material/graph/bake-service";
 import { MaterialGraphController } from "../scene/material/graph/controller";
+import type { NodeRegistry } from "../scene/material/graph/registry";
 import { TexturedSurface } from "../scene/material/graph/textured-surface";
 import {
   PBR_SOCKETS,
@@ -25,8 +26,116 @@ const MATERIAL_TASK_CHANNELS: PbrSocket[] = [
 
 export interface ExportDeps {
   renderer: WebGPURenderer;
-  sceneCanvas: HTMLCanvasElement;
-  mainScene: MainScene;
+  // The node registry every throwaway export controller is built from. Decoupled from MainScene so the
+  // isolated /export-bake worker can reuse this tooling with `defaultRegistry`.
+  registry: NodeRegistry;
+  // The live document to bake when `saveChannelToBake`/`downloadChannelPng` are called without an explicit
+  // `doc` (the app supplies the tree's current graph). Optional: the worker never uses those paths.
+  liveDocument?: () => MaterialGraphDocument;
+}
+
+// A named lighting setup for the lit sphere/plane demo render. Each profile produces one image
+// (renders/<name>.png) tuned to reveal a specific surface aspect. All fields but `name` are optional and
+// fall back through: per-entry override → built-in profile → global render options → hard defaults.
+export interface RenderProfile {
+  name: string; // output file stem (renders/<name>.png)
+  lightPosition?: [number, number, number]; // key directional light position
+  lightIntensity?: number; // key directional light intensity
+  ambientStrength?: number; // AmbientLight intensity
+  environmentIntensity?: number; // IBL (RoomEnvironment PMREM) strength; 0 = no environment
+  shadows?: boolean; // cast + receive shadows
+  background?: string; // CSS hex background
+  size?: number; // output px (square); rounded to a multiple of 64 for readback alignment
+  samples?: number; // MSAA: WebGPU supports 4× or off, so ≥2 → 4×, else off
+}
+
+// Payload-level options for the demo render. `profiles` selects/overrides which named profiles to render
+// (default: all built-ins); the other fields are global defaults applied to every profile.
+export interface DemoRenderOptions {
+  size?: number;
+  samples?: number;
+  shadows?: boolean;
+  background?: string;
+  environmentIntensity?: number;
+  profiles?: Array<string | RenderProfile>;
+}
+
+// Hard defaults (lowest precedence).
+const RENDER_DEFAULTS: Required<Omit<RenderProfile, "name">> = {
+  lightPosition: [3, 4, 5],
+  lightIntensity: 3.0,
+  ambientStrength: 0.35,
+  environmentIntensity: 0,
+  shadows: true,
+  background: "#181818",
+  size: 512,
+  samples: 4,
+};
+
+// Built-in profiles. Each tuned to reveal one surface aspect; values are starting points.
+const RENDER_PROFILES: Record<string, Omit<RenderProfile, "name">> = {
+  // Balanced key + fill, soft shadow. The general-purpose look.
+  standard: {},
+  // Low raking light + very low ambient so the normal-map relief (surface displacement) casts strong
+  // grazing shading gradients. Shadow off so the cast shadow doesn't compete with the micro-relief.
+  normals: {
+    lightPosition: [6, 0.9, 1.2],
+    lightIntensity: 3.4,
+    ambientStrength: 0.06,
+    shadows: false,
+    background: "#101010",
+  },
+  // A metal reflects only the environment, so add an IBL env at high intensity; keep direct light low so
+  // the reflection dominates. Metalness comes from the doc's baked channel (a dielectric stays matte).
+  metallic: {
+    lightPosition: [3, 4, 5],
+    lightIntensity: 1.0,
+    ambientStrength: 0.1,
+    environmentIntensity: 1.3,
+    background: "#202024",
+  },
+  // Ambient-dominant, weak directional, no shadow — baked AO only modulates the indirect term, so a flat
+  // ambient rig lets the occlusion darkening read.
+  ao: {
+    lightPosition: [0, 6, 2],
+    lightIntensity: 0.25,
+    ambientStrength: 1.1,
+    shadows: false,
+    background: "#202020",
+  },
+};
+
+type ResolvedProfile = Required<Omit<RenderProfile, "name">> & { name: string };
+
+// Drop undefined keys so a `{...partial}` spread doesn't clobber earlier (lower-precedence) values.
+function definedOnly<T extends object>(o: T): Partial<T> {
+  return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
+}
+
+// Resolve the render options into a list of fully-populated profiles. `profiles` selects/overrides which
+// to render (default: all built-ins). Precedence: hard defaults < global render options < built-in
+// profile < per-entry override.
+function resolveProfiles(render: DemoRenderOptions = {}): ResolvedProfile[] {
+  const globals = definedOnly({
+    size: render.size,
+    samples: render.samples,
+    shadows: render.shadows,
+    background: render.background,
+    environmentIntensity: render.environmentIntensity,
+  });
+  const entries = render.profiles ?? Object.keys(RENDER_PROFILES);
+  return entries.map((entry) => {
+    const name = typeof entry === "string" ? entry : entry.name;
+    const builtin = RENDER_PROFILES[name] ?? {};
+    const override = typeof entry === "string" ? {} : entry;
+    return {
+      ...RENDER_DEFAULTS,
+      ...globals,
+      ...definedOnly(builtin),
+      ...definedOnly(override),
+      name,
+    };
+  });
 }
 
 export interface ExportApi {
@@ -38,15 +147,39 @@ export interface ExportApi {
     doc?: MaterialGraphDocument,
   ): Promise<void>;
   bakeConfigToBake(doc: MaterialGraphDocument, name?: string, size?: number): Promise<void>;
-  bakeMaterialTask(doc: MaterialGraphDocument, outputFolder: string, channelSize?: number): Promise<void>;
+  bakeMaterialTask(
+    doc: MaterialGraphDocument,
+    outputFolder: string,
+    channelSize?: number,
+    channels?: PbrSocket[],
+    render?: DemoRenderOptions,
+  ): Promise<string[]>;
   saveTilingComposite(type: string, img: ImageData): Promise<void>;
   downloadDocument(doc: GraphDocument): void;
 }
 
+// Reject a malformed document before anything is written. loadDocument does NO validation (it stores the
+// value and defers the crash to `.nodes`), so an unchecked bad doc would POST a garbage preset.json first.
+export function isValidDocument(doc: unknown): doc is MaterialGraphDocument {
+  return (
+    !!doc &&
+    typeof doc === "object" &&
+    Array.isArray((doc as MaterialGraphDocument).nodes) &&
+    Array.isArray((doc as MaterialGraphDocument).edges)
+  );
+}
+
 // The bake/export tooling is decoupled from the pane: every function here bakes on a THROWAWAY,
 // non-persisting controller (exportGraph), so inspecting or exporting a channel never reads, mutates,
-// or persists any on-screen material. Bound once to the renderer + scene it renders against.
-export function createExport({ renderer, sceneCanvas, mainScene }: ExportDeps): ExportApi {
+// or persists any on-screen material. Bound once to the renderer + registry it renders against.
+export function createExport({ renderer, registry, liveDocument }: ExportDeps): ExportApi {
+  // The live document to fall back on for saveChannelToBake/downloadChannelPng (throws if the caller wired
+  // no liveDocument — only relevant to the app, which always provides one).
+  function liveDoc(): MaterialGraphDocument {
+    if (!liveDocument) throw new Error("createExport: no liveDocument provided for the default doc");
+    return structuredClone(liveDocument());
+  }
+
   function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
     return new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
   }
@@ -86,7 +219,7 @@ export function createExport({ renderer, sceneCanvas, mainScene }: ExportDeps): 
   // A throwaway graph for export baking. Built from a document with NO persistence, so it never touches the
   // tree's or floor's live material — this is the whole point of the bake-service split (no more clobber).
   function exportGraph(doc: MaterialGraphDocument): MaterialGraphController {
-    const graph = new MaterialGraphController(mainScene.materialController.getRegistry(), null);
+    const graph = new MaterialGraphController(registry, null);
     graph.loadDocument(doc, { persist: false });
     if (graph.lastError) console.warn(`[bake] config compiled with error: ${graph.lastError}`);
     return graph;
@@ -99,7 +232,7 @@ export function createExport({ renderer, sceneCanvas, mainScene }: ExportDeps): 
   async function saveChannelToBake(
     channel: PbrSocket,
     size = 1024,
-    doc: MaterialGraphDocument = structuredClone(mainScene.materialController.document),
+    doc: MaterialGraphDocument = liveDoc(),
   ): Promise<void> {
     const image = await bakeService.readImage(exportGraph(doc), channel, size);
     if (!image) return;
@@ -115,7 +248,7 @@ export function createExport({ renderer, sceneCanvas, mainScene }: ExportDeps): 
     channel: PbrSocket,
     filename: string,
     size = 1024,
-    doc: MaterialGraphDocument = structuredClone(mainScene.materialController.document),
+    doc: MaterialGraphDocument = liveDoc(),
   ): Promise<void> {
     const image = await bakeService.readImage(exportGraph(doc), channel, size);
     if (!image) return;
@@ -144,19 +277,29 @@ export function createExport({ renderer, sceneCanvas, mainScene }: ExportDeps): 
     return proof;
   }
 
-  function buildStandardMaterialDemoScene(material: THREE.Material): {
+  function buildStandardMaterialDemoScene(
+    material: THREE.Material,
+    profile: Required<Omit<RenderProfile, "name">>,
+    environment: THREE.Texture | null,
+  ): {
     scene: THREE.Scene;
     camera: THREE.PerspectiveCamera;
     dispose: () => void;
   } {
+    const { lightPosition, lightIntensity, ambientStrength, environmentIntensity, shadows, background } =
+      profile;
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x181818);
+    scene.background = new THREE.Color(background);
+    if (environment && environmentIntensity > 0) {
+      scene.environment = environment; // IBL reflections (metallic profile); background stays independent
+      scene.environmentIntensity = environmentIntensity;
+    }
     const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 20);
     camera.position.set(0, 1.25, 4.2);
     camera.lookAt(0, 0.45, 0);
 
     const sphereGeometry = new THREE.SphereGeometry(1, 96, 48);
-    const planeGeometry = new THREE.PlaneGeometry(5, 5);
+    const planeGeometry = new THREE.PlaneGeometry(8, 8); // wide enough to catch the cast shadow
     const addFullVertexAo = (geometry: THREE.BufferGeometry): void => {
       geometry.setAttribute(
         "vertexAo",
@@ -167,14 +310,32 @@ export function createExport({ renderer, sceneCanvas, mainScene }: ExportDeps): 
     addFullVertexAo(planeGeometry);
     const sphere = new THREE.Mesh(sphereGeometry, material);
     sphere.position.set(0, 0.95, 0);
+    sphere.castShadow = shadows;
+    sphere.receiveShadow = shadows;
     const plane = new THREE.Mesh(planeGeometry, material);
     plane.rotation.x = -Math.PI / 2;
     plane.position.y = -0.12;
+    plane.receiveShadow = shadows;
 
-    const key = new THREE.DirectionalLight(0xffffff, 3.0);
-    key.position.set(3, 4, 5);
-    const fill = new THREE.AmbientLight(0xffffff, 0.35);
-    scene.add(sphere, plane, key, fill);
+    const key = new THREE.DirectionalLight(0xffffff, lightIntensity);
+    key.position.set(lightPosition[0], lightPosition[1], lightPosition[2]);
+    if (shadows) {
+      key.castShadow = true;
+      key.shadow.mapSize.set(2048, 2048);
+      const cam = key.shadow.camera;
+      cam.near = 0.5;
+      cam.far = 20;
+      cam.left = -4;
+      cam.right = 4;
+      cam.top = 4;
+      cam.bottom = -4;
+      cam.updateProjectionMatrix();
+      key.shadow.bias = -0.0008;
+      key.shadow.normalBias = 0.02;
+      key.shadow.radius = 4; // soft PCF edges
+    }
+    const fill = new THREE.AmbientLight(0xffffff, ambientStrength);
+    scene.add(sphere, plane, key, key.target, fill);
 
     return {
       scene,
@@ -182,25 +343,54 @@ export function createExport({ renderer, sceneCanvas, mainScene }: ExportDeps): 
       dispose: () => {
         sphereGeometry.dispose();
         planeGeometry.dispose();
-        scene.remove(sphere, plane, key, fill);
+        scene.remove(sphere, plane, key, key.target, fill);
       },
     };
   }
 
-  async function renderStandardMaterialDemo(material: THREE.Material, size = 512): Promise<Blob | null> {
-    const previousPixelRatio = renderer.getPixelRatio();
-    const previousSize = new THREE.Vector2();
-    renderer.getSize(previousSize);
-    const demo = buildStandardMaterialDemoScene(material);
+  // Render one resolved lighting profile of the lit sphere/plane demo to an offscreen (optionally
+  // multisampled) target, read it back, and return a PNG. Uses a RenderTarget instead of the canvas so
+  // MSAA + size are configurable and the shared canvas is never disturbed.
+  async function renderStandardMaterialDemo(
+    material: THREE.Material,
+    profile: Required<Omit<RenderProfile, "name">>,
+    environment: THREE.Texture | null,
+  ): Promise<Blob | null> {
+    // Readback needs 256-byte-aligned rows → a multiple of 64 px.
+    const dim = Math.max(64, Math.round(profile.size / 64) * 64);
+    // WebGPU only supports a sample count of 1 or 4 — so MSAA is 4× or off (anything ≥2 → 4×).
+    const msaa = profile.samples >= 2 ? 4 : 0;
+    const rt = new RenderTarget(dim, dim, { samples: msaa, depthBuffer: true });
+    // Encode to sRGB when writing the offscreen target so the readback matches the canvas' output (an
+    // un-tagged target reads back linear → looks too dark).
+    rt.texture.colorSpace = THREE.SRGBColorSpace;
+    const demo = buildStandardMaterialDemoScene(material, profile, environment);
+
+    const prevShadowEnabled = renderer.shadowMap.enabled;
+    const prevShadowType = renderer.shadowMap.type;
+    const prevTarget = renderer.getRenderTarget();
     try {
-      renderer.setPixelRatio(1);
-      renderer.setSize(size, size, false);
+      if (profile.shadows) {
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      }
+      renderer.setRenderTarget(rt);
       renderer.render(demo.scene, demo.camera);
-      return await canvasToPngBlob(sceneCanvas);
+
+      // A 3D scene rendered to a RenderTarget is already Y-flipped by three's render-to-texture
+      // convention, so — unlike the 2D channel bakes — copy rows straight (no manual flip) to stay upright.
+      const buffer = (await renderer.readRenderTargetPixelsAsync(rt, 0, 0, dim, dim)) as unknown as Uint8Array;
+      const canvas = document.createElement("canvas");
+      canvas.width = dim;
+      canvas.height = dim;
+      canvas.getContext("2d")?.putImageData(new ImageData(new Uint8ClampedArray(buffer), dim, dim), 0, 0);
+      return await canvasToPngBlob(canvas);
     } finally {
+      renderer.setRenderTarget(prevTarget);
+      renderer.shadowMap.enabled = prevShadowEnabled;
+      renderer.shadowMap.type = prevShadowType;
       demo.dispose();
-      renderer.setPixelRatio(previousPixelRatio);
-      renderer.setSize(previousSize.x, previousSize.y, false);
+      rt.dispose();
     }
   }
 
@@ -212,6 +402,7 @@ export function createExport({ renderer, sceneCanvas, mainScene }: ExportDeps): 
     name = "config",
     size = 1024,
   ): Promise<void> {
+    if (!isValidDocument(doc)) throw new Error("bakeConfigToBake: invalid document (missing nodes/edges)");
     const graph = exportGraph(doc);
     await postBakeFile(
       `${name}/config.json`,
@@ -237,7 +428,11 @@ export function createExport({ renderer, sceneCanvas, mainScene }: ExportDeps): 
     doc: MaterialGraphDocument,
     outputFolder: string,
     channelSize = 1024,
-  ): Promise<void> {
+    channels: PbrSocket[] = MATERIAL_TASK_CHANNELS,
+    render: DemoRenderOptions = {},
+  ): Promise<string[]> {
+    // Validate before writing anything — otherwise a bad doc would POST a garbage preset.json first.
+    if (!isValidDocument(doc)) throw new Error("bakeMaterialTask: invalid document (missing nodes/edges)");
     const folder = outputFolder.replace(/^bake\//, "").replace(/\/$/, "");
     const graph = exportGraph(doc);
 
@@ -248,7 +443,7 @@ export function createExport({ renderer, sceneCanvas, mainScene }: ExportDeps): 
       new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" }),
     );
 
-    for (const channel of MATERIAL_TASK_CHANNELS) {
+    for (const channel of channels) {
       const image = await bakeService.readImage(graph, channel, channelSize);
       if (!image) continue;
       channelImages.set(channel, image);
@@ -260,19 +455,39 @@ export function createExport({ renderer, sceneCanvas, mainScene }: ExportDeps): 
 
     const proof = makeTileabilityProof(channelImages);
     const proofBlob = proof ? await canvasToPngBlob(proof) : null;
-    if (proofBlob) await postBakeFile(`${folder}/proof/tileability-2x2.png`, proofBlob);
+    if (proofBlob) await postBakeFile(`${folder}/renders/tiled-2x2.png`, proofBlob);
 
-    // The lit sphere/plane demo needs a real material: build a throwaway textured surface from the same graph
-    // (baked through the service) and render it, then dispose its GPU resources.
+    // The lit demo needs a real material: build a throwaway textured surface from the same graph (baked
+    // through the service) and render each lighting profile to renders/<profile>.png.
+    const profiles = resolveProfiles(render);
     const surface = new TexturedSurface(graph, bakeService);
     await surface.refresh();
-    const demoBlob = await renderStandardMaterialDemo(surface.material, 512);
+
+    // Build the IBL environment once (only if a profile needs it — the metallic profile), shared across
+    // all profile renders, then disposed.
+    let env: THREE.Texture | null = null;
+    let pmrem: PMREMGenerator | null = null;
+    if (profiles.some((p) => p.environmentIntensity > 0)) {
+      pmrem = new PMREMGenerator(renderer);
+      env = pmrem.fromScene(new RoomEnvironment()).texture;
+    }
+
+    const rendered: string[] = [];
+    for (const profile of profiles) {
+      const blob = await renderStandardMaterialDemo(surface.material, profile, env);
+      if (!blob) continue;
+      await postBakeFile(`${folder}/renders/${profile.name}.png`, blob);
+      rendered.push(profile.name);
+    }
+
+    env?.dispose();
+    pmrem?.dispose();
     surface.dispose();
-    if (demoBlob) await postBakeFile(`${folder}/renders/standard-demo-512.png`, demoBlob);
 
     console.log(
-      `[material-task] wrote bake/${folder}/ — channels: ${written.join(", ") || "(none connected)"}, tileability proof: ${proofBlob ? "yes" : "no"}, demo: ${demoBlob ? "yes" : "no"}`,
+      `[material-task] wrote bake/${folder}/ — channels: ${written.join(", ") || "(none connected)"}, tileability proof: ${proofBlob ? "yes" : "no"}, renders: ${rendered.join("/") || "(none)"}`,
     );
+    return written;
   }
 
   // Serialize the current graph document and trigger a browser download.

@@ -5,10 +5,8 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { MainScene } from "./scene/main";
 import { bakeService } from "./scene/material/graph/bake-service";
-import type { MaterialGraphController } from "./scene/material/graph/controller";
-import { runTilingTest } from "./scene/material/graph/tiling-test";
-import type { PbrSocket } from "./scene/material/graph/types";
 import { createExport } from "./debug/export";
+import { installBakeDevHandles } from "./debug/bake-setup";
 import { loadRendererConfig, setupTweakpane } from "./debug/tweakpane";
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -54,7 +52,11 @@ const rendererSize = new THREE.Vector2();
 
 // Bake/export tooling (dev), bound to the renderer + scene it renders against. Consumed by the pane's
 // Export/Bake buttons and by the DEV console handles below.
-const exporter = createExport({ renderer, sceneCanvas, mainScene });
+const exporter = createExport({
+  renderer,
+  registry: mainScene.materialController.getRegistry(),
+  liveDocument: () => mainScene.materialController.document,
+});
 
 // Build the entire Settings pane. Returns the handful of handles the render loop + DEV console still need.
 const { stats, refreshTexturePreview, initFloor, materialEditor, rebuildEditor } = setupTweakpane({
@@ -145,39 +147,12 @@ if (import.meta.env.DEV) {
     __controls: controls,
     __editor: materialEditor,
     __openEditor: rebuildEditor,
-    __bakeService: bakeService,
-    // Back-compat shim for dev-console bake snippets: `__baker.readImageData(_renderer, graph, ch, size)`
-    // now routes through the singleton service (the renderer arg is ignored — the service owns it).
-    __baker: {
-      readImageData: (_r: unknown, graph: MaterialGraphController, ch: PbrSocket, size?: number) =>
-        bakeService.readImage(graph, ch, size),
-    },
-    __savePng: exporter.saveChannelToBake,
-    __bakeConfig: exporter.bakeConfigToBake,
-    __bakeMaterialTask: exporter.bakeMaterialTask,
     __frame: () => {
       mainScene.update(0, camera, rendererSize);
       renderer.render(mainScene.scene, camera);
     },
-    // Tiling test for every Tileable Noise type: bakes each, scores the wrap-edge seam, console.tables a
-    // pass/fail summary, and saves a 2×2 composite PNG per type to ./bake (needs `npm run bake:server`).
-    // Usage from the dev console: `await __tilingTest()`  (optionally `__tilingTest(256)`).
-    __tilingTest: (size?: number) =>
-      runTilingTest(bakeService, mainScene.materialController.getRegistry(), {
-        size,
-        onTile: (type, img) => exporter.saveTilingComposite(type, img),
-      }).then((rows) => {
-        console.table(
-          rows.map((r) => ({
-            type: r.type,
-            pass: r.pass,
-            ratioH: Number.isFinite(r.ratioH) ? +r.ratioH.toFixed(2) : "—",
-            ratioV: Number.isFinite(r.ratioV) ? +r.ratioV.toFixed(2) : "—",
-          })),
-        );
-        const failed = rows.filter((r) => !r.pass).map((r) => r.type);
-        console.log(failed.length ? `[tiling] SEAMS: ${failed.join(", ")}` : "[tiling] all seamless ✓");
-        return rows;
-      }),
   });
+  // Bake-to-disk console handles (__bakeService, __baker, __savePng, __bakeConfig, __bakeMaterialTask,
+  // __tilingTest) live in debug/bake-setup alongside the /export-bake route.
+  installBakeDevHandles({ mainScene, exporter });
 }

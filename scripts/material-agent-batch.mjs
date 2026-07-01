@@ -17,8 +17,8 @@ const REQUIRED_BAKE_FILES = [
   "channels/normal.png",
   "channels/metallic.png",
   "channels/ambientOcclusion.png",
-  "proof/tileability-2x2.png",
-  "renders/standard-demo-512.png",
+  "renders/tiled-2x2.png",
+  "renders/standard.png",
 ];
 
 const NODE_CAPABILITIES = `
@@ -90,8 +90,8 @@ Bake verification instructions, included here so catalog material.md files do no
    - channels/normal.png
    - channels/metallic.png
    - channels/ambientOcclusion.png
-   - proof/tileability-2x2.png
-   - renders/standard-demo-512.png
+   - renders/tiled-2x2.png
+   - renders/standard.png
 6. If baking fails, fix only the preset JSON and retry. Do not change graph/node implementation.
 7. Treat visible seams, blank outputs, missing required channels, or a compile warning from the material controller as a failed attempt until improved.
 `;
@@ -289,8 +289,8 @@ Completion criteria:
 - bake/materials/${job.relPath}/channels/normal.png exists.
 - bake/materials/${job.relPath}/channels/metallic.png exists.
 - bake/materials/${job.relPath}/channels/ambientOcclusion.png exists.
-- bake/materials/${job.relPath}/proof/tileability-2x2.png exists.
-- bake/materials/${job.relPath}/renders/standard-demo-512.png exists.
+- bake/materials/${job.relPath}/renders/tiled-2x2.png exists.
+- bake/materials/${job.relPath}/renders/standard.png exists.
 - Final response should be short and include whether bake verification passed.
 `;
 }
