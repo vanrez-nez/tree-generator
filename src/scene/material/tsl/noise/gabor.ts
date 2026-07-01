@@ -12,13 +12,13 @@ type V = MaterialValue;
 const TAU = 6.283185307179586;
 const MAX_FREQ = 4; // integer cycles per period, 1..MAX_FREQ
 
-export function gaborBase01(p: V, perX: number, _perY: number): V {
+export function gaborBase01(p: V, perX: number | V, _perY: number | V): V {
   const i = floor(p) as V;
   const f = p.sub(i) as V;
   const u = f.mul(f).mul(float(3).sub(f.mul(2))) as V; // smoothstep weights
   const ix = int(i.x);
   const iy = int(i.y);
-  const w = TAU / perX; // square period → same angular scale on both axes
+  const w = float(TAU).div(perX) as V; // square period → same angular scale on both axes (node div: perX may be a uniform)
   const k = (dx: number, dy: number): V => {
     const h = hashCell2ToVec2(ix.add(dx), iy.add(dy), perX, _perY) as V;
     // integer frequency vector in [1, MAX_FREQ] per axis → periodic global phase

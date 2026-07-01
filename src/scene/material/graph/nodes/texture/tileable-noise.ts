@@ -1,4 +1,4 @@
-import { vec2, float } from "three/tsl";
+import { vec2, float, floor, max, mod } from "three/tsl";
 import type { MaterialNodeDef, MaterialValue } from "../../types";
 import { tileableFbm } from "../../../tsl/tileable-noise";
 import { blenderFbm } from "../../../tsl/blender-noise";
@@ -74,8 +74,13 @@ export const tileableNoiseNode: MaterialNodeDef = {
   outputs: [{ key: "field", kind: "float" }],
   params: [
     { key: "noiseType", label: "type", type: "select", options: NOISE_TYPES, default: "perlin-fbm" },
-    { key: "scale", label: "scale", type: "int", min: 1, max: 128, step: 1, default: 5 },
-    { key: "aspect", label: "aspect", type: "float", min: 1, max: 8, step: 0.5, default: 1, bakeStructural: true },
+    // `scale` is a live uniform (float, integer-stepped): the offline bake rounds it to an integer period
+    // IN-SHADER (so the lattice still tiles) but reads it as a uniform — a scale edit re-renders the baked
+    // channels WITHOUT recompiling (the fast path), and finer grain is reachable at the higher max. It must
+    // be `float` (not `int`) because the controller treats every int param as structural (→ full recompile).
+    { key: "scale", label: "scale", type: "float", min: 1, max: 128, step: 1, default: 5 },
+    // aspect (X-period stretch, perlin/value only) is likewise a live uniform now — no recompile on change.
+    { key: "aspect", label: "aspect", type: "float", min: 1, max: 8, step: 0.5, default: 1 },
     { key: "octaves", label: "detail", type: "int", min: 1, max: 8, step: 1, default: 4 },
     { key: "gain", label: "roughness", type: "float", min: 0, max: 1, step: 0.01, default: 0.5 },
   ],
@@ -89,48 +94,51 @@ export const tileableNoiseNode: MaterialNodeDef = {
   },
   build(ctx) {
     const coord = (ctx.inputs.coord ?? ctx.coord) as V;
-    // Guard against non-finite params (e.g. an empty numeric field in the editor → NaN): a NaN period
-    // serialises to `NaN.0` in WGSL and invalidates the whole shader, so coerce back to a safe default.
-    const finite = (v: unknown, fallback: number) => {
-      const n = Number(v);
-      return Number.isFinite(n) ? n : fallback;
-    };
-    const scale = Math.max(1, Math.round(finite(ctx.params.scale, 5)));
-    const aspect = finite(ctx.params.aspect, 1);
-    const octaves = Math.max(1, Math.round(finite(ctx.params.octaves, 4)));
+    // Guard against a non-finite octaves field (empty editor input → NaN): octaves is a build-time loop
+    // count, so a bad value here would just unroll wrong — clamp it. (scale/aspect are uniforms now; the
+    // compiler already NaN-guards uniform seeds, so no build-time coercion is needed for them.)
+    const octaves = Math.max(1, Math.round(Number.isFinite(Number(ctx.params.octaves)) ? Number(ctx.params.octaves) : 4));
     const noiseType = (ctx.params.noiseType as string) ?? "perlin-fbm";
     const gain = ctx.uniforms.gain as V;
+    const scaleU = ctx.uniforms.scale as V; // live uniform (float)
 
     if (ctx.backend === "live") {
       // No tiling in the seamless-3D preview; reuse the Blender fBm over the world coordinate for every type.
-      const p = coord.mul(scale) as V;
+      // scale stays a continuous live uniform here (no integer period needed off the tile).
+      const p = coord.mul(scaleU) as V;
       return { field: blenderFbm(p, octaves, gain, float(2)) };
     }
 
     const uv2 = vec2(coord.x, coord.y) as V;
+    // Offline tiling needs an INTEGER cell count; round the live scale uniform to a whole period IN-SHADER
+    // (so a scale drag re-renders without recompiling, yet the lattice at index `period` still matches 0).
+    const periodU = max(floor(scaleU.add(0.5)), float(1)) as V;
+    // aspect stretches the X period (perlin/value); keep it integer so X tiles too.
+    const aspectU = ctx.uniforms.aspect as V;
+    const periodXU = max(floor(periodU.mul(aspectU).add(0.5)), float(1)) as V;
 
     if (noiseType === "curl") {
       // Vector flow field (single sample at the base period); `field` = its magnitude.
-      const c = curlVec(uv2.mul(scale), scale, scale) as V;
+      const c = curlVec(uv2.mul(periodU), periodU, periodU) as V;
       return { field: c.length(), vector: c };
     }
 
     if (noiseType === "simplex") {
       // psrdnoise's sheared simplex lattice only tiles in Y when the period is EVEN — an odd period shifts
       // the skewed x-index by a half cell across the y-wrap, leaving a vertical seam. Snap the period up to
-      // even (every octave period stays even since it's ×2^o).
-      const even = scale + (scale % 2);
-      return { field: periodicFbm01(uv2, even, even, octaves, gain, simplexBase01) };
+      // even (every octave period stays even since it's ×2^o): even = period + (period mod 2).
+      const evenU = periodU.add(mod(periodU, float(2))) as V;
+      return { field: periodicFbm01(uv2, evenU, evenU, octaves, gain, simplexBase01) };
     }
 
     const base = OFFLINE_BASES[noiseType];
     if (base) {
       // Cellular/flow types ignore aspect (square period); value supports it (anisotropic per-axis period).
-      const periodX = noiseType === "value" ? scale * aspect : scale;
-      return { field: periodicFbm01(uv2, periodX, scale, octaves, gain, base) };
+      const periodX = noiseType === "value" ? periodXU : periodU;
+      return { field: periodicFbm01(uv2, periodX, periodU, octaves, gain, base) };
     }
     // Default "perlin-fbm": original bespoke path — periodic fBm over the uv tile. aspect elongates along Y.
-    const n = tileableFbm(uv2, scale * aspect, scale, octaves, gain);
+    const n = tileableFbm(uv2, periodXU, periodU, octaves, gain);
     return { field: n.mul(0.5).add(0.5) }; // [-1,1] → [0,1]
   },
 };

@@ -1,4 +1,4 @@
-import { uniformArray, int, float, floor } from "three/tsl";
+import { uniformArray, int, float, floor, max } from "three/tsl";
 import { Vector3 } from "three";
 import type { MaterialNodeDef, MaterialValue, PortDef } from "../../types";
 import {
@@ -56,8 +56,13 @@ export const voronoiNode: MaterialNodeDef = {
   inputs: COORD_INPUT,
   outputs: FULL_OUTPUTS,
   params: [
-    { key: "scale", label: "scale", type: "float", min: 0.1, max: 8, step: 0.05, default: 1, bakeStructural: true },
-    { key: "randomness", label: "randomness", type: "float", min: 0, max: 1, step: 0.01, default: 1, bakeStructural: true },
+    // scale is a LIVE uniform: offline rounds it to an integer period IN-SHADER (still tiles), so a scale
+    // drag re-renders the baked channels without recompiling and finer grain is reachable at the higher max.
+    // Live (3D) uses it as a continuous multiplier. EXCEPTION: the relaxed distance-to-edge path bakes scale
+    // (and randomness) into CPU Lloyd seeds at build time — see build() — so live edits to those two only
+    // re-tessellate after a structural change (e.g. toggling `relax`/`feature`).
+    { key: "scale", label: "scale", type: "float", min: 0.1, max: 64, step: 0.05, default: 1 },
+    { key: "randomness", label: "randomness", type: "float", min: 0, max: 1, step: 0.01, default: 1 },
     { key: "metric", label: "metric", type: "select", options: METRICS, default: "euclidean" },
     { key: "feature", label: "feature", type: "select", options: FEATURES, default: "f1" },
     { key: "exponent", label: "exponent", type: "float", min: 0.1, max: 8, step: 0.1, default: 2 },
@@ -71,23 +76,23 @@ export const voronoiNode: MaterialNodeDef = {
     return { inputs: COORD_INPUT, outputs: feature === "distance-to-edge" ? EDGE_OUTPUTS : FULL_OUTPUTS };
   },
   build(ctx) {
-    // Offline bakes a 2D uv tile: scale by an INTEGER period and wrap the cell hash to that period so the
-    // cells repeat seamlessly across the tile edge. Live is a seamless 3D field (positionWorld) — no tiling
-    // needed, so period 0 keeps the faithful Blender path and the live `scale` uniform stays tweakable.
-    const period = ctx.backend === "offline" ? Math.max(1, Math.round(Number(ctx.params.scale ?? 1))) : 0;
-    const p = (ctx.inputs.coord ?? ctx.coord).mul(period > 0 ? period : ctx.uniforms.scale);
+    const offline = ctx.backend === "offline";
     const m = Math.max(0, METRICS.indexOf(ctx.params.metric as string));
     const r = ctx.uniforms.randomness;
     const e = ctx.uniforms.exponent;
     const s = ctx.uniforms.smoothness;
     const feature = (ctx.params.feature as string) ?? "f1";
+    const coordIn = ctx.inputs.coord ?? ctx.coord;
 
     // Lloyd-relaxed cells: offline + distance-to-edge only. Precompute a periodic relaxed seed set on the
-    // CPU and hand it to the shader as a uniformArray; the relaxed neighbour search reads those offsets
-    // instead of the PCG hash (same cost, GPU-safe). `randomness` becomes the build-time initial jitter
-    // (baked into the points) rather than a live uniform.
+    // CPU (sized period²) and hand it to the shader as a uniformArray; the relaxed neighbour search reads
+    // those offsets instead of the PCG hash (same cost, GPU-safe). Because the seed array is sized by the
+    // period, `scale` (→ period) and `randomness` (→ initial jitter) are BUILD-TIME here — a live edit to
+    // either only re-tessellates after a structural change (e.g. toggling `relax`), unlike the paths below.
     const relax = Math.max(0, Math.round(Number(ctx.params.relax ?? 0)));
-    if (feature === "distance-to-edge" && period > 0 && relax > 0) {
+    if (feature === "distance-to-edge" && offline && relax > 0) {
+      const period = Math.max(1, Math.round(Number(ctx.params.scale ?? 1)));
+      const p = coordIn.mul(period);
       const data = relaxedCellOffsets(period, Number(ctx.params.randomness ?? 1), relax);
       const vecs: Vector3[] = [];
       for (let n = 0; n < period * period; n++)
@@ -106,6 +111,15 @@ export const voronoiNode: MaterialNodeDef = {
         random: relaxedVoronoiCellValue(p, seedFn, valueFn),
       };
     }
+
+    // Offline bakes a 2D uv tile: round the LIVE scale uniform to an INTEGER period in-shader and wrap the
+    // cell hash to it so the cells repeat seamlessly across the tile edge — yet a scale edit re-renders
+    // without recompiling. Live is a seamless 3D field (positionWorld): period 0 keeps the faithful Blender
+    // path, scaled by the raw (continuous) scale uniform.
+    const scaleU = ctx.uniforms.scale as MaterialValue;
+    const periodU = max(floor(scaleU.add(0.5)), float(1)) as MaterialValue;
+    const p = coordIn.mul(offline ? periodU : scaleU);
+    const period: number | MaterialValue = offline ? periodU : 0;
 
     switch (feature) {
       case "distance-to-edge":

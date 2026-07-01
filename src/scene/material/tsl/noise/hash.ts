@@ -35,31 +35,33 @@ export const hashInt3ToVec3 = Fn(([kx, ky, kz]: V[]): V => {
 
 // Floored modulo of an integer cell coordinate into [0, period) — wrapping the hash input makes the lattice
 // periodic (cell at index `period` matches index 0), so the offline tile edge is seamless. period <= 0 → no
-// wrap (faithful, non-tiling — used for the live/3D preview path).
-function wrapAxis(v: V, period: number): V {
-  if (period <= 0) return v;
+// wrap (faithful, non-tiling — used for the live/3D preview path). `period` may be a JS number (build-time,
+// e.g. the tile generator's fixed column count) OR a uniform node (a live-tweakable scale that re-renders
+// without recompiling); the node math below works for both. Only a literal number can request "no wrap".
+function wrapAxis(v: V, period: number | V): V {
+  if (typeof period === "number" && period <= 0) return v;
   return v.sub(int(floor(float(v).div(period))).mul(int(period)));
 }
 
 // Scalar hash in [0,1) of a 2D integer cell, wrapped per-axis (anisotropic periods supported).
-export function hashCell2(ix: V, iy: V, perX: number, perY: number): V {
+export function hashCell2(ix: V, iy: V, perX: number | V, perY: number | V): V {
   return hashInt3ToVec3(wrapAxis(ix, perX), wrapAxis(iy, perY), int(0)).x;
 }
 
 // vec2 hash in [0,1) of a 2D integer cell (e.g. gradient / feature-point offsets), wrapped per-axis.
-export function hashCell2ToVec2(ix: V, iy: V, perX: number, perY: number): V {
+export function hashCell2ToVec2(ix: V, iy: V, perX: number | V, perY: number | V): V {
   const h = hashInt3ToVec3(wrapAxis(ix, perX), wrapAxis(iy, perY), int(0));
   return vec2(h.x, h.y);
 }
 
 // vec3 hash in [0,1) of a 2D integer cell (xy = feature-point offset, z = cell value), wrapped per-axis.
-export function hashCell2ToVec3(ix: V, iy: V, perX: number, perY: number): V {
+export function hashCell2ToVec3(ix: V, iy: V, perX: number | V, perY: number | V): V {
   return hashInt3ToVec3(wrapAxis(ix, perX), wrapAxis(iy, perY), int(0));
 }
 
 // Like hashCell2ToVec3 but with a build-time `seed` in the z slot — call with different seeds to get extra
 // independent per-cell randoms (e.g. a tile generator needs position + size + rotation + value). The seed is
 // NOT wrapped, so each seed yields a distinct random set with the same x/y tiling period.
-export function hashCell2ToVec3Seed(ix: V, iy: V, seed: number, perX: number, perY: number): V {
+export function hashCell2ToVec3Seed(ix: V, iy: V, seed: number, perX: number | V, perY: number | V): V {
   return hashInt3ToVec3(wrapAxis(ix, perX), wrapAxis(iy, perY), int(seed));
 }

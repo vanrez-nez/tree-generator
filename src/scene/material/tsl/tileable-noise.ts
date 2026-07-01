@@ -48,20 +48,23 @@ export const pnoise2 = Fn(([P, rep]: V[]): V => {
 // axis (anisotropy). `octaves` is a build-time count (loop unroll); `gain` a live uniform. Returns ~[-1,1].
 export function tileableFbm(
   uv2: V, // the 2D coordinate (uv tile)
-  periodX: number,
-  periodY: number,
+  periodX: number | V,
+  periodY: number | V,
   octaves: number,
   gain: V,
 ): V {
-  const px = Math.max(1, Math.round(periodX));
-  const py = Math.max(1, Math.round(periodY));
+  // periodX/Y may be JS numbers (build-time) or uniform nodes (a live `scale` that re-renders without
+  // recompiling). Coerce to nodes so the octave scaling is node math either way; numeric periods are
+  // rounded/clamped, uniform ones are expected already integer (rounded in-shader by the caller) so it tiles.
+  const px: V = typeof periodX === "number" ? float(Math.max(1, Math.round(periodX))) : periodX;
+  const py: V = typeof periodY === "number" ? float(Math.max(1, Math.round(periodY))) : periodY;
   let sum: V = float(0);
   let ampSum: V = float(0);
   let amp: V = float(1);
   for (let o = 0; o < Math.max(1, octaves); o++) {
     const f = 1 << o; // 2^o (lacunarity 2 keeps periods integer)
-    const rep = vec2(px * f, py * f);
-    sum = sum.add(amp.mul(pnoise2(uv2.mul(vec2(px * f, py * f)), rep))) as V;
+    const rep = vec2(px.mul(f), py.mul(f)) as V;
+    sum = sum.add(amp.mul(pnoise2(uv2.mul(rep), rep))) as V;
     ampSum = ampSum.add(amp) as V;
     amp = amp.mul(gain) as V;
   }
