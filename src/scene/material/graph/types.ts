@@ -128,6 +128,13 @@ export interface MaterialNodeDef {
   // params. When present, a param change can add/remove sockets — the controller prunes now-dangling
   // edges and the editor reconciles. See plan L7 / Phase 5.
   declare?(params: Record<string, unknown>): { inputs: PortDef[]; outputs: PortDef[] };
+  // Optional CONTEXT-SENSITIVE param list (the param-level parallel of declare): given the node's current
+  // params, return only the ParamDefs that actually take effect — so the editor hides controls that do nothing
+  // in the current mode (e.g. Tileable Noise `aspect` off cellular types; Voronoi `exponent` off Minkowski).
+  // A subset of `params` (same objects, order preserved). Resolved via registry.nodeParamDefs. This is a
+  // UI-ONLY filter: the compiler still builds uniforms from the full `params`, so a hidden param keeps working
+  // if the build path (or the live fallback) references it. Absent → all `params`.
+  paramsFor?(params: Record<string, unknown>): ParamDef[];
   // Marks a node that takes a SCREEN-SPACE DERIVATIVE of its input (e.g. Normal From Height's dFdx/dFdy).
   // The offline baker must render any decomposition cache on a derivative's dependency path SUPERSAMPLED, so
   // the derivative is computed on a finer grid than the target and averaged down (otherwise fine height

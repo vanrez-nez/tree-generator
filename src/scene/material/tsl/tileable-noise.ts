@@ -55,6 +55,8 @@ export function tileableFbm(
   // Optional anti-alias strength (0..1); see periodicFbm01. Fades octaves finer than the bake texel grid so
   // the sum never carries frequencies the texture can't represent (which alias into speckle). Undefined = off.
   aa?: V,
+  // Per-octave period multiplier — MUST be whole (integer octave periods keep the tile seamless). Default 2.
+  lacunarity = 2,
 ): V {
   // periodX/Y may be JS numbers (build-time) or uniform nodes (a live `scale` that re-renders without
   // recompiling). Coerce to nodes so the octave scaling is node math either way; numeric periods are
@@ -65,8 +67,9 @@ export function tileableFbm(
   let sum: V = float(0);
   let ampSum: V = float(0);
   let amp: V = float(1);
+  const lac = Math.max(2, Math.round(lacunarity));
   for (let o = 0; o < Math.max(1, octaves); o++) {
-    const f = 1 << o; // 2^o (lacunarity 2 keeps periods integer)
+    const f = Math.round(Math.pow(lac, o)); // lacunarity^o (integer keeps octave periods whole → tiles)
     const rep = vec2(px.mul(f), py.mul(f)) as V;
     // Fade this octave once its cells drop below the texel grid (see periodicFbm01); weight sum + ampSum.
     let w: V = amp;

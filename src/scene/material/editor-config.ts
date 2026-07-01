@@ -2,7 +2,7 @@ import { Pane } from "tweakpane";
 import type { BindingApi } from "@tweakpane/core";
 import type { EditorGraphConfig, EditorNodeConfig, EditorPaletteItem } from "../../node-editor";
 import type { MaterialGraphController } from "./graph/controller";
-import { nodePorts } from "./graph/registry";
+import { nodePorts, nodeParamDefs } from "./graph/registry";
 import { mountCurveWidget } from "./curve-widget";
 import { mountInterfaceWidget } from "./interface-widget";
 import {
@@ -125,10 +125,14 @@ function nodeToConfig(
   const def = registry.get(node.type);
   // A node's effective ports: instance-specific (groups) or the static def. See registry.nodePorts.
   const ports = nodePorts(node, registry);
+  // A node's effective (context-sensitive) params: only the controls that take effect in the current mode
+  // (e.g. Tileable Noise hides `aspect` on cellular types). See registry.nodeParamDefs. Hidden params keep
+  // their value in node.params; switching mode re-renders (below) and restores them.
+  const paramDefs = nodeParamDefs(node, registry);
   // A local mirror of params (defaults filled in) the Tweakpane controls bind to; changes forward to
   // the controller.
   const local: Record<string, unknown> = {};
-  for (const p of def.params) {
+  for (const p of paramDefs) {
     let v = node.params[p.key] ?? p.default;
     // Never surface a non-finite numeric param (a value corrupted to NaN by a transient empty field) in the
     // control — fall back to the default so the editor neither shows nor re-commits NaN.
@@ -155,10 +159,11 @@ function nodeToConfig(
     inputs: ports.inputs.map((p) => ({ key: p.key, label: p.label ?? p.key, kind: p.kind })),
     outputs: ports.outputs.map((p) => ({ key: p.key, label: p.label ?? p.key, kind: p.kind })),
     mountControls: groupBoundaryControls(controller, node, ports, rerender) ?? (
-      def.params.length > 0
+      paramDefs.length > 0
         ? paneMount((pane) => {
-            for (const p of def.params)
-              bindParam(pane, controller, node.id, p, local, def.declare ? rerender : undefined);
+            // A mode change (select/bool) can add/remove ports (declare) AND/OR controls (paramsFor) → rerender.
+            const onModeChange = def.declare || def.paramsFor ? rerender : undefined;
+            for (const p of paramDefs) bindParam(pane, controller, node.id, p, local, onModeChange);
           })
         : undefined),
     // Exclusive solo: reflect whether this node is the previewed one; toggling rebuilds the editor so the

@@ -38,6 +38,27 @@ const NOISE_TYPES = [
   "curl",
 ];
 
+// Context-sensitive controls per noiseType: which OPTIONAL param keys actually take effect (see paramsFor).
+// `noiseType` + `scale` are always shown. fBm types (perlin/value/cellular/flow/simplex/wavelet/erosion) share
+// detail/roughness/lacunarity/antialias/tileSize; perlin & value additionally support `aspect` (anisotropic
+// per-axis period). `gabor` is sparse convolution — only its freq/aniso/angle (+ tiling). `curl` is a single
+// vector sample — nothing but scale (its vector output can't tile). Keys must match the ParamDef keys above.
+const FBM_CAPS = ["octaves", "gain", "lacunarity", "antialias", "tileSize"];
+const NOISE_CAPS: Record<string, string[]> = {
+  "perlin-fbm": ["aspect", ...FBM_CAPS],
+  value: ["aspect", ...FBM_CAPS],
+  worley: FBM_CAPS,
+  "voronoi-smooth": FBM_CAPS,
+  stone: FBM_CAPS,
+  paper: FBM_CAPS,
+  wool: FBM_CAPS,
+  simplex: FBM_CAPS,
+  wavelet: FBM_CAPS,
+  erosion: FBM_CAPS,
+  gabor: ["gaborFreq", "gaborAniso", "gaborOrient", "tileSize"],
+  curl: [],
+};
+
 // Bases for the generic periodic fBm (offline). Cellular/flow types use a single (square) period — they
 // ignore `aspect`. perlin-fbm and curl are special-cased (perlin = bespoke tileableFbm; curl = vector output).
 const OFFLINE_BASES: Record<string, NoiseBase01> = {
@@ -87,6 +108,10 @@ export const tileableNoiseNode: MaterialNodeDef = {
     { key: "aspect", label: "aspect", type: "float", min: 1, max: 8, step: 0.5, default: 1 },
     { key: "octaves", label: "detail", type: "int", min: 1, max: 8, step: 1, default: 4 },
     { key: "gain", label: "roughness", type: "float", min: 0, max: 1, step: 0.01, default: 0.5 },
+    // Lacunarity: the per-octave frequency multiplier. WHOLE numbers only — the offline tile stays seamless
+    // only if every octave's period stays integer, so it's a build-time value (bakeStructural → re-bake on
+    // change, not a live tweak). 2 = the classic octave. Live (3D) reads it as a continuous uniform.
+    { key: "lacunarity", label: "lacunarity", type: "float", min: 2, max: 8, step: 1, default: 2, bakeStructural: true },
     // Band-limit (anti-alias) strength, live uniform. 1 = fade octaves finer than the bake texel grid so the
     // noise stays crisp instead of aliasing into speckle/mush (offline only); 0 = the raw, unfiltered sum.
     { key: "antialias", label: "anti-alias", type: "float", min: 0, max: 1, step: 0.01, default: 1 },
@@ -112,21 +137,31 @@ export const tileableNoiseNode: MaterialNodeDef = {
       outputs: (params.noiseType as string) === "curl" ? FIELD_AND_VECTOR : FIELD_ONLY,
     };
   },
+  // Context-sensitive controls: show `noiseType` + `scale` always, then only the params that take effect for
+  // the selected noiseType (see NOISE_CAPS). Editor-only filter — the compiler still builds every uniform.
+  paramsFor(params) {
+    const caps = NOISE_CAPS[(params.noiseType as string) ?? "perlin-fbm"] ?? [];
+    const show = new Set(["noiseType", "scale", ...caps]);
+    return tileableNoiseNode.params.filter((p) => show.has(p.key));
+  },
   build(ctx) {
     const coord = (ctx.inputs.coord ?? ctx.coord) as V;
     // Guard against a non-finite octaves field (empty editor input → NaN): octaves is a build-time loop
     // count, so a bad value here would just unroll wrong — clamp it. (scale/aspect are uniforms now; the
     // compiler already NaN-guards uniform seeds, so no build-time coercion is needed for them.)
     const octaves = Math.max(1, Math.round(Number.isFinite(Number(ctx.params.octaves)) ? Number(ctx.params.octaves) : 4));
+    // Lacunarity is a build-time WHOLE number offline (integer octave periods → seamless tiling); rounded here.
+    const lac = Math.max(2, Math.round(Number.isFinite(Number(ctx.params.lacunarity)) ? Number(ctx.params.lacunarity) : 2));
     const noiseType = (ctx.params.noiseType as string) ?? "perlin-fbm";
     const gain = ctx.uniforms.gain as V;
     const scaleU = ctx.uniforms.scale as V; // live uniform (float)
 
     if (ctx.backend === "live") {
       // No tiling in the seamless-3D preview; reuse the Blender fBm over the world coordinate for every type.
-      // scale stays a continuous live uniform here (no integer period needed off the tile).
+      // scale stays a continuous live uniform here (no integer period needed off the tile). Lacunarity is a
+      // continuous live uniform here (the integer constraint only applies to the seamless offline tile).
       const p = coord.mul(scaleU) as V;
-      return { field: blenderFbm(p, octaves, gain, float(2)) };
+      return { field: blenderFbm(p, octaves, gain, ctx.uniforms.lacunarity as V) };
     }
 
     const uv2 = vec2(coord.x, coord.y) as V;
@@ -154,7 +189,7 @@ export const tileableNoiseNode: MaterialNodeDef = {
       // the skewed x-index by a half cell across the y-wrap, leaving a vertical seam. Snap the period up to
       // even (every octave period stays even since it's ×2^o): even = period + (period mod 2).
       const evenU = periodU.add(mod(periodU, float(2))) as V;
-      return { field: periodicFbm01(uv2, evenU, evenU, octaves, gain, simplexBase01, aaU) };
+      return { field: periodicFbm01(uv2, evenU, evenU, octaves, gain, simplexBase01, aaU, lac) };
     }
 
     if (noiseType === "gabor") {
@@ -171,10 +206,10 @@ export const tileableNoiseNode: MaterialNodeDef = {
     if (base) {
       // Cellular/flow types ignore aspect (square period); value supports it (anisotropic per-axis period).
       const periodX = noiseType === "value" ? periodXU : periodU;
-      return { field: periodicFbm01(uv2, periodX, periodU, octaves, gain, base, aaU) };
+      return { field: periodicFbm01(uv2, periodX, periodU, octaves, gain, base, aaU, lac) };
     }
     // Default "perlin-fbm": original bespoke path — periodic fBm over the uv tile. aspect elongates along Y.
-    const n = tileableFbm(uv2, periodXU, periodU, octaves, gain, aaU);
+    const n = tileableFbm(uv2, periodXU, periodU, octaves, gain, aaU, lac);
     return { field: n.mul(0.5).add(0.5) }; // [-1,1] → [0,1]
   },
 };

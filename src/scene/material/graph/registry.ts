@@ -1,4 +1,4 @@
-import type { GraphNode, MaterialNodeDef, PortDef } from "./types";
+import type { GraphNode, MaterialNodeDef, ParamDef, PortDef } from "./types";
 import { fbmNode } from "./nodes/texture/fbm";
 import { domainWarpNode } from "./nodes/vector/domain-warp";
 import { tileableNoiseNode } from "./nodes/texture/tileable-noise";
@@ -47,6 +47,14 @@ export function nodePorts(
   const def = registry.get(node.type);
   if (def.declare) return def.declare(node.params);
   return { inputs: def.inputs, outputs: def.outputs };
+}
+
+// A node's effective PARAMS: the context-sensitive `paramsFor(params)` subset (controls that take effect in the
+// current mode), else the static def.params. The param-level parallel of nodePorts — used by the editor to
+// filter which controls to render. See MaterialNodeDef.paramsFor.
+export function nodeParamDefs(node: GraphNode, registry: NodeRegistry): ParamDef[] {
+  const def = registry.get(node.type);
+  return def.paramsFor ? def.paramsFor(node.params) : def.params;
 }
 
 // Maps node type -> definition. The single source of truth for ports, params, and the TSL builder.

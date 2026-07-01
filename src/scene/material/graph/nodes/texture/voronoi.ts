@@ -75,6 +75,18 @@ export const voronoiNode: MaterialNodeDef = {
     const feature = (params.feature as string) ?? "f1";
     return { inputs: COORD_INPUT, outputs: feature === "distance-to-edge" ? EDGE_OUTPUTS : FULL_OUTPUTS };
   },
+  // Context-sensitive controls: `exponent` only affects the Minkowski metric, `smoothness` only Smooth-F1, and
+  // `relax` (Lloyd) only the distance-to-edge feature (offline). Hide the ones that do nothing in the current
+  // mode. Editor-only filter — the compiler still builds every uniform (harmless when unused).
+  paramsFor(params) {
+    const metric = (params.metric as string) ?? "euclidean";
+    const feature = (params.feature as string) ?? "f1";
+    const show = new Set(["scale", "randomness", "metric", "feature"]);
+    if (metric === "minkowski") show.add("exponent");
+    if (feature === "smooth-f1") show.add("smoothness");
+    if (feature === "distance-to-edge") show.add("relax");
+    return voronoiNode.params.filter((p) => show.has(p.key));
+  },
   build(ctx) {
     const offline = ctx.backend === "offline";
     const m = Math.max(0, METRICS.indexOf(ctx.params.metric as string));

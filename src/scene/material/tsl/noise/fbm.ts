@@ -1,10 +1,11 @@
 import { vec2, float, fwidth, smoothstep, clamp, mix, max, min } from "three/tsl";
 import type { MaterialValue } from "../../graph/types";
 
-// Generic periodic fBm for the noise library: sums a base noise over octaves whose period scales by 2^o
-// (lacunarity pinned to 2 so every octave's integer period stays integer → the sum tiles seamlessly over the
-// uv tile, exactly like tileableFbm). The base returns ~[0,1]; the result is the amplitude-weighted average,
-// also ~[0,1]. `octaves` is a build-time count (JS loop unroll), `gain` a live uniform.
+// Generic periodic fBm for the noise library: sums a base noise over octaves whose period scales by
+// lacunarity^o (a WHOLE-number lacunarity so every octave's integer period stays integer → the sum tiles
+// seamlessly over the uv tile, exactly like tileableFbm). The base returns ~[0,1]; the result is the
+// amplitude-weighted average, also ~[0,1]. `octaves`/`lacunarity` are build-time counts (JS loop unroll),
+// `gain` a live uniform.
 type V = MaterialValue;
 
 // base(p, perX, perY): noise sampled at the (already period-scaled) coordinate `p`, wrapping its integer
@@ -23,6 +24,9 @@ export function periodicFbm01(
   // sum never contains frequencies the texture can't represent (which otherwise ALIAS into speckle/mush,
   // e.g. via Normal From Height). 0 = the raw, unfiltered sum; 1 = full band-limit. Undefined = no filtering.
   aa?: V,
+  // Per-octave period multiplier. MUST be a whole number (offline seamless tiling needs integer octave
+  // periods). Default 2 = the classic ×2 octave (identical to the old hardcoded `1<<o`).
+  lacunarity = 2,
 ): V {
   // The base period may be a JS number (build-time) OR a uniform node (a live-tweakable `scale` that
   // re-renders without recompiling). Coerce to a node so the octave scaling (×2^o) and the wrap use node math
@@ -35,8 +39,9 @@ export function periodicFbm01(
   let sum: V = float(0);
   let ampSum: V = float(0);
   let amp: V = float(1);
+  const lac = Math.max(2, Math.round(lacunarity));
   for (let o = 0; o < Math.max(1, octaves); o++) {
-    const f = 1 << o; // 2^o
+    const f = Math.round(Math.pow(lac, o)); // lacunarity^o (integer → octave period stays whole → tiles)
     const pxo = px.mul(f) as V;
     const pyo = py.mul(f) as V;
     const p = uv2.mul(vec2(pxo, pyo)) as V;
