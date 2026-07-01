@@ -57,6 +57,8 @@ export class TexturedSurface {
   constructor(
     private readonly graph: MaterialGraphController,
     private readonly service: MaterialBakeService,
+    // Identifies this surface in bake telemetry (e.g. "tree" / "floor") so UI can scope its progress.
+    private readonly source?: string,
   ) {
     this.set = service.createTextureSet(SURFACE_CHANNELS, SURFACE_BAKE_SIZE);
     // Startup fallback: no renderer yet → procedural live material so the surface is valid; the first
@@ -227,7 +229,7 @@ export class TexturedSurface {
   private async rerenderOffline(): Promise<void> {
     if (this.backend !== "offline" || !this.service.hasRenderer) return;
     try {
-      await this.service.rerenderInto(this.set);
+      await this.service.rerenderInto(this.set, this.source);
       this.lastError_ = this.graph.lastError;
     } catch (err) {
       this.lastError_ = err instanceof Error ? err.message : String(err);
@@ -242,7 +244,11 @@ export class TexturedSurface {
       if (this.backend === "offline" && this.service.hasRenderer) {
         const soloNodeId = this.graph.soloNode ?? undefined;
         const t0 = performance.now();
-        const changed = await this.service.bakeInto(this.set, this.graph, { soloNodeId, label: "surface" });
+        const changed = await this.service.bakeInto(this.set, this.graph, {
+          soloNodeId,
+          label: "surface",
+          source: this.source,
+        });
         this.lastBakeMs = performance.now() - t0;
         if (changed || !this.wiredOnce) {
           this.wire(this.set.present);

@@ -5,11 +5,13 @@ import {
   encodeChannel,
   renderColorNodeToTarget,
   renderMaterialToTarget,
+  renderCacheToTarget,
   compileMaterialsAsync,
   makeChannelMaterial,
   COLOR_CHANNELS,
 } from "./channel-baker";
 import type { MaterialGraphController } from "./controller";
+import { countGraphNodes, type CacheEntry } from "./compiler";
 import type { MaterialValue, PbrSocket } from "./types";
 
 // Single owner of all GPU texture baking (plan: "a single pipeline manager to bake the textures").
@@ -24,6 +26,17 @@ type GPUQueueLike = { onSubmittedWorkDone?: () => Promise<void> };
 const BAKE_SIZE = 1024;
 // Anisotropic-filter taps for baked channel textures (within every desktop GPU's cap; driver clamps down).
 const MAX_ANISOTROPY = 8;
+
+// Asynchronous, off-main-thread pipeline compilation (renderer.compileAsync → createRenderPipelineAsync) is
+// only reliable on Chromium/Dawn — there it lets a heavy shader compile without blocking. Firefox's WebGPU
+// is early (returns a "core"-defaulting adapter, no compatibility feature level) and compiles pipelines
+// SYNCHRONOUSLY on the main thread, so compileAsync there just freezes the page (and can double-compile if
+// its pipeline cache key differs from the render's). On non-Chromium we therefore skip the async pre-warm
+// and the render gate, and let the synchronous render compile each pipeline once.
+const ASYNC_PIPELINE_COMPILE =
+  typeof navigator !== "undefined" &&
+  /chrome|chromium|crios|edg\//i.test(navigator.userAgent) &&
+  !/firefox|fxios/i.test(navigator.userAgent);
 
 // Dev-only bake profiling: log a per-rebuild phase breakdown to pin where the noise-slider freeze goes —
 // compile (JS TSL graph) vs dispatch (6× pipeline build) vs GPU wait/exec. A structural noise param forces
@@ -53,11 +66,43 @@ function makeChannelTarget(ch: PbrSocket | "height", size: number): RenderTarget
   return rt;
 }
 
+// Allocate an intermediate cache target for a decomposed group output: 16-bit float, LINEAR, repeat-wrap,
+// no mips. Float precision so distance/height fields and warped coords (which exceed/clip in 8-bit) survive;
+// linear + repeat so the channel bake samples it seamlessly at the tile uv.
+function makeCacheTarget(size: number): RenderTarget {
+  const rt = new RenderTarget(size, size, { type: THREE.HalfFloatType });
+  const t = rt.texture;
+  t.colorSpace = THREE.NoColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.generateMipmaps = false;
+  t.minFilter = t.magFilter = THREE.LinearFilter;
+  return rt;
+}
+
 export interface BakeOptions {
   channels?: PbrSocket[];
   size?: number;
   soloNodeId?: string;
   label?: string;
+  // Identifies which surface this bake belongs to (e.g. "tree" / "floor"), so UI can scope its progress
+  // readout to one material. Forwarded onto every BakeReport.
+  source?: string;
+}
+
+// Per-run bake telemetry for the editor's progress widget. Emitted as a rebuild moves through its phases;
+// a uniform re-render emits a "render"→"done" pair with `nodeCount` 0 (no recompile). Times are the actual
+// generation work (excludes the serial-queue wait before the job starts).
+export interface BakeReport {
+  // Monotonic id per bake/re-render run, so a listener can detect a new run (a drag fires several).
+  runId: number;
+  source: string | undefined;
+  // 'nodes' = rebuild started (graph compiled); 'shaders' = pipelines compiling; 'render' = uniform
+  // re-render started (no recompile); 'done' = finished.
+  phase: "nodes" | "shaders" | "render" | "done";
+  nodeCount: number; // graph nodes recompiled (0 for a uniform re-render)
+  compileMs: number; // graph (TSL) compile time
+  texturesTotal: number; // channels being regenerated this run
+  totalMs: number; // real generation time (incl. GPU); filled on 'done'
 }
 
 // A reusable set of baked channel textures. A live surface holds ONE and re-renders into it in place, so
@@ -68,6 +113,12 @@ export class BakedTextureSet {
   // Persistent per-channel bake material (colorNode assigned at compile time). Re-rendering these without
   // reassigning colorNode reuses their pipelines — the uniform fast path (no recompile on a slider drag).
   private readonly mats = new Map<PbrSocket | "height", MeshBasicNodeMaterial>();
+  // Decomposition: intermediate group-output textures (16F) + their persistent bake materials, keyed by
+  // cacheId. Rendered bottom-up (see `cachePlan`) BEFORE the channels, which sample them — so no channel
+  // shader inlines the whole graph. `cachePlan` is retained so a uniform re-render regenerates caches in order.
+  private readonly cacheTargets = new Map<string, RenderTarget>();
+  private readonly cacheMats = new Map<string, MeshBasicNodeMaterial>();
+  cachePlan: CacheEntry[] = [];
   // Per-node param uniforms from the last compile (nodeId -> { paramKey -> uniform node }). The colorNodes
   // above reference these, so updating a uniform's `.value` and re-rendering reflects it with no recompile.
   uniforms: Map<string, Record<string, MaterialValue>> = new Map();
@@ -103,6 +154,29 @@ export class BakedTextureSet {
     return m;
   }
 
+  // Intermediate cache target/material/texture for a decomposed group output (created on first use). The
+  // texture is handed to the compiler (as the downstream sample source); the material renders the group's
+  // value into it.
+  cacheTarget(cacheId: string): RenderTarget {
+    let rt = this.cacheTargets.get(cacheId);
+    if (!rt) {
+      rt = makeCacheTarget(this.size);
+      this.cacheTargets.set(cacheId, rt);
+    }
+    return rt;
+  }
+  cacheMaterial(cacheId: string): MeshBasicNodeMaterial {
+    let m = this.cacheMats.get(cacheId);
+    if (!m) {
+      m = makeChannelMaterial();
+      this.cacheMats.set(cacheId, m);
+    }
+    return m;
+  }
+  cacheTexture(cacheId: string): THREE.Texture {
+    return this.cacheTarget(cacheId).texture;
+  }
+
   // Any already-allocated render target, for a 1px GPU-completion readback (back-pressure). Null if nothing
   // has been baked yet.
   firstTarget(): RenderTarget | null {
@@ -125,6 +199,11 @@ export class BakedTextureSet {
     this.targets.clear();
     for (const m of this.mats.values()) m.dispose();
     this.mats.clear();
+    for (const rt of this.cacheTargets.values()) rt.dispose();
+    this.cacheTargets.clear();
+    for (const m of this.cacheMats.values()) m.dispose();
+    this.cacheMats.clear();
+    this.cachePlan = [];
     this.heightTarget?.dispose();
     this.heightTarget = null;
   }
@@ -153,9 +232,15 @@ export class MaterialBakeService {
   private total = 0;
   private active: string | null = null;
   private readonly progressListeners = new Set<(p: BakeProgress) => void>();
+  private readonly reportListeners = new Set<(r: BakeReport) => void>();
+  private bakeRunId = 0; // stamped on each BakeReport so listeners can tell runs apart
   // Scratch readback target for readImage (one-off PNG/preview); resized on demand.
   private scratch: RenderTarget | null = null;
   private scratchSize = 0;
+  // Transient decomposition caches for readImage (the 2D preview / PNG export path has no persistent set).
+  // Reused across calls; recreated when the readback size changes.
+  private readonly scratchCaches = new Map<string, { rt: RenderTarget; mat: MeshBasicNodeMaterial }>();
+  private scratchCacheSize = 0;
 
   // Wired once after renderer.init() (replaces the old per-controller attachRenderer). Surfaces that tried
   // to bake before this fall back to the live procedural material until a renderer exists.
@@ -173,6 +258,15 @@ export class MaterialBakeService {
   private emitProgress(): void {
     const p: BakeProgress = { completed: this.completed, total: this.total, active: this.active };
     for (const cb of this.progressListeners) cb(p);
+  }
+
+  // Per-run telemetry for the editor's progress widget (distinct from the job-level onProgress above).
+  onBakeReport(cb: (r: BakeReport) => void): () => void {
+    this.reportListeners.add(cb);
+    return () => this.reportListeners.delete(cb);
+  }
+  private emitReport(r: BakeReport): void {
+    for (const cb of this.reportListeners) cb(r);
   }
 
   // Append one unit of GPU work to the serial queue. `total` grows as jobs enqueue and both counters reset
@@ -215,9 +309,17 @@ export class MaterialBakeService {
       const renderer = this.renderer;
       if (!renderer) return false;
       const tCompile0 = performance.now();
-      const { bundle, uniforms } = graph.compileBundle({ backend: "offline", soloNodeId: opts.soloNodeId });
+      // Decompose: each group's outputs are baked to their own intermediate textures (allocCache hands the
+      // compiler the cache texture to sample downstream) so no channel shader inlines the whole graph.
+      const { bundle, uniforms, cachePlan } = graph.compileBundle({
+        backend: "offline",
+        soloNodeId: opts.soloNodeId,
+        allocCache: (cacheId) => set.cacheTexture(cacheId),
+      });
       const compileMs = performance.now() - tCompile0;
+      const nodeCount = countGraphNodes(graph.document);
       set.uniforms = uniforms; // retained so a uniform-only edit can re-render without recompiling
+      set.cachePlan = cachePlan; // retained so a uniform re-render regenerates caches in the same order
       const channels = opts.channels ?? set.channels;
       const present = new Set<PbrSocket>();
       // Collect channel jobs first (assigning colorNode + needsUpdate is what marks them for recompile).
@@ -240,23 +342,49 @@ export class MaterialBakeService {
         hm.needsUpdate = true;
         jobs.push({ mat: hm, target: set.ensureHeightTarget(), isNormal: false });
       }
-      // Compile the (changed) channel pipelines asynchronously and IN PARALLEL (one compileAsync over all
-      // channel materials) — non-blocking on Dawn/Metal, so the heavy shader compile doesn't freeze the
-      // editor, and wall time is ~max(channel) not the serial sum. The gate pauses the app's animate render
-      // for this window only (compileAsync's await is the one place a concurrent render would corrupt shared
-      // renderer state); the synchronous renders below can't interleave (no awaits between them), so they
-      // run ungated.
-      const tPrecompile0 = performance.now();
-      this.compileGateDepth += 1;
-      try {
-        await compileMaterialsAsync(
-          renderer,
-          jobs.map((j) => j.mat),
-        );
-      } finally {
-        this.compileGateDepth -= 1;
+      // Telemetry base for this run; phase/totalMs are filled as we go.
+      const report: BakeReport = {
+        runId: ++this.bakeRunId,
+        source: opts.source,
+        phase: "nodes",
+        nodeCount,
+        compileMs,
+        texturesTotal: jobs.length,
+        totalMs: 0,
+      };
+      this.emitReport(report); // graph compiled, N textures to regenerate
+      // Render the decomposition caches (bottom-up) BEFORE the channels sample them. Each is a small
+      // single-group shader, compiled synchronously here (fast) — the whole point is that no channel inlines
+      // the graph. Synchronous, so no render-gate needed (nothing can interleave).
+      for (const entry of cachePlan) {
+        const cm = set.cacheMaterial(entry.cacheId);
+        cm.colorNode = entry.colorNode;
+        cm.needsUpdate = true;
+        renderCacheToTarget(renderer, cm, set.cacheTarget(entry.cacheId));
       }
-      const precompileMs = performance.now() - tPrecompile0;
+      let precompileMs = 0;
+      if (ASYNC_PIPELINE_COMPILE) {
+        // Chromium/Dawn: compile the (changed) channel pipelines asynchronously and IN PARALLEL (one
+        // compileAsync over all channel materials) — non-blocking, so the heavy shader compile doesn't
+        // freeze the editor, and wall time is ~max(channel) not the serial sum. The gate pauses the app's
+        // animate render for this window only (compileAsync's await is the one place a concurrent render
+        // would corrupt shared renderer state); the synchronous renders below can't interleave.
+        this.emitReport({ ...report, phase: "shaders" }); // pipelines compiling (the dominant phase)
+        const tPrecompile0 = performance.now();
+        this.compileGateDepth += 1;
+        try {
+          await compileMaterialsAsync(
+            renderer,
+            jobs.map((j) => j.mat),
+          );
+        } finally {
+          this.compileGateDepth -= 1;
+        }
+        precompileMs = performance.now() - tPrecompile0;
+      }
+      // The renders: warm pipelines (Chromium async pre-warm) draw in ~ms; elsewhere each pipeline compiles
+      // SYNCHRONOUSLY here on first draw (no off-thread option on those browsers — a single compile, never a
+      // gate or a double-compile).
       const tDispatch0 = performance.now();
       for (const j of jobs) renderMaterialToTarget(renderer, j.mat, j.target, j.isNormal);
       const dispatchMs = performance.now() - tDispatch0;
@@ -269,14 +397,16 @@ export class MaterialBakeService {
       const tGpu0 = performance.now();
       await this.gpuSync(set);
       const gpuWaitMs = performance.now() - tGpu0;
+      // Real generation time the widget reports = compile + shader-compile + render + GPU completion.
+      const totalMs = compileMs + precompileMs + dispatchMs + gpuWaitMs;
+      this.emitReport({ ...report, phase: "done", totalMs });
       if (BAKE_PROFILE) {
-        const total = compileMs + precompileMs + dispatchMs + gpuWaitMs;
         // precompile = async (non-blocking, render-gated) pipeline compile via compileAsync; dispatch =
         // warm render calls; gpuWait = wall time to GPU completion. The heavy time sits in the gated
         // precompile phase, during which the 3D canvas holds its last frame instead of freezing.
         console.log(
           `[bake-prof] rebuild compile=${compileMs.toFixed(1)} precompile=${precompileMs.toFixed(1)} ` +
-            `dispatch=${dispatchMs.toFixed(1)} gpuWait=${gpuWaitMs.toFixed(1)} total=${total.toFixed(1)}ms`,
+            `dispatch=${dispatchMs.toFixed(1)} gpuWait=${gpuWaitMs.toFixed(1)} total=${totalMs.toFixed(1)}ms`,
         );
       }
       return changed;
@@ -303,11 +433,29 @@ export class MaterialBakeService {
   // has updated uniform values in place (set.uniforms), so the existing pipelines just draw with new values
   // — the fast path for slider drags. Serialised after any in-flight bake (shared GPU quads); no progress
   // counter (this isn't a "bake" the UI should report).
-  rerenderInto(set: BakedTextureSet): Promise<void> {
+  rerenderInto(set: BakedTextureSet, source?: string): Promise<void> {
     const run = this.queue.then(async () => {
       const renderer = this.renderer;
       if (!renderer) return;
+      const total = set.present.size + (set.hasHeight && set.heightTarget ? 1 : 0);
+      // Uniform re-render: no recompile (nodeCount 0), only the channel renders are regenerated.
+      const report: BakeReport = {
+        runId: ++this.bakeRunId,
+        source,
+        phase: "render",
+        nodeCount: 0,
+        compileMs: 0,
+        texturesTotal: total,
+        totalMs: 0,
+      };
+      this.emitReport(report); // run started
       const tDispatch0 = performance.now();
+      // Regenerate the decomposition caches first (bottom-up), reusing their pipelines: a uniform edit inside
+      // a group changed a uniform the cache material references, so the cache — and thus every channel that
+      // samples it — must be re-rendered. No recompile (colorNode unchanged), just new uniform values.
+      for (const entry of set.cachePlan) {
+        renderCacheToTarget(renderer, set.cacheMaterial(entry.cacheId), set.cacheTarget(entry.cacheId));
+      }
       for (const ch of set.present) {
         renderMaterialToTarget(renderer, set.channelMaterial(ch), set.target(ch), ch === "normal");
       }
@@ -315,12 +463,12 @@ export class MaterialBakeService {
         renderMaterialToTarget(renderer, set.channelMaterial("height"), set.heightTarget, false);
       }
       const dispatchMs = performance.now() - tDispatch0;
-      // Baseline path (no recompile): same 6-channel render as a rebuild, reusing existing pipelines.
-      // Its gpuWait is the control to compare the rebuild numbers against.
+      // Baseline path (no recompile): same channels re-rendered, reusing existing pipelines.
       const tGpu0 = performance.now();
       await this.gpuSync(set); // back-pressure: resolve only after the GPU finishes (see bakeInto)
+      const gpuWaitMs = performance.now() - tGpu0;
+      this.emitReport({ ...report, phase: "done", totalMs: dispatchMs + gpuWaitMs });
       if (BAKE_PROFILE) {
-        const gpuWaitMs = performance.now() - tGpu0;
         console.log(
           `[bake-prof] rerender dispatch=${dispatchMs.toFixed(1)} gpuWait=${gpuWaitMs.toFixed(1)}ms`,
         );
@@ -347,9 +495,21 @@ export class MaterialBakeService {
     return this.enqueue(`read:${channel}`, async () => {
       const renderer = this.renderer;
       if (!renderer) return null;
-      const { bundle } = graph.compileBundle({ backend: "offline" });
+      // Decompose here too (same reason as the surface bake): without it, a complex graph inlines the whole
+      // thing into this preview shader — which overflows Safari's 8192-byte limit and freezes Firefox's
+      // synchronous compiler. Bake group outputs to transient caches, then the channel samples them.
+      const { bundle, cachePlan } = graph.compileBundle({
+        backend: "offline",
+        allocCache: (cacheId) => this.scratchCache(cacheId, size).rt.texture,
+      });
       const node = (bundle as Partial<Record<string, MaterialValue>>)[channel];
       if (!node) return null;
+      for (const entry of cachePlan) {
+        const c = this.scratchCache(entry.cacheId, size);
+        c.mat.colorNode = entry.colorNode;
+        c.mat.needsUpdate = true;
+        renderCacheToTarget(renderer, c.mat, c.rt);
+      }
       const rt = this.scratchTarget(size);
       renderColorNodeToTarget(renderer, encodeChannel(node, channel), rt, channel === "normal");
       // WebGPU readback is bottom-up RGBA8; flip vertically into the ImageData buffer. NOTE: `size` must
@@ -372,6 +532,25 @@ export class MaterialBakeService {
       this.scratchSize = size;
     }
     return this.scratch;
+  }
+
+  // A transient decomposition cache (16F target + bake material) for readImage, keyed by cacheId. The whole
+  // pool is dropped when the readback size changes (caches must match the channel render's resolution).
+  private scratchCache(cacheId: string, size: number): { rt: RenderTarget; mat: MeshBasicNodeMaterial } {
+    if (this.scratchCacheSize !== size) {
+      for (const c of this.scratchCaches.values()) {
+        c.rt.dispose();
+        c.mat.dispose();
+      }
+      this.scratchCaches.clear();
+      this.scratchCacheSize = size;
+    }
+    let c = this.scratchCaches.get(cacheId);
+    if (!c) {
+      c = { rt: makeCacheTarget(size), mat: makeChannelMaterial() };
+      this.scratchCaches.set(cacheId, c);
+    }
+    return c;
   }
 }
 

@@ -1,0 +1,88 @@
+/* Bake-progress widget — two overall loaders (nodes + textures). Matches the node editor's dark panel
+   idiom (see node-editor.css). Docked to the node-editor canvas' bottom-left corner. The width/height
+   `!important` overrides the `.ne-canvas > *` fill rule (the editor's tip overlay does the same). */
+.bake-widget {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  z-index: 5;
+  width: 220px !important;
+  height: auto !important;
+  background: #202227;
+  color: #d6d9df;
+  border: 1px solid #3a3d44;
+  border-radius: 8px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+  user-select: none;
+  overflow: hidden;
+}
+
+.bake-widget__header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+  background: #2a2c31;
+  border-bottom: 1px solid #3a3d44;
+}
+.bake-widget--collapsed .bake-widget__header {
+  border-bottom: none;
+}
+.bake-widget__title {
+  font-weight: 600;
+  color: #c8ccd4;
+  white-space: nowrap;
+}
+.bake-widget__summary {
+  flex: 1;
+  text-align: right;
+  color: #8b919c;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bake-widget--busy .bake-widget__summary {
+  color: #5b8fd6;
+}
+.bake-widget__chevron {
+  color: #8b919c;
+  transition: transform 0.15s ease;
+}
+.bake-widget--collapsed .bake-widget__chevron {
+  transform: rotate(-90deg);
+}
+
+.bake-widget__body {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.bake-widget--collapsed .bake-widget__body {
+  display: none;
+}
+
+.bake-widget__detail {
+  color: #8b919c;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bake-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: #1b1d21;
+  border: 1px solid #34373e;
+  overflow: hidden;
+}
+.bake-bar__fill {
+  height: 100%;
+  width: 0%;
+  background: #5b8fd6;
+  border-radius: 3px;
+}

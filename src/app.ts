@@ -58,6 +58,8 @@ import {
 import { NodeEditorPanel } from "./node-editor";
 import { buildMaterialEditorConfig } from "./scene/material/editor-config";
 import { bakeService } from "./scene/material/graph/bake-service";
+import { countGraphNodes } from "./scene/material/graph/compiler";
+import { BakeProgressWidget } from "./ui/bake-progress-widget";
 import { MaterialGraphController } from "./scene/material/graph/controller";
 import { TexturedSurface } from "./scene/material/graph/textured-surface";
 import { runTilingTest } from "./scene/material/graph/tiling-test";
@@ -398,16 +400,28 @@ buildScenePanels();
 // Built once: the mixer persists across tree regeneration and is topology-independent, so its panel
 // must NOT be part of the scenePanelFolders rebuild cycle.
 // Dockable material node editor (src/node-editor/). Opened from the Texture tab; it pads #app so the
-// 3D canvas reflows (resize is the onLayoutChange hook) while the Tweakpane remains scrollable.
-const materialEditor = new NodeEditorPanel({ appElement: app });
+// 3D canvas reflows — `onLayoutChange` fires resize() on dock/undock/handle-drag (replacing the canvas
+// ResizeObserver, which infinite-loops setSize on Firefox — see the resize wiring below).
+const materialEditor = new NodeEditorPanel({ appElement: app, onLayoutChange: () => resize() });
+// Progress widget for the bake of whichever material the editor is showing (two loaders: nodes recompiled
+// + textures regenerated), docked to the node editor's bottom-left corner. `setActive` re-scopes it to the
+// open document (tree / floor) so it monitors only the current graph.
+const bakeWidget = new BakeProgressWidget({
+  mount: materialEditor.overlayHost,
+  subscribe: (cb) => bakeService.onBakeReport(cb),
+});
 // (Re)open the editor with a fresh config from the controller's active document. Passed as the rerender
 // callback so group enter/exit navigation can swap the displayed subgraph.
-const rebuildEditor = (): void =>
+const rebuildEditor = (): void => {
   materialEditor.open(buildMaterialEditorConfig(mainScene.materialController, rebuildEditor));
+  bakeWidget.setActive("tree", () => countGraphNodes(mainScene.materialController.document));
+};
 // Same dockable editor, but bound to the FLOOR's separate controller — tuning the floor graph never touches
 // the tree (different controller; the floor one doesn't persist). Opened from the Floor tab.
-const openFloorEditor = (): void =>
+const openFloorEditor = (): void => {
   materialEditor.open(buildMaterialEditorConfig(mainScene.floorMaterialController, openFloorEditor));
+  bakeWidget.setActive("floor", () => countGraphNodes(mainScene.floorMaterialController.document));
+};
 buildTextureLayers();
 
 const timer = new THREE.Timer();
@@ -435,11 +449,17 @@ function animate(timestamp?: number): void {
   stats.end();
 }
 
-// Drive the renderer size off the canvas's own box (a ResizeObserver) rather than the window
-// 'resize' event, so it also reacts when the node editor docks/undocks and pads #app (which shrinks
-// the canvas) — not just on window resizes.
-const sceneResizeObserver = new ResizeObserver(() => resize());
-sceneResizeObserver.observe(sceneCanvas);
+// Resize on window resize + on node-editor dock/undock (its onLayoutChange hook pads #app → the canvas
+// reflows). We deliberately do NOT use a ResizeObserver on the canvas: `renderer.setSize` writes the canvas
+// backing-store attributes, which on Firefox perturb the canvas's laid-out content box — so observing that
+// box feeds setSize back into the observer, an infinite shrink loop that hard-freezes the page. A window /
+// onLayoutChange trigger isn't watching the perturbed box, so there's no loop.
+window.addEventListener("resize", () => resize());
+// #app pads with a 0.15s transition when the editor docks; onLayoutChange fires at the START of that
+// transition (pre-final size), so also resize when the padding transition finishes to capture the final box.
+app.addEventListener("transitionend", (e) => {
+  if ((e as TransitionEvent).propertyName.startsWith("padding")) resize();
+});
 
 // WebGPURenderer initialises its backend asynchronously (unlike WebGLRenderer). Wait for it before
 // the first render, then drive the loop via setAnimationLoop (the WebGPU-friendly RAF).

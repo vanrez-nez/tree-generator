@@ -261,6 +261,12 @@ export class NodeEditorPanel {
     return this.open_
   }
 
+  // The canvas element (position: relative), so callers can mount their own absolutely-positioned
+  // overlays (e.g. a bake-progress widget) into the editor's graph area.
+  get overlayHost(): HTMLElement {
+    return this.canvasHost
+  }
+
   open(config: EditorGraphConfig, mode?: DockMode): void {
     this.root.hidden = false
     this.open_ = true

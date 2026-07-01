@@ -104,6 +104,21 @@ export async function compileMaterialsAsync(
   renderer.setRenderTarget(previous);
 }
 
+// Render a decomposition cache material DIRECTLY into its 16F target (no supersample intermediate — the SS
+// path uses an 8-bit RT which would quantise the cached field). One quad, at the cache resolution; the
+// final channel bake supersamples when it SAMPLES the cache. Reuses the shared `bakeQuad`.
+export function renderCacheToTarget(
+  renderer: WebGPURenderer,
+  material: MeshBasicNodeMaterial,
+  rt: RenderTarget,
+): void {
+  bakeQuad.material = material;
+  const previous = renderer.getRenderTarget();
+  renderer.setRenderTarget(rt);
+  bakeQuad.render(renderer);
+  renderer.setRenderTarget(previous);
+}
+
 // Render `material` (its colorNode already assigned) into `rt`, supersampled + box-downsampled. This does NOT
 // touch colorNode/needsUpdate — so when the material is unchanged since its last compile it is a pure
 // re-render (the uniform fast path). `isNormal` switches the downsample to vector-correct averaging.

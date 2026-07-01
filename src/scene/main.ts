@@ -34,13 +34,13 @@ export class MainScene {
   // The graph holds no renderer/textures; the surface bakes through the shared bakeService (src/scene/
   // material/graph). Splitting them means an export bake of some other material can't knock this one out.
   readonly materialController = new MaterialGraphController();
-  readonly treeSurface = new TexturedSurface(this.materialController, bakeService);
+  readonly treeSurface = new TexturedSurface(this.materialController, bakeService, "tree");
 
   // The visual floor: a solid ground plane purely for presentation (not gameplay/collision). It has its OWN
   // independent graph (no persistence → never touches the tree's saved graph) and surface; the tree owns the
   // node editor, the floor is driven by preset selection only (Floor tab in app.ts).
   readonly floorMaterialController = new MaterialGraphController(undefined, null);
-  readonly floorSurface = new TexturedSurface(this.floorMaterialController, bakeService);
+  readonly floorSurface = new TexturedSurface(this.floorMaterialController, bakeService, "floor");
   private floorPlane: THREE.Mesh<THREE.BufferGeometry, THREE.Material>;
   private floorBaseUv: Float32Array; // unscaled [0,1] uv, kept so the tiling control can re-scale it
 
