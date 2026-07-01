@@ -25,12 +25,15 @@ export class BakeProgressWidget {
   private readonly summaryEl: HTMLSpanElement;
   private readonly fill: HTMLDivElement;
   private readonly detailEl: HTMLDivElement;
+  private readonly regenBtn: HTMLButtonElement;
 
   private collapsed = localStorage.getItem(COLLAPSE_KEY) === "1";
 
   // Active binding (the document the editor currently shows).
   private source: string | null = null;
   private nodeCount = 0;
+  // Flush-and-rebake the active material from scratch (re-scoped by setActive to tree / floor).
+  private regenerate: (() => void) | null = null;
 
   // Single-loader run state. A "burst" spans one or more coalesced runs (a drag); it ends when the work
   // settles (no new run for SETTLE_MS).
@@ -71,7 +74,13 @@ export class BakeProgressWidget {
     bar.appendChild(this.fill);
     this.detailEl = make("div", "bake-widget__detail");
     this.detailEl.textContent = "—";
-    body.append(bar, this.detailEl);
+    // Regenerate: flush every cache for the active material and re-bake from scratch.
+    this.regenBtn = make("button", "bake-widget__regen");
+    this.regenBtn.type = "button";
+    this.regenBtn.textContent = "⟳ Regenerate";
+    this.regenBtn.title = "Flush all caches and re-bake this material from scratch";
+    this.regenBtn.addEventListener("click", () => this.regenerate?.());
+    body.append(bar, this.detailEl, this.regenBtn);
 
     this.root.append(header, body);
     this.applyCollapsed();
@@ -82,9 +91,11 @@ export class BakeProgressWidget {
     });
   }
 
-  // Re-scope to the material the editor is now showing; show its current node count immediately.
-  setActive(source: string, getNodeCount: () => number): void {
+  // Re-scope to the material the editor is now showing; show its current node count immediately. `regenerate`
+  // flushes that material's caches and re-bakes from scratch (wired to the active surface).
+  setActive(source: string, getNodeCount: () => number, regenerate: () => void): void {
     this.source = source;
+    this.regenerate = regenerate;
     this.nodeCount = getNodeCount();
     if (!this.busy) {
       this.fill.style.width = "0%";
@@ -120,6 +131,7 @@ export class BakeProgressWidget {
         this.runStart = performance.now();
         this.estimateMs = r.nodeCount > 0 ? FILL_STRUCTURAL_MS : FILL_UNIFORM_MS;
         this.root.classList.add("bake-widget--busy");
+        this.regenBtn.disabled = true;
         this.startRaf();
       }
     }
@@ -165,6 +177,7 @@ export class BakeProgressWidget {
           this.busy = false;
           this.finishing = false;
           this.root.classList.remove("bake-widget--busy");
+          this.regenBtn.disabled = false;
           this.raf = 0;
           return;
         }

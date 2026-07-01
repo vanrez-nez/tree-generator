@@ -50,6 +50,9 @@ export class TexturedSurface {
   // This is what stops the editing GPU backlog — submissions can never outrun the GPU.
   private updateInFlight = false;
   private pendingKind: "none" | "rerender" | "rebuild" = "none";
+  // "Regenerate": on the next rebuild, throw away the whole baked texture set (channel + decomposition-cache
+  // targets/materials) and bake a fresh one — a from-scratch flush of all cached GPU state for this material.
+  private flushRequested = false;
   private readonly listeners = new Set<() => void>();
   private lastError_: string | null = null;
 
@@ -95,6 +98,14 @@ export class TexturedSurface {
   // (or live recompile) and any rewire have completed, so callers can use `.material` immediately after.
   refresh(): Promise<void> {
     return this.rebuild();
+  }
+
+  // Regenerate from scratch: flush ALL baked GPU state (every channel + decomposition-cache target and its
+  // material) and re-bake with a full recompile. Routed through the single-flight pump so it can't race a bake
+  // that's already running. Use when caches may be stale/corrupt; heavier than a normal re-bake.
+  regenerate(): void {
+    this.flushRequested = true;
+    this.requestUpdate("rebuild");
   }
 
   // --- live surface tuning (offline backend) -----------------------------------------------------
@@ -247,11 +258,14 @@ export class TexturedSurface {
   private async rebuild(): Promise<void> {
     try {
       if (this.backend === "offline" && this.service.hasRenderer) {
-        // Honour the authored output resolution: if it changed, bake into a NEW set at the new size. Keep the
-        // OLD set alive until after the rewire below, so no frame rendered during the bake samples a disposed
-        // texture (the offline material still points at the old textures until wire() swaps them).
+        // Honour the authored output resolution: if it changed, bake into a NEW set at the new size. A
+        // pending "Regenerate" (flushRequested) forces a new set regardless of size — flushing every cache.
+        // Keep the OLD set alive until after the rewire below, so no frame rendered during the bake samples a
+        // disposed texture (the offline material still points at the old textures until wire() swaps them).
         const size = this.surfaceBakeSize();
-        const oldSet = size !== this.set.size ? this.set : null;
+        const flush = this.flushRequested;
+        this.flushRequested = false;
+        const oldSet = flush || size !== this.set.size ? this.set : null;
         if (oldSet) {
           this.set = this.service.createTextureSet(SURFACE_CHANNELS, size);
           this.wiredOnce = false;

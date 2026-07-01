@@ -86,3 +86,29 @@
   background: #5b8fd6;
   border-radius: 3px;
 }
+
+.bake-widget__regen {
+  margin-top: 2px;
+  padding: 5px 8px;
+  font-family: inherit;
+  font-size: 11px;
+  color: #d6d9df;
+  background: #2f333a;
+  border: 1px solid #454951;
+  border-radius: 5px;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+.bake-widget__regen:hover {
+  background: #3a3f47;
+  border-color: #5b8fd6;
+}
+.bake-widget__regen:active {
+  background: #454b54;
+}
+.bake-widget__regen:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

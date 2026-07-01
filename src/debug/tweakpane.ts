@@ -1228,13 +1228,21 @@ export function setupTweakpane({
   // callback so group enter/exit navigation can swap the displayed subgraph.
   const rebuildEditor = (): void => {
     materialEditor.open(buildMaterialEditorConfig(mainScene.materialController, rebuildEditor));
-    bakeWidget.setActive("tree", () => countGraphNodes(mainScene.materialController.document));
+    bakeWidget.setActive(
+      "tree",
+      () => countGraphNodes(mainScene.materialController.document),
+      () => mainScene.treeSurface.regenerate(),
+    );
   };
   // Same dockable editor, but bound to the FLOOR's separate controller — tuning the floor graph never touches
   // the tree (different controller; the floor one doesn't persist). Opened from the Floor tab.
   const openFloorEditor = (): void => {
     materialEditor.open(buildMaterialEditorConfig(mainScene.floorMaterialController, openFloorEditor));
-    bakeWidget.setActive("floor", () => countGraphNodes(mainScene.floorMaterialController.document));
+    bakeWidget.setActive(
+      "floor",
+      () => countGraphNodes(mainScene.floorMaterialController.document),
+      () => mainScene.floorSurface.regenerate(),
+    );
   };
   buildTextureLayers();
 
