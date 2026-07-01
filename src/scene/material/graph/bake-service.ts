@@ -11,7 +11,7 @@ import {
   COLOR_CHANNELS,
 } from "./channel-baker";
 import type { MaterialGraphController } from "./controller";
-import { countGraphNodes, type CacheEntry } from "./compiler";
+import { countGraphNodes, type CacheEntry, type CacheSizing } from "./compiler";
 import type { MaterialValue, PbrSocket } from "./types";
 
 // Single owner of all GPU texture baking (plan: "a single pipeline manager to bake the textures").
@@ -26,6 +26,25 @@ type GPUQueueLike = { onSubmittedWorkDone?: () => Promise<void> };
 const BAKE_SIZE = 1024;
 // Anisotropic-filter taps for baked channel textures (within every desktop GPU's cap; driver clamps down).
 const MAX_ANISOTROPY = 8;
+// Hard cap on a decomposition cache's pixel size. Keeps a supersampled derivative cache within the WebGPU
+// guaranteed `maxTextureDimension2D` (8192) with headroom, and reflects that a high output already resolves
+// fine grain — at output 2048 a 2× cache is 4096; at 4096 the cap makes it effectively single-sample.
+const MAX_CACHE_SIZE = 4096;
+
+// Absolute pixel size for a decomposition cache (see CacheSizing), clamped to MAX_CACHE_SIZE. An absolute
+// `size` (a tiled noise's tile) wins; otherwise the bake size lifted to the `minSize` floor (the derivative /
+// normal path's reference resolution — an output already ≥ it renders native). Empty/undefined → the plain
+// bake size.
+function cacheSizeFor(baseSize: number, sizing?: CacheSizing): number {
+  const target = sizing?.size ?? Math.max(baseSize, sizing?.minSize ?? 0);
+  return Math.min(target, MAX_CACHE_SIZE);
+}
+
+// A `minSize`-floored cache (the derivative/normal path) is mipmapped so a consumer at a lower resolution
+// samples an area-averaged mip — a faithful downsample — instead of aliasing a single bilinear tap.
+function cacheWantsMips(sizing?: CacheSizing): boolean {
+  return sizing?.minSize != null;
+}
 
 // Asynchronous, off-main-thread pipeline compilation (renderer.compileAsync → createRenderPipelineAsync) is
 // only reliable on Chromium/Dawn — there it lets a heavy shader compile without blocking. Firefox's WebGPU
@@ -66,16 +85,19 @@ function makeChannelTarget(ch: PbrSocket | "height", size: number): RenderTarget
   return rt;
 }
 
-// Allocate an intermediate cache target for a decomposed group output: 16-bit float, LINEAR, repeat-wrap,
-// no mips. Float precision so distance/height fields and warped coords (which exceed/clip in 8-bit) survive;
-// linear + repeat so the channel bake samples it seamlessly at the tile uv.
-function makeCacheTarget(size: number): RenderTarget {
+// Allocate an intermediate cache target for a decomposed group output: 16-bit float, LINEAR, repeat-wrap.
+// Float precision so distance/height fields and warped coords (which exceed/clip in 8-bit) survive; linear +
+// repeat so the channel bake samples it seamlessly at the tile uv. `mips` (derivative/normal path only) adds
+// trilinear mipmaps so a lower-resolution consumer reads an area-averaged level — a faithful downsample of the
+// reference-resolution cache instead of an aliased bilinear tap.
+function makeCacheTarget(size: number, mips = false): RenderTarget {
   const rt = new RenderTarget(size, size, { type: THREE.HalfFloatType });
   const t = rt.texture;
   t.colorSpace = THREE.NoColorSpace;
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.generateMipmaps = false;
-  t.minFilter = t.magFilter = THREE.LinearFilter;
+  t.generateMipmaps = mips;
+  t.minFilter = mips ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter;
+  t.magFilter = THREE.LinearFilter;
   return rt;
 }
 
@@ -157,11 +179,24 @@ export class BakedTextureSet {
   // Intermediate cache target/material/texture for a decomposed group output (created on first use). The
   // texture is handed to the compiler (as the downstream sample source); the material renders the group's
   // value into it.
-  cacheTarget(cacheId: string): RenderTarget {
+  // `size` = this cache's absolute px size (the bake size, or the derivative path's reference-res floor, see
+  // cacheSizeFor), or the set's global size. `mips` (derivative path) adds trilinear mips for faithful
+  // downsampling. Resized in place when it changes across a structural rebuild, so the same texture object is
+  // reused downstream.
+  cacheTarget(cacheId: string, size: number = this.size, mips = false): RenderTarget {
     let rt = this.cacheTargets.get(cacheId);
+    // Recreate if the mip requirement changed (a stable cacheId keeps the same sizing in practice, so this is
+    // just a safety net); resize in place otherwise so the same texture object stays wired downstream.
+    if (rt && rt.texture.generateMipmaps !== mips) {
+      rt.dispose();
+      this.cacheTargets.delete(cacheId);
+      rt = undefined;
+    }
     if (!rt) {
-      rt = makeCacheTarget(this.size);
+      rt = makeCacheTarget(size, mips);
       this.cacheTargets.set(cacheId, rt);
+    } else if (rt.width !== size || rt.height !== size) {
+      rt.setSize(size, size);
     }
     return rt;
   }
@@ -173,8 +208,8 @@ export class BakedTextureSet {
     }
     return m;
   }
-  cacheTexture(cacheId: string): THREE.Texture {
-    return this.cacheTarget(cacheId).texture;
+  cacheTexture(cacheId: string, size?: number, mips = false): THREE.Texture {
+    return this.cacheTarget(cacheId, size, mips).texture;
   }
 
   // Any already-allocated render target, for a 1px GPU-completion readback (back-pressure). Null if nothing
@@ -314,7 +349,8 @@ export class MaterialBakeService {
       const { bundle, uniforms, cachePlan } = graph.compileBundle({
         backend: "offline",
         soloNodeId: opts.soloNodeId,
-        allocCache: (cacheId) => set.cacheTexture(cacheId),
+        allocCache: (cacheId, _kind, sizing) =>
+          set.cacheTexture(cacheId, cacheSizeFor(set.size, sizing), cacheWantsMips(sizing)),
       });
       const compileMs = performance.now() - tCompile0;
       const nodeCount = countGraphNodes(graph.document);
@@ -360,7 +396,11 @@ export class MaterialBakeService {
         const cm = set.cacheMaterial(entry.cacheId);
         cm.colorNode = entry.colorNode;
         cm.needsUpdate = true;
-        renderCacheToTarget(renderer, cm, set.cacheTarget(entry.cacheId));
+        renderCacheToTarget(
+          renderer,
+          cm,
+          set.cacheTarget(entry.cacheId, cacheSizeFor(set.size, entry.sizing), cacheWantsMips(entry.sizing)),
+        );
       }
       let precompileMs = 0;
       if (ASYNC_PIPELINE_COMPILE) {
@@ -454,7 +494,11 @@ export class MaterialBakeService {
       // a group changed a uniform the cache material references, so the cache — and thus every channel that
       // samples it — must be re-rendered. No recompile (colorNode unchanged), just new uniform values.
       for (const entry of set.cachePlan) {
-        renderCacheToTarget(renderer, set.cacheMaterial(entry.cacheId), set.cacheTarget(entry.cacheId));
+        renderCacheToTarget(
+          renderer,
+          set.cacheMaterial(entry.cacheId),
+          set.cacheTarget(entry.cacheId, cacheSizeFor(set.size, entry.sizing), cacheWantsMips(entry.sizing)),
+        );
       }
       for (const ch of set.present) {
         renderMaterialToTarget(renderer, set.channelMaterial(ch), set.target(ch), ch === "normal");
@@ -500,12 +544,13 @@ export class MaterialBakeService {
       // synchronous compiler. Bake group outputs to transient caches, then the channel samples them.
       const { bundle, cachePlan } = graph.compileBundle({
         backend: "offline",
-        allocCache: (cacheId) => this.scratchCache(cacheId, size).rt.texture,
+        allocCache: (cacheId, _kind, sizing) =>
+          this.scratchCache(cacheId, size, cacheSizeFor(size, sizing), cacheWantsMips(sizing)).rt.texture,
       });
       const node = (bundle as Partial<Record<string, MaterialValue>>)[channel];
       if (!node) return null;
       for (const entry of cachePlan) {
-        const c = this.scratchCache(entry.cacheId, size);
+        const c = this.scratchCache(entry.cacheId, size, cacheSizeFor(size, entry.sizing), cacheWantsMips(entry.sizing));
         c.mat.colorNode = entry.colorNode;
         c.mat.needsUpdate = true;
         renderCacheToTarget(renderer, c.mat, c.rt);
@@ -535,20 +580,35 @@ export class MaterialBakeService {
   }
 
   // A transient decomposition cache (16F target + bake material) for readImage, keyed by cacheId. The whole
-  // pool is dropped when the readback size changes (caches must match the channel render's resolution).
-  private scratchCache(cacheId: string, size: number): { rt: RenderTarget; mat: MeshBasicNodeMaterial } {
-    if (this.scratchCacheSize !== size) {
+  // pool is dropped when the readback (channel) size `poolSize` changes; each cache is then allocated at its
+  // OWN `cacheSize` (a group's bake-resolution override, or `poolSize` by default) — a finer cache is sampled
+  // down by the channel's linear filter, so nfh inside a bumped group gets a clean derivative.
+  private scratchCache(
+    cacheId: string,
+    poolSize: number,
+    cacheSize: number,
+    mips = false,
+  ): { rt: RenderTarget; mat: MeshBasicNodeMaterial } {
+    if (this.scratchCacheSize !== poolSize) {
       for (const c of this.scratchCaches.values()) {
         c.rt.dispose();
         c.mat.dispose();
       }
       this.scratchCaches.clear();
-      this.scratchCacheSize = size;
+      this.scratchCacheSize = poolSize;
     }
     let c = this.scratchCaches.get(cacheId);
+    if (c && c.rt.texture.generateMipmaps !== mips) {
+      c.rt.dispose();
+      c.mat.dispose();
+      this.scratchCaches.delete(cacheId);
+      c = undefined;
+    }
     if (!c) {
-      c = { rt: makeCacheTarget(size), mat: makeChannelMaterial() };
+      c = { rt: makeCacheTarget(cacheSize, mips), mat: makeChannelMaterial() };
       this.scratchCaches.set(cacheId, c);
+    } else if (c.rt.width !== cacheSize || c.rt.height !== cacheSize) {
+      c.rt.setSize(cacheSize, cacheSize);
     }
     return c;
   }

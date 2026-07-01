@@ -1,0 +1,38 @@
+{
+  "version": 2,
+  "nodes": [
+    {
+      "id": "noise",
+      "type": "tileable-noise",
+      "label": "Tiled Noise",
+      "enabled": true,
+      "position": { "x": -420, "y": 0 },
+      "params": {
+        "noiseType": "worley",
+        "scale": 8,
+        "octaves": 1,
+        "gain": 0.5,
+        "antialias": 1,
+        "tileSize": "256"
+      }
+    },
+    {
+      "id": "pr",
+      "type": "principled-bsdf",
+      "enabled": true,
+      "position": { "x": -120, "y": 0 },
+      "params": { "metallic": 0, "roughness": 0.9 }
+    },
+    {
+      "id": "out",
+      "type": "material-output",
+      "enabled": true,
+      "position": { "x": 140, "y": 0 },
+      "params": { "outputResolution": "1024" }
+    }
+  ],
+  "edges": [
+    { "fromNode": "noise", "fromOutput": "field", "toNode": "pr", "toInput": "baseColor" },
+    { "fromNode": "pr", "fromOutput": "bsdf", "toNode": "out", "toInput": "surface" }
+  ]
+}

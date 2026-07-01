@@ -1,4 +1,4 @@
-import { Fn, vec2, vec4, floor, fract, mod, abs, dot, mix, float } from "three/tsl";
+import { Fn, vec2, vec4, floor, fract, mod, abs, dot, mix, float, fwidth, smoothstep, clamp, max, min } from "three/tsl";
 import type { MaterialValue } from "../graph/types";
 
 // Tileable 2D noise via Gustavson's periodic classic Perlin ("pnoise", webgl-noise, MIT). `mod(Pi, rep)`
@@ -52,21 +52,37 @@ export function tileableFbm(
   periodY: number | V,
   octaves: number,
   gain: V,
+  // Optional anti-alias strength (0..1); see periodicFbm01. Fades octaves finer than the bake texel grid so
+  // the sum never carries frequencies the texture can't represent (which alias into speckle). Undefined = off.
+  aa?: V,
 ): V {
   // periodX/Y may be JS numbers (build-time) or uniform nodes (a live `scale` that re-renders without
   // recompiling). Coerce to nodes so the octave scaling is node math either way; numeric periods are
   // rounded/clamped, uniform ones are expected already integer (rounded in-shader by the caller) so it tiles.
   const px: V = typeof periodX === "number" ? float(Math.max(1, Math.round(periodX))) : periodX;
   const py: V = typeof periodY === "number" ? float(Math.max(1, Math.round(periodY))) : periodY;
+  const fw: V = fwidth(uv2); // uv change per bake texel (supersampling + any upstream warp)
   let sum: V = float(0);
   let ampSum: V = float(0);
   let amp: V = float(1);
   for (let o = 0; o < Math.max(1, octaves); o++) {
     const f = 1 << o; // 2^o (lacunarity 2 keeps periods integer)
     const rep = vec2(px.mul(f), py.mul(f)) as V;
-    sum = sum.add(amp.mul(pnoise2(uv2.mul(rep), rep))) as V;
-    ampSum = ampSum.add(amp) as V;
+    // Fade this octave once its cells drop below the texel grid (see periodicFbm01); weight sum + ampSum.
+    let w: V = amp;
+    if (aa !== undefined) {
+      const cpp = max(rep.x.mul(fw.x), rep.y.mul(fw.y)) as V;
+      // See periodicFbm01: fade from ~5 texels/cell to gone at ~2 (the sampling limit), so octaves that
+      // would alias into per-texel speckle through Normal From Height are removed, coherent ones kept.
+      const roll = clamp(float(1).sub(smoothstep(0.2, 0.5, cpp)), 0, 1) as V;
+      w = amp.mul(mix(float(1), roll, aa)) as V;
+    }
+    sum = sum.add(w.mul(pnoise2(uv2.mul(rep), rep))) as V;
+    ampSum = ampSum.add(w) as V;
     amp = amp.mul(gain) as V;
   }
-  return sum.div(ampSum.max(1e-4)) as V;
+  // Weighted average, converging to the pnoise MEAN (0) as surviving octave weight drops below 1, so a fully
+  // band-limited noise fades to flat (→ 0.5 after the caller's ·0.5+0.5) instead of collapsing via the divide.
+  // With no rolloff ampSum ≥ 1, so this reduces to the plain average.
+  return mix(float(0), sum.div(ampSum.max(1e-4)), min(ampSum, 1)) as V;
 }

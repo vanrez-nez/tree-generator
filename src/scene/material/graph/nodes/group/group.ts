@@ -7,6 +7,9 @@ import type { MaterialNodeDef } from "../../types";
 // node's inputs back as the group's outputs. build() is never called for these (returns {}).
 
 // A group instance — owns a nested document (node.subgraph) and exposes its interface as ports.
+// Cache bake resolution is NOT a group setting: the compiler auto-supersamples a group's decomposition cache
+// when its output is on a derivative (Normal From Height) path — see compiler.ts / MaterialNodeDef.bakeDerivative.
+// build() is never called for groups.
 export const groupNode: MaterialNodeDef = {
   type: "group",
   nodeClass: "group",

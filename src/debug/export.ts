@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { RenderTarget, PMREMGenerator, type WebGPURenderer } from "three/webgpu";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { bakeService } from "../scene/material/graph/bake-service";
+import { readOutputResolution } from "../scene/material/graph/compiler";
 import { MaterialGraphController } from "../scene/material/graph/controller";
 import type { NodeRegistry } from "../scene/material/graph/registry";
 import { TexturedSurface } from "../scene/material/graph/textured-surface";
@@ -444,7 +445,7 @@ export function createExport({ renderer, registry, liveDocument }: ExportDeps): 
   async function bakeMaterialTask(
     doc: MaterialGraphDocument,
     outputFolder: string,
-    channelSize = 1024,
+    channelSize?: number,
     channels: PbrSocket[] = MATERIAL_TASK_CHANNELS,
     render: DemoRenderOptions = {},
   ): Promise<string[]> {
@@ -452,6 +453,9 @@ export function createExport({ renderer, registry, liveDocument }: ExportDeps): 
     if (!isValidDocument(doc)) throw new Error("bakeMaterialTask: invalid document (missing nodes/edges)");
     const folder = outputFolder.replace(/^bake\//, "").replace(/\/$/, "");
     const graph = exportGraph(doc);
+    // Final channel size: an explicit request size wins; otherwise the graph's authored output resolution
+    // (Material Output's `outputResolution`), defaulting to 1024.
+    const size = channelSize ?? readOutputResolution(doc);
 
     const channelImages = new Map<PbrSocket, ImageData>();
     const written: string[] = [];
@@ -461,7 +465,7 @@ export function createExport({ renderer, registry, liveDocument }: ExportDeps): 
     );
 
     for (const channel of channels) {
-      const image = await bakeService.readImage(graph, channel, channelSize);
+      const image = await bakeService.readImage(graph, channel, size);
       if (!image) continue;
       channelImages.set(channel, image);
       const blob = await canvasToPngBlob(imageDataToCanvas(image));

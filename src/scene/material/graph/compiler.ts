@@ -27,17 +27,30 @@ export interface CompiledMaterial {
   uniforms: Map<string, Record<string, MaterialValue>>;
 }
 
-// Provider that hands the compiler a persistent cache texture for a group output (offline bake only). The
+// How big to allocate/render a decomposition cache. `minSize` is a pixel FLOOR: the cache renders at least this
+// big regardless of the (smaller) output resolution — used for the derivative (normal) path so its dFdx grid,
+// and the height detail it differentiates, stay at a fixed reference resolution and downsample faithfully (see
+// DERIVATIVE_REFERENCE). `size` is an ABSOLUTE px size (a tiled noise's small tile). At most one is set; `size`
+// wins. Undefined/empty → the plain bake size. The bake service turns this into the concrete, capped pixel size
+// (see cacheSizeFor). A cache with `minSize` set is also mipmapped, so consumers at a lower resolution sample an
+// area-averaged mip (a true downsample) instead of aliasing a bilinear tap.
+export interface CacheSizing {
+  minSize?: number;
+  size?: number;
+}
+
+// Provider that hands the compiler a persistent cache texture for a decomposed output (offline bake only). The
 // bake service owns the render targets; the compiler builds a `texture(...)` sample against the returned
 // texture and records the value to bake into it (see CacheEntry).
-export type CacheAlloc = (cacheId: string, kind: PortKind) => THREE.Texture;
+export type CacheAlloc = (cacheId: string, kind: PortKind, sizing?: CacheSizing) => THREE.Texture;
 
-// One intermediate texture to bake before the final channels: the group output's value (encoded for a 16F
-// linear target) rendered into `cacheId`'s target. Emitted bottom-up (nested groups first).
+// One intermediate texture to bake before the final channels: the decomposed value (encoded for a 16F linear
+// target) rendered into `cacheId`'s target. Emitted bottom-up (nested groups first).
 export interface CacheEntry {
   cacheId: string;
   kind: PortKind;
   colorNode: MaterialValue; // the value to render into the cache texture (references upstream caches)
+  sizing?: CacheSizing; // render-target size (reference-res floor or absolute tile px); undefined → bake size
 }
 
 export interface CompileOptions {
@@ -51,6 +64,10 @@ export interface CompileOptions {
   // provider) and replaced downstream by a texture sample — so no single channel shader inlines the whole
   // graph (which overflows WebKit's 8192-byte private-var limit / freezes Firefox's sync compiler).
   allocCache?: CacheAlloc;
+  // The authored output resolution (Material Output), used ONLY to derive a tiled noise's repeat factor
+  // (repeat = outputResolution / tileSize) so the visible repetition matches between the live preview and the
+  // export regardless of the actual bake size. Filled in by compileSockets from readOutputResolution.
+  outputResolution?: number;
 }
 
 // Mutable holder threaded through the recursive compile so a soloed node at any nesting depth can have its
@@ -70,16 +87,196 @@ export interface CompiledSockets {
   cachePlan: CacheEntry[];
 }
 
+// Reference working resolution for the derivative (normal) path. A cache that COMPUTES a derivative (Normal
+// From Height's dFdx/dFdy) or FEEDS one downstream renders at least this big — regardless of a smaller output
+// resolution — then downsamples (via mips) to the output. So the normal map is a faithful area-averaged
+// miniature at low output res instead of aliasing fine height detail into per-texel speckle. 2048 resolves the
+// finest authored grain (noise scale up to 128 → ~16px/period here); the bake service caps it at MAX_CACHE_SIZE.
+// Outputs already ≥ this render native (no upscale): the floor only lifts SMALLER outputs to the reference.
+const DERIVATIVE_REFERENCE = 2048;
+
+// Does computing the value feeding `startNodeId` involve a derivative node (bakeDerivative, e.g. Normal From
+// Height) within THIS subgraph? Walks the upstream edges from the output's source node. Nested groups aren't
+// recursed into — a derivative inside one is handled by that group's own cache sizing (compiled first). This
+// catches the derivative's OWN containing cache; caches that FEED a derivative across group boundaries are
+// found by derivativeTaintedCaches (a whole-tree pre-pass).
+function dependsOnDerivative(startNodeId: string, doc: MaterialGraphDocument, registry: NodeRegistry): boolean {
+  const byId = new Map(doc.nodes.map((n) => [n.id, n]));
+  const seen = new Set<string>();
+  const stack = [startNodeId];
+  while (stack.length) {
+    const id = stack.pop() as string;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const node = byId.get(id);
+    if (!node) continue;
+    if (registry.get(node.type).bakeDerivative) return true;
+    for (const e of doc.edges) if (e.toNode === id) stack.push(e.fromNode);
+  }
+  return false;
+}
+
+// Whole-tree pre-pass: the set of decomposition cache ids (`groupId/portKey`) whose value transitively FEEDS a
+// derivative node (bakeDerivative) anywhere downstream — crossing group boundaries. Those caches supply the
+// height detail a Normal From Height differentiates, so they must render at the reference resolution too (a
+// cache left at the low output res would blur the detail away BEFORE the derivative sees it, and no amount of
+// supersampling downstream could recover it). A backward taint from every derivative node, propagating across
+// Group Input (out to the parent's feeding source) and Group Output (into the subgraph) boundaries. Node ids
+// are unique across the whole document tree, so a single visited-set is safe.
+function derivativeTaintedCaches(rootDoc: MaterialGraphDocument, registry: NodeRegistry): Set<string> {
+  const tainted = new Set<string>();
+  const visitedNodes = new Set<string>();
+  const visitedOutputs = new Set<string>(); // cacheIds whose subgraph has been walked (memo)
+  const byIdCache = new Map<MaterialGraphDocument, Map<string, GraphNode>>();
+  const byIdOf = (doc: MaterialGraphDocument): Map<string, GraphNode> => {
+    let m = byIdCache.get(doc);
+    if (!m) {
+      m = new Map(doc.nodes.map((n) => [n.id, n]));
+      byIdCache.set(doc, m);
+    }
+    return m;
+  };
+  const giOf = (doc: MaterialGraphDocument): string | undefined =>
+    doc.nodes.find((n) => n.type === GROUP_INPUT_TYPE)?.id;
+
+  // Taint the source of one value edge (`fromNode`/`fromOutput`) inside `doc`. `escape(portKey)` handles the
+  // case where the source is this doc's Group Input — the value actually comes from the parent group's input.
+  const taintSource = (
+    doc: MaterialGraphDocument,
+    fromNode: string,
+    fromOutput: string,
+    escape: (portKey: string) => void,
+  ): void => {
+    if (fromNode === giOf(doc)) {
+      escape(fromOutput);
+      return;
+    }
+    const src = byIdOf(doc).get(fromNode);
+    if (!src) return;
+    if (src.type === GROUP_TYPE && src.subgraph) {
+      tainted.add(`${src.id}/${fromOutput}`); // this group output is a cache feeding a derivative
+      taintGroupOutput(src, fromOutput, doc, escape);
+      return;
+    }
+    taintNode(doc, fromNode, escape);
+  };
+
+  const taintNode = (doc: MaterialGraphDocument, nodeId: string, escape: (portKey: string) => void): void => {
+    if (visitedNodes.has(nodeId)) return; // a node lives in one doc, whose escape is fixed → memo is safe
+    visitedNodes.add(nodeId);
+    for (const e of doc.edges) if (e.toNode === nodeId) taintSource(doc, e.fromNode, e.fromOutput, escape);
+  };
+
+  // Continue the backward walk INTO a group from one of its output ports: taint the node feeding that Group
+  // Output port; its own Group Input references escape back out to the parent's feeding source.
+  const taintGroupOutput = (
+    groupNode: GraphNode,
+    portKey: string,
+    parentDoc: MaterialGraphDocument,
+    parentEscape: (portKey: string) => void,
+  ): void => {
+    const cacheId = `${groupNode.id}/${portKey}`;
+    if (visitedOutputs.has(cacheId)) return;
+    visitedOutputs.add(cacheId);
+    const sub = groupNode.subgraph;
+    if (!sub) return;
+    const goNode = sub.nodes.find((n) => n.type === GROUP_OUTPUT_TYPE);
+    const feed = goNode && sub.edges.find((e) => e.toNode === goNode.id && e.toInput === portKey);
+    if (!feed) return;
+    const subEscape = (inKey: string): void => {
+      for (const pe of parentDoc.edges)
+        if (pe.toNode === groupNode.id && pe.toInput === inKey)
+          taintSource(parentDoc, pe.fromNode, pe.fromOutput, parentEscape);
+    };
+    taintSource(sub, feed.fromNode, feed.fromOutput, subEscape);
+  };
+
+  // Seed the taint at every derivative node in the tree, walking each doc with the escape that maps its Group
+  // Input back to its parent group's feeding sources.
+  const visitDoc = (doc: MaterialGraphDocument, escape: (portKey: string) => void): void => {
+    for (const node of doc.nodes) {
+      if (registry.get(node.type).bakeDerivative) taintNode(doc, node.id, escape);
+      if (node.type === GROUP_TYPE && node.subgraph) {
+        const subEscape = (inKey: string): void => {
+          for (const pe of doc.edges)
+            if (pe.toNode === node.id && pe.toInput === inKey)
+              taintSource(doc, pe.fromNode, pe.fromOutput, escape);
+        };
+        visitDoc(node.subgraph, subEscape);
+      }
+    }
+  };
+  visitDoc(rootDoc, () => {});
+  return tainted;
+}
+
 // Encode a group output for a 16F linear cache target (raw values, no colour transform): floats replicate
 // into RGB; vectors/colours are already vec3.
 function encodeCache(value: MaterialValue, kind: PortKind): MaterialValue {
   return kind === "float" ? vec3(value) : value;
 }
 // Sample a cached group output back at the ambient tile uv (valid because the offline bake evaluates every
-// node per-texel, so cache[uv] is exactly the group's output at that pixel).
+// node per-texel, so cache[uv] is exactly the group's output at that pixel). (Tiled-noise caches are instead
+// sampled uv × repeat in maybeTileNode — the repeating-unit model.)
 function decodeCache(tex: THREE.Texture, kind: PortKind): MaterialValue {
   const s = texture(tex, uv());
   return kind === "float" ? s.r : s.xyz;
+}
+
+// The graph's authored export resolution: Material Output's `outputResolution` param (px), default 1024. Used
+// by the export path (debug/export.ts) as the bake size and by the live surface (textured-surface.ts) as its
+// on-screen bake size.
+export function readOutputResolution(doc: MaterialGraphDocument): number {
+  const out = doc.nodes.find((n) => n.type === MATERIAL_OUTPUT_TYPE);
+  const raw = out?.params?.outputResolution;
+  const n = typeof raw === "string" ? Number(raw) : typeof raw === "number" ? raw : NaN;
+  return Number.isFinite(n) && n > 0 ? n : 1024;
+}
+
+// Offline node-level tiling — the REPEATING-UNIT model. If a `bakeTileable` node has `tileSize` set, the node
+// builds `period / repeat` periods (via ctx.tileRepeat, so its feature COUNT drops proportionally) into a
+// tileSize² buffer, which is then sampled `repeat` times across the texture (uv × repeat). Net effect: the
+// texture shows the SAME total feature count = the noise's `scale` (feature size CONSTANT), at the SAME pixel
+// density as a full render (CONSTANT crispness — the small buffer holds few periods so it never under-samples),
+// and the pattern REPEATS `repeat` times (the only visible change; smaller tileSize → more repetition). The
+// compute saving is real: only tileSize² unique noise texels are evaluated. `repeat = outputResolution /
+// tileSize`, clamped so each tile keeps ≥ 1 period (see tileRepeatFor). Applies under SOLO too (a deliberate
+// change the isolation preview must show). `tileRepeat` here MUST equal what was passed to the node's build.
+function tileRepeatFor(node: GraphNode, def: MaterialNodeDef, opts: CompileOptions): number {
+  if (opts.backend === "live" || !opts.allocCache || !def.bakeTileable) return 1;
+  const raw = node.params.tileSize;
+  const tile = typeof raw === "string" && raw !== "off" ? Number(raw) : NaN;
+  if (!Number.isFinite(tile) || tile <= 0) return 1;
+  const out = opts.outputResolution ?? 1024;
+  // repeat = output / tileSize — tileSize is the pixel size of the repeating unit (the noise builds
+  // `period / repeat` periods into it, so periods_per_tile × repeat = scale keeps the feature size constant;
+  // exact when scale is a multiple of repeat, e.g. scale 128 with repeat 16/8/4). Clamped to `scale` so each
+  // tile keeps ≥ 1 period (needed to tile seamlessly); tile ≥ output → repeat 1 (full render, no tiling).
+  const scale = Math.max(1, Math.round(Number(node.params.scale) || 1)); // authored feature count (build-time)
+  return Math.max(1, Math.min(Math.round(out / tile), scale));
+}
+
+// Returns the tiled outputs (a repeat-sampled cache) or undefined when tiling doesn't apply (live backend, no
+// cache provider, flag off, tileSize "off", vector/curl output, or no field). `repeat` comes from tileRepeatFor
+// (already threaded into the node's build as ctx.tileRepeat).
+function maybeTileNode(
+  node: GraphNode,
+  def: MaterialNodeDef,
+  built: Record<string, MaterialValue>,
+  opts: CompileOptions,
+  cachePlan: CacheEntry[],
+  repeat: number,
+): Record<string, MaterialValue> | undefined {
+  if (opts.backend === "live" || !opts.allocCache || !def.bakeTileable) return undefined;
+  if (built.vector !== undefined || built.field === undefined) return undefined; // scalar `field` only (skip curl)
+  const raw = node.params.tileSize;
+  const tile = typeof raw === "string" && raw !== "off" ? Number(raw) : NaN;
+  if (!Number.isFinite(tile) || tile <= 0) return undefined;
+  const cacheId = `${node.id}/field`;
+  const tex = opts.allocCache(cacheId, "float", { size: tile });
+  cachePlan.push({ cacheId, kind: "float", colorNode: encodeCache(built.field, "float"), sizing: { size: tile } });
+  // Sample the seamless tile `repeat` times over the texture (RepeatWrapping); 1 = no repeat (full render).
+  return { field: texture(tex, uv().mul(float(repeat))).r };
 }
 
 // Validate + topo-sort + build every node's TSL outputs, returning the MaterialBundle the shader node
@@ -99,14 +296,21 @@ export function countGraphNodes(doc: MaterialGraphDocument): number {
 export function compileSockets(
   doc: MaterialGraphDocument,
   registry: NodeRegistry,
-  opts: CompileOptions,
+  optsIn: CompileOptions,
 ): CompiledSockets {
+  // Resolve the authored output resolution once (drives tiled-noise repeat = outputResolution / tileSize, so
+  // the repetition is identical in the live preview and the export regardless of the actual bake size).
+  const opts: CompileOptions = { ...optsIn, outputResolution: optsIn.outputResolution ?? readOutputResolution(doc) };
   // Domain: 3D world position (live, seamless) or a 2D uv slice (offline bake). Shared by every (sub)document.
   const coord: MaterialValue =
     opts.backend === "live" ? positionWorld : vec3(uv().x, uv().y, float(0));
   const solo: SoloCapture | undefined = opts.soloNodeId ? { id: opts.soloNodeId } : undefined;
   const cachePlan: CacheEntry[] = [];
-  const { outputs, uniforms } = compileDocument(doc, registry, opts, coord, cachePlan, undefined, solo);
+  // Offline only: which caches feed a derivative (normal) node downstream → render at the reference resolution.
+  const derivativeCaches = opts.allocCache ? derivativeTaintedCaches(doc, registry) : new Set<string>();
+  const { outputs, uniforms } = compileDocument(
+    doc, registry, opts, coord, cachePlan, derivativeCaches, undefined, solo,
+  );
   // Solo preview overrides the normal Material Output bundle, but only for a previewable (non-shader) value.
   const bundle =
     solo && solo.value !== undefined && solo.kind && solo.kind !== "shader"
@@ -136,6 +340,7 @@ function compileDocument(
   opts: CompileOptions,
   coord: MaterialValue,
   cachePlan: CacheEntry[],
+  derivativeCaches: Set<string>,
   seededInputs?: Record<string, MaterialValue | undefined>,
   solo?: SoloCapture,
 ): CompiledDocument {
@@ -159,7 +364,7 @@ function compileDocument(
     }
     if (node.type === GROUP_TYPE) {
       const ext = resolveInputs(node, doc, outputsByNode, byId, registry);
-      const g = compileGroup(node, registry, opts, coord, cachePlan, ext, solo);
+      const g = compileGroup(node, registry, opts, coord, cachePlan, derivativeCaches, ext, solo);
       outputsByNode.set(id, g.outputs);
       // Surface the subgraph's uniforms by node id (ids are unique across the doc tree in practice) so a
       // grouped param can be live-tweaked / re-rendered without a recompile.
@@ -171,8 +376,12 @@ function compileDocument(
     const def = registry.get(node.type);
     const uniforms = buildUniforms(def, node);
     uniformsByNode.set(id, uniforms);
-    const ctx: BuildCtx = { inputs, uniforms, params: node.params, coord, backend: opts.backend };
-    outputsByNode.set(id, def.build(ctx));
+    // Offline tiling: the node builds `period / tileRepeat` periods so its feature size survives the ×repeat
+    // sampling in maybeTileNode (repeating-unit model). 1 for non-tiled / live.
+    const tileRepeat = tileRepeatFor(node, def, opts);
+    const ctx: BuildCtx = { inputs, uniforms, params: node.params, coord, backend: opts.backend, tileRepeat };
+    const built = def.build(ctx);
+    outputsByNode.set(id, maybeTileNode(node, def, built, opts, cachePlan, tileRepeat) ?? built);
   }
 
   // Solo capture: if the previewed node lives at this level, grab its first output. First capture wins, so
@@ -197,6 +406,7 @@ function compileGroup(
   opts: CompileOptions,
   coord: MaterialValue,
   cachePlan: CacheEntry[],
+  derivativeCaches: Set<string>,
   externalInputs: Record<string, MaterialValue | undefined>,
   solo?: SoloCapture,
 ): { outputs: Record<string, MaterialValue>; uniforms: Map<string, Record<string, MaterialValue>> } {
@@ -205,7 +415,9 @@ function compileGroup(
   // Keep the subgraph's per-node uniforms (recursively, incl. deeper groups) so the parent can surface them
   // — without this the editor's live-tweak / offline re-render fast paths never see params inside a group.
   // Nested groups compiled in here append their cache entries first, giving `cachePlan` bottom-up order.
-  const { outputs, uniforms } = compileDocument(sub, registry, opts, coord, cachePlan, externalInputs, solo);
+  const { outputs, uniforms } = compileDocument(
+    sub, registry, opts, coord, cachePlan, derivativeCaches, externalInputs, solo,
+  );
   const goNode = sub.nodes.find((n) => n.type === GROUP_OUTPUT_TYPE);
   const result: Record<string, MaterialValue> = {};
   if (!goNode) return { outputs: result, uniforms };
@@ -218,8 +430,16 @@ function compileGroup(
     // Only cacheable kinds (float/vector/colour); a soloed subtree must stay inlined so the preview is exact.
     if (opts.allocCache && value !== undefined && p.kind !== "shader" && !solo) {
       const cacheId = `${groupNode.id}/${p.key}`;
-      const tex = opts.allocCache(cacheId, p.kind);
-      cachePlan.push({ cacheId, kind: p.kind, colorNode: encodeCache(value, p.kind) });
+      // Render this cache at the reference resolution (a `minSize` floor + mips) when it either COMPUTES a
+      // derivative (nfh on its upstream path — its dFdx needs a fine, fixed grid) or FEEDS one downstream
+      // (a whole-tree taint — the height detail nfh differentiates must survive at low output res). Either
+      // way the cache renders at ≥ DERIVATIVE_REFERENCE and downsamples faithfully via mips (see cacheSizeFor).
+      // Auto: no per-node config, keyed off the node def's bakeDerivative flag.
+      const onDerivativePath =
+        (edge && dependsOnDerivative(edge.fromNode, sub, registry)) || derivativeCaches.has(cacheId);
+      const sizing: CacheSizing | undefined = onDerivativePath ? { minSize: DERIVATIVE_REFERENCE } : undefined;
+      const tex = opts.allocCache(cacheId, p.kind, sizing);
+      cachePlan.push({ cacheId, kind: p.kind, colorNode: encodeCache(value, p.kind), sizing });
       result[p.key] = decodeCache(tex, p.kind);
     } else {
       result[p.key] = value;

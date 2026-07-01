@@ -70,6 +70,9 @@ export const tileableNoiseNode: MaterialNodeDef = {
   type: "tileable-noise",
   nodeClass: "texture",
   label: "Tileable Noise",
+  // Offline: when `tileSize` is set, the baker renders this noise into a small seamless tile once and repeats
+  // it (the noise is periodic over [0,1]) instead of evaluating it across the full grid. See compiler tiling.
+  bakeTileable: true,
   inputs: [{ key: "coord", kind: "vector" }],
   outputs: [{ key: "field", kind: "float" }],
   params: [
@@ -83,6 +86,16 @@ export const tileableNoiseNode: MaterialNodeDef = {
     { key: "aspect", label: "aspect", type: "float", min: 1, max: 8, step: 0.5, default: 1 },
     { key: "octaves", label: "detail", type: "int", min: 1, max: 8, step: 1, default: 4 },
     { key: "gain", label: "roughness", type: "float", min: 0, max: 1, step: 0.01, default: 0.5 },
+    // Band-limit (anti-alias) strength, live uniform. 1 = fade octaves finer than the bake texel grid so the
+    // noise stays crisp instead of aliasing into speckle/mush (offline only); 0 = the raw, unfiltered sum.
+    { key: "antialias", label: "anti-alias", type: "float", min: 0, max: 1, step: 0.01, default: 1 },
+    // Tiling (offline only): "off" = evaluate the noise across the full grid (default, unchanged). A px value
+    // renders a REPEATING BLOCK — the noise fills a tileSize² seamless tile at full pixel density and repeats
+    // it (repeat = outputResolution/tileSize) to cover the texture. Feature size and crispness are UNCHANGED
+    // (same as "off"); the only difference is the pattern repeats, and only tileSize² unique texels are
+    // computed (cheaper). Smaller tile = more visible repetition. Structural (select) → editing re-bakes.
+    // `curl` (vector) output is never tiled.
+    { key: "tileSize", label: "tile", type: "select", options: ["off", "64", "128", "256", "512"], default: "off" },
   ],
   // curl adds a `vector` output (the flow field); all other types expose just `field`.
   declare(params) {
@@ -110,9 +123,15 @@ export const tileableNoiseNode: MaterialNodeDef = {
     }
 
     const uv2 = vec2(coord.x, coord.y) as V;
-    // Offline tiling needs an INTEGER cell count; round the live scale uniform to a whole period IN-SHADER
-    // (so a scale drag re-renders without recompiling, yet the lattice at index `period` still matches 0).
-    const periodU = max(floor(scaleU.add(0.5)), float(1)) as V;
+    const aaU = ctx.uniforms.antialias as V; // live band-limit strength (0..1)
+    // Repeating-unit tiling (offline): the compiler renders `period / tileRepeat` periods into a small buffer
+    // and repeats it ×tileRepeat, so dividing the period here keeps the final feature size = `scale` (constant)
+    // while the block repeats. 1 = no tiling (full render). See compiler maybeTileNode / tileRepeatFor.
+    const tileRepeat = Math.max(1, Math.round(ctx.tileRepeat ?? 1));
+    const scaleTiled = tileRepeat > 1 ? (scaleU.div(float(tileRepeat)) as V) : scaleU;
+    // Offline tiling needs an INTEGER cell count; round the (tile-divided) scale uniform to a whole period
+    // IN-SHADER (so a scale drag re-renders without recompiling, yet the lattice at index `period` matches 0).
+    const periodU = max(floor(scaleTiled.add(0.5)), float(1)) as V;
     // aspect stretches the X period (perlin/value); keep it integer so X tiles too.
     const aspectU = ctx.uniforms.aspect as V;
     const periodXU = max(floor(periodU.mul(aspectU).add(0.5)), float(1)) as V;
@@ -128,17 +147,17 @@ export const tileableNoiseNode: MaterialNodeDef = {
       // the skewed x-index by a half cell across the y-wrap, leaving a vertical seam. Snap the period up to
       // even (every octave period stays even since it's ×2^o): even = period + (period mod 2).
       const evenU = periodU.add(mod(periodU, float(2))) as V;
-      return { field: periodicFbm01(uv2, evenU, evenU, octaves, gain, simplexBase01) };
+      return { field: periodicFbm01(uv2, evenU, evenU, octaves, gain, simplexBase01, aaU) };
     }
 
     const base = OFFLINE_BASES[noiseType];
     if (base) {
       // Cellular/flow types ignore aspect (square period); value supports it (anisotropic per-axis period).
       const periodX = noiseType === "value" ? periodXU : periodU;
-      return { field: periodicFbm01(uv2, periodX, periodU, octaves, gain, base) };
+      return { field: periodicFbm01(uv2, periodX, periodU, octaves, gain, base, aaU) };
     }
     // Default "perlin-fbm": original bespoke path — periodic fBm over the uv tile. aspect elongates along Y.
-    const n = tileableFbm(uv2, periodXU, periodU, octaves, gain);
+    const n = tileableFbm(uv2, periodXU, periodU, octaves, gain, aaU);
     return { field: n.mul(0.5).add(0.5) }; // [-1,1] → [0,1]
   },
 };

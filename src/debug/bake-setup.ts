@@ -130,7 +130,9 @@ async function handleJob(job: BakeJob, exporter: ExportApi, log: (line: string) 
     const channels = await exporter.bakeMaterialTask(
       job.doc,
       name,
-      normalizeSize(job.size),
+      // An explicit request size wins; when omitted, bakeMaterialTask falls back to the doc's authored
+      // Material Output `outputResolution`.
+      job.size == null ? undefined : normalizeSize(job.size),
       normalizeChannels(job.channels),
       job.render,
     );

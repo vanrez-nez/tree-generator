@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import type { MeshStandardNodeMaterial } from "three/webgpu";
 import { uniform, vec3, normalWorld, texture, normalMap, float, attribute, uv } from "three/tsl";
-import { compileGraph, newSurfaceMaterial } from "./compiler";
+import { compileGraph, newSurfaceMaterial, readOutputResolution } from "./compiler";
 import { triplanarColor } from "../tsl/triplanar";
 import { triplanarNormalMap } from "../tsl/triplanar-normal";
 import { parallaxOcclusionUV } from "../tsl/parallax";
@@ -12,10 +12,9 @@ import { SURFACE_CHANNELS, type MaterialBakeService, type BakedTextureSet } from
 // Parallax-occlusion march steps (LINEAR cost, paid per floor fragment — the dominant GPU cost of the
 // effect). 12 is the perf/quality balance.
 const PARALLAX_LAYERS = 12;
-// The on-screen surface bakes at this size (NOT the 1024 export size). It's a tiled, mip/aniso-sampled
-// surface, so 512 is plenty on screen and bakes ~4× cheaper than 1024. Export/proof/PNG paths pass their
-// own (1024) size and are unaffected.
-const SURFACE_BAKE_SIZE = 512;
+// The on-screen surface bakes at the graph's authored `outputResolution` (Material Output), so the viewport is
+// an exact preview of what an export at that resolution produces — lowering it makes editing cheaper AND the
+// intermediate caches smaller, raising it (2048/4096) makes each re-bake heavier. See surfaceBakeSize().
 
 // A live, on-screen material driven by a MaterialGraphController. In the OFFLINE backend (default) it bakes
 // the graph to per-channel textures THROUGH the shared MaterialBakeService and samples them (triplanar /
@@ -40,7 +39,7 @@ export class TexturedSurface {
   readonly parallaxScale = uniform(0); // 0 = OFF (the march is opt-in; it's the effect's dominant cost)
   lastBakeMs = 0;
 
-  private readonly set: BakedTextureSet;
+  private set: BakedTextureSet;
   private backend: MaterialBackend = "offline";
   private debugNormals = false;
   private triplanar = false; // off by default — plain mesh-UV sampling until enabled
@@ -60,7 +59,7 @@ export class TexturedSurface {
     // Identifies this surface in bake telemetry (e.g. "tree" / "floor") so UI can scope its progress.
     private readonly source?: string,
   ) {
-    this.set = service.createTextureSet(SURFACE_CHANNELS, SURFACE_BAKE_SIZE);
+    this.set = service.createTextureSet(SURFACE_CHANNELS, this.surfaceBakeSize());
     // Startup fallback: no renderer yet → procedural live material so the surface is valid; the first
     // refresh() (after the service gets a renderer) switches to the baked offline surface.
     this.material_ = this.buildLive();
@@ -237,11 +236,26 @@ export class TexturedSurface {
     }
   }
 
+  // The on-screen bake resolution = the graph's authored output resolution (Material Output). Rounded to a
+  // multiple of 64 so the service's readback alignment holds even for odd authored values.
+  private surfaceBakeSize(): number {
+    return Math.max(64, Math.round(readOutputResolution(this.graph.document) / 64) * 64);
+  }
+
   // Re-derive the presented material. Offline (with a renderer): bake the graph into the texture set via the
   // service, rewire on a channel-set change. Otherwise: compile the procedural live material.
   private async rebuild(): Promise<void> {
     try {
       if (this.backend === "offline" && this.service.hasRenderer) {
+        // Honour the authored output resolution: if it changed, bake into a NEW set at the new size. Keep the
+        // OLD set alive until after the rewire below, so no frame rendered during the bake samples a disposed
+        // texture (the offline material still points at the old textures until wire() swaps them).
+        const size = this.surfaceBakeSize();
+        const oldSet = size !== this.set.size ? this.set : null;
+        if (oldSet) {
+          this.set = this.service.createTextureSet(SURFACE_CHANNELS, size);
+          this.wiredOnce = false;
+        }
         const soloNodeId = this.graph.soloNode ?? undefined;
         const t0 = performance.now();
         const changed = await this.service.bakeInto(this.set, this.graph, {
@@ -255,6 +269,7 @@ export class TexturedSurface {
           this.wiredOnce = true;
         }
         this.material_ = this.offlineMat;
+        oldSet?.dispose(); // safe now: the material has been rewired to the new set's textures
       } else {
         this.material_ = this.buildLive();
       }

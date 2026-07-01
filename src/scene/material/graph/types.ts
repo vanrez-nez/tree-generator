@@ -106,6 +106,12 @@ export interface BuildCtx {
   // The coordinate domain: positionWorld (live, 3D seamless) or vec3(uv, 0) (offline, 2D tileable bake).
   coord: MaterialValue;
   backend: MaterialBackend;
+  // Offline tiling (repeating-unit model, see compiler maybeTileNode): when a `bakeTileable` node has its
+  // `tileSize` set, the compiler renders a REPEATING BLOCK — the noise renders `period / tileRepeat` periods
+  // into a tileSize² buffer that then repeats `tileRepeat` times to fill the texture. A node that supports
+  // tiling divides its period by this factor so the total feature count (feature size) stays constant while
+  // the block repeats. 1 (default) = no tiling / not applicable.
+  tileRepeat?: number;
 }
 
 export interface MaterialNodeDef {
@@ -122,6 +128,15 @@ export interface MaterialNodeDef {
   // params. When present, a param change can add/remove sockets — the controller prunes now-dangling
   // edges and the editor reconciles. See plan L7 / Phase 5.
   declare?(params: Record<string, unknown>): { inputs: PortDef[]; outputs: PortDef[] };
+  // Marks a node that takes a SCREEN-SPACE DERIVATIVE of its input (e.g. Normal From Height's dFdx/dFdy).
+  // The offline baker must render any decomposition cache on a derivative's dependency path SUPERSAMPLED, so
+  // the derivative is computed on a finer grid than the target and averaged down (otherwise fine height
+  // detail aliases into per-texel speckle). See compiler.ts auto-supersample + channel-baker SS.
+  bakeDerivative?: boolean;
+  // Marks a node whose (periodic) output the offline baker may render into a small seamless tile ONCE and
+  // repeat, when its `tileSize` param is set — an individual node becomes a decomposition-cache boundary so
+  // the expensive per-texel eval (noise) runs at tileSize² instead of the full grid. See compiler.ts tiling.
+  bakeTileable?: boolean;
   // Emit one TSL node-value per output port key. The terminal `material-output` returns {} — the compiler
   // reads its connected inputs directly.
   build(ctx: BuildCtx): Record<string, MaterialValue>;

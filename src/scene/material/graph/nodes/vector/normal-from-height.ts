@@ -22,6 +22,8 @@ export const normalFromHeightNode: MaterialNodeDef = {
   type: "normal-from-height",
   nodeClass: "vector",
   label: "Normal From Height",
+  // Takes dFdx/dFdy of the height (offline) → its dependency-path caches bake supersampled (see compiler).
+  bakeDerivative: true,
   inputs: [{ key: "height", kind: "float" }],
   outputs: [{ key: "normal", kind: "vector" }],
   params: [
