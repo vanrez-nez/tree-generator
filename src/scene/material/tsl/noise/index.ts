@@ -5,7 +5,7 @@ export { periodicFbm01, type NoiseBase01 } from "./fbm";
 export { valueBase01 } from "./value";
 export { worleyBase01, voronoiSmoothBase01 } from "./cellular";
 export { curlVec, paperBase01, woolBase01, stoneBase01 } from "./flow";
-export { gaborBase01 } from "./gabor";
+export { gaborValue2D } from "./gabor";
 export { simplexBase01 } from "./simplex";
 export { waveletBase01 } from "./wavelet";
 export { erosionBase01 } from "./erosion";

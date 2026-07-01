@@ -10,7 +10,7 @@ import {
   paperBase01,
   woolBase01,
   stoneBase01,
-  gaborBase01,
+  gaborValue2D,
   simplexBase01,
   waveletBase01,
   erosionBase01,
@@ -44,7 +44,8 @@ const OFFLINE_BASES: Record<string, NoiseBase01> = {
   value: valueBase01,
   worley: worleyBase01,
   "voronoi-smooth": voronoiSmoothBase01,
-  gabor: gaborBase01,
+  // NOTE: gabor is NOT here — it's sparse Gabor convolution with its own frequency/anisotropy/orientation
+  // controls (not an fBm base), special-cased in build() like curl/simplex. See gaborValue2D.
   stone: stoneBase01,
   paper: paperBase01,
   wool: woolBase01,
@@ -89,6 +90,12 @@ export const tileableNoiseNode: MaterialNodeDef = {
     // Band-limit (anti-alias) strength, live uniform. 1 = fade octaves finer than the bake texel grid so the
     // noise stays crisp instead of aliasing into speckle/mush (offline only); 0 = the raw, unfiltered sum.
     { key: "antialias", label: "anti-alias", type: "float", min: 0, max: 1, step: 0.01, default: 1 },
+    // Gabor-only live uniforms (faithful Blender Gabor Texture; ignored by every other noiseType). frequency =
+    // oscillations across a kernel (perpendicular to the direction); anisotropy 1 = directional stripes, 0 =
+    // omnidirectional; angle = the base orientation in radians. See gaborValue2D.
+    { key: "gaborFreq", label: "gabor freq", type: "float", min: 0, max: 16, step: 0.1, default: 2 },
+    { key: "gaborAniso", label: "gabor aniso", type: "float", min: 0, max: 1, step: 0.01, default: 1 },
+    { key: "gaborOrient", label: "gabor angle", type: "float", min: 0, max: 6.2832, step: 0.01, default: 0.785398 },
     // Tiling (offline only): "off" = evaluate the noise across the full grid (default, unchanged). A px value
     // renders a REPEATING BLOCK — the noise fills a tileSize² seamless tile at full pixel density and repeats
     // it (repeat = outputResolution/tileSize) to cover the texture. Feature size and crispness are UNCHANGED
@@ -148,6 +155,16 @@ export const tileableNoiseNode: MaterialNodeDef = {
       // even (every octave period stays even since it's ×2^o): even = period + (period mod 2).
       const evenU = periodU.add(mod(periodU, float(2))) as V;
       return { field: periodicFbm01(uv2, evenU, evenU, octaves, gain, simplexBase01, aaU) };
+    }
+
+    if (noiseType === "gabor") {
+      // Faithful Blender Gabor (sparse convolution) — its own frequency/anisotropy/orientation controls; it is
+      // NOT an fBm base, so octaves/gain/aspect/antialias don't apply. isotropy = 1 − anisotropy. `periodU`
+      // (integer scale, tile-divided) sets the cell count so it stays seamless + tileable.
+      const isotropy = float(1).sub(ctx.uniforms.gaborAniso as V) as V;
+      return {
+        field: gaborValue2D(uv2, periodU, ctx.uniforms.gaborFreq as V, isotropy, ctx.uniforms.gaborOrient as V),
+      };
     }
 
     const base = OFFLINE_BASES[noiseType];
