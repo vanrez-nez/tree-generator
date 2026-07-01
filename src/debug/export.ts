@@ -47,6 +47,7 @@ export interface RenderProfile {
   background?: string; // CSS hex background
   size?: number; // output px (square); rounded to a multiple of 64 for readback alignment
   samples?: number; // MSAA: WebGPU supports 4× or off, so ≥2 → 4×, else off
+  scale?: number; // UV tiling: repeat the material N× across the sphere/plane. default 1
 }
 
 // Payload-level options for the demo render. `profiles` selects/overrides which named profiles to render
@@ -57,6 +58,7 @@ export interface DemoRenderOptions {
   shadows?: boolean;
   background?: string;
   environmentIntensity?: number;
+  scale?: number;
   profiles?: Array<string | RenderProfile>;
 }
 
@@ -70,6 +72,7 @@ const RENDER_DEFAULTS: Required<Omit<RenderProfile, "name">> = {
   background: "#181818",
   size: 512,
   samples: 4,
+  scale: 1,
 };
 
 // Built-in profiles. Each tuned to reveal one surface aspect; values are starting points.
@@ -122,6 +125,7 @@ function resolveProfiles(render: DemoRenderOptions = {}): ResolvedProfile[] {
     shadows: render.shadows,
     background: render.background,
     environmentIntensity: render.environmentIntensity,
+    scale: render.scale,
   });
   const entries = render.profiles ?? Object.keys(RENDER_PROFILES);
   return entries.map((entry) => {
@@ -286,7 +290,7 @@ export function createExport({ renderer, registry, liveDocument }: ExportDeps): 
     camera: THREE.PerspectiveCamera;
     dispose: () => void;
   } {
-    const { lightPosition, lightIntensity, ambientStrength, environmentIntensity, shadows, background } =
+    const { lightPosition, lightIntensity, ambientStrength, environmentIntensity, shadows, background, scale } =
       profile;
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(background);
@@ -308,6 +312,19 @@ export function createExport({ renderer, registry, liveDocument }: ExportDeps): 
     };
     addFullVertexAo(sphereGeometry);
     addFullVertexAo(planeGeometry);
+    // Tile the material by scaling the geometry UVs (the baked channel targets already RepeatWrap, so
+    // UVs > 1 repeat seamlessly rather than clamp). scale 1 = no tiling.
+    if (scale !== 1) {
+      const tileUv = (geometry: THREE.BufferGeometry): void => {
+        const uvAttr = geometry.getAttribute("uv");
+        for (let i = 0; i < uvAttr.count; i++) {
+          uvAttr.setXY(i, uvAttr.getX(i) * scale, uvAttr.getY(i) * scale);
+        }
+        uvAttr.needsUpdate = true;
+      };
+      tileUv(sphereGeometry);
+      tileUv(planeGeometry);
+    }
     const sphere = new THREE.Mesh(sphereGeometry, material);
     sphere.position.set(0, 0.95, 0);
     sphere.castShadow = shadows;
