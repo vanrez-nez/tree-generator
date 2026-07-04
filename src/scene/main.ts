@@ -4,6 +4,7 @@ import type { GraphDocument } from "./graph/document";
 import { DEFAULT_SUBDIVISIONS, buildTreeDocument } from "./tree";
 import { DEFAULT_FORM, type TreeForm } from "./tree-code";
 import { RootSystem } from "./root-system";
+import { RootCollar } from "./root-collar";
 import { TreeMesher } from "./mesher/tree-mesher";
 import type { MesherOptions } from "./mesher/welding-mesher";
 import { MaterialGraphRuntime } from "material-designer-runtime";
@@ -34,6 +35,11 @@ export class MainScene {
   readonly floorMaterial = new MaterialGraphRuntime({ source: "floor" });
   private floorPlane: THREE.Mesh<THREE.BufferGeometry, THREE.Material>;
   private floorBaseUv: Float32Array; // unscaled [0,1] uv, kept so the tiling control can re-scale it
+
+  // The root collar: mounded dirt where the roots meet the floor, on its own dirt material. Rebuilt
+  // in the same debounced pass as the tree surface (see update()).
+  readonly collarMaterial = new MaterialGraphRuntime({ source: "collar" });
+  private rootCollar!: RootCollar;
 
   // Scene lighting, exposed so the Scene panel can drive intensity/colour live. The flat ambient is kept
   // low — a shared IBL environment (scene.environment, set up in app.ts) provides the fill that gives the
@@ -98,6 +104,17 @@ export class MainScene {
       this.floorPlane.material = this.floorMaterial.material;
     });
 
+    // Root collar: dirt mounds around the tree base, on the dedicated collar material. It sits at
+    // y = 0 (0.01 above the floor plane → no z-fighting), catches the tree's baked shadow, and casts
+    // none itself (the mounds are low; avoids a VSM/alpha-caster pass). Its geometry is built lazily
+    // in update()'s rebuild block once the graph has resolved.
+    this.rootCollar = new RootCollar(this.collarMaterial.material);
+    this.rootCollar.mesh.receiveShadow = true;
+    this.rootCollar.mesh.castShadow = false;
+    this.rootCollar.mesh.position.y = 0;
+    this.scene.add(this.rootCollar.mesh);
+    this.collarMaterial.surface.onRebuilt(() => this.rootCollar.setMaterial(this.collarMaterial.material));
+
     this.addDebugInstrumentation();
   }
 
@@ -150,6 +167,16 @@ export class MainScene {
   // Show/hide the visual floor.
   setFloorVisible(visible: boolean): void {
     this.floorPlane.visible = visible;
+  }
+
+  // Show/hide the root-collar dirt mounds.
+  setCollarVisible(visible: boolean): void {
+    this.rootCollar.setVisible(visible);
+  }
+
+  // Toggle the root-collar wireframe overlay (shares the surface wireframe debug checkbox).
+  setCollarWireframe(wireframe: boolean): void {
+    this.rootCollar.setWireframe(wireframe);
   }
 
   // Repeat the floor material `tiles` times across the plane (scales the uv attribute from the [0,1] base).
@@ -325,6 +352,15 @@ export class MainScene {
     if (this.meshDirty) {
       const start = performance.now();
       this.mesher.build(this.graph, this.mesherOptions);
+      // Re-mound the dirt collar against the freshly resolved roots + trunk base. Reads world
+      // polylines valid for this frame (graph.update ran above, or the memoized cache is still good).
+      this.rootCollar.build(
+        this.graph.getLineById("trunk"),
+        this.graph
+          .getLineEntries()
+          .filter(({ id }) => /^root-\d+$/.test(id))
+          .map(({ line }) => line),
+      );
       this.meshStats.geometryMs = performance.now() - start;
       const { vertices, triangles } = this.mesher.getStats();
       this.meshStats.vertices = vertices;

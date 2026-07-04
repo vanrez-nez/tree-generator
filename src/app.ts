@@ -96,13 +96,20 @@ window.addEventListener("resize", () => resize());
 await renderer.init();
 mainScene.treeMaterial.setRenderer(renderer);
 mainScene.floorMaterial.setRenderer(renderer);
-const [treeMaterialDocument, floorMaterialDocument] = await Promise.all([
+mainScene.collarMaterial.setRenderer(renderer);
+const [treeMaterialDocument, floorMaterialDocument, collarMaterialDocument] = await Promise.all([
   loadMaterialDocument("/materials/bark.json"),
   loadMaterialDocument("/materials/cracked-clay.json"),
+  loadMaterialDocument("/materials/collar.json"),
 ]);
 mainScene.treeMaterial.setDocument(treeMaterialDocument);
 mainScene.floorMaterial.setDocument(floorMaterialDocument);
-await Promise.all([mainScene.treeMaterial.refresh(), mainScene.floorMaterial.refresh()]);
+mainScene.collarMaterial.setDocument(collarMaterialDocument);
+await Promise.all([
+  mainScene.treeMaterial.refresh(),
+  mainScene.floorMaterial.refresh(),
+  mainScene.collarMaterial.refresh(),
+]);
 
 // The visual floor is independent of the tree material; the pane owns visibility and tiling.
 initFloor();

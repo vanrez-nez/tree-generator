@@ -32,18 +32,28 @@ const _q = new THREE.Vector3();
 const _ab = new THREE.Vector3();
 const _ap = new THREE.Vector3();
 
-// Signed distance from `p` to the parent tube surface: < 0 inside, > 0 outside, 0 on surface.
-export function signedDistance(surface: ParentSurface, p: THREE.Vector3): number {
+// The nearest-surface query behind `signedDistance`, additionally exposing the local tube radius and
+// the y of the nearest spine point. Consumers that shape a field against the tube (e.g. the root
+// collar's dirt mounds) need the radius (to cap displacement so the tube still emerges) and the
+// centerline height (to gate by how near the ground the tube runs) — values the distance loop
+// already computes as `bestArc` but that a bare signed distance would discard.
+export function nearestSurfaceSample(
+  surface: ParentSurface,
+  p: THREE.Vector3,
+): { signed: number; radius: number; centerY: number } {
   const { points, cumulative, total } = surface;
 
   if (points.length < 2 || total <= 1e-9) {
-    return p.distanceTo(points[0] ?? p) - surface.radiusAt(0);
+    const only = points[0] ?? p;
+    const radius = surface.radiusAt(0);
+    return { signed: p.distanceTo(only) - radius, radius, centerY: only.y };
   }
 
   // Rounded tube (capsule): distance to the nearest clamped point on the spine, minus the radius
   // there. Clamping rounds the interior joints (good), but also rounds the two end caps (artifact).
   let bestDist = Infinity;
   let bestArc = 0;
+  let bestY = points[0].y;
 
   for (let i = 0; i < points.length - 1; i += 1) {
     const a = points[i];
@@ -57,10 +67,12 @@ export function signedDistance(surface: ParentSurface, p: THREE.Vector3): number
     if (dist < bestDist) {
       bestDist = dist;
       bestArc = (cumulative[i] + local * Math.sqrt(segLenSq)) / total;
+      bestY = _q.y;
     }
   }
 
-  let d = bestDist - surface.radiusAt(bestArc);
+  const radius = surface.radiusAt(bestArc);
+  let d = bestDist - radius;
 
   // The tube is solid only between its first and last disc. Intersect the rounded tube with the two
   // half-spaces bounded by the end disc planes (plane normal = the end segment direction): anything
@@ -78,7 +90,12 @@ export function signedDistance(surface: ParentSurface, p: THREE.Vector3): number
     d = Math.max(d, _ap.subVectors(p, points[last]).dot(_ab)); // beyond the tip disc → outside
   }
 
-  return d;
+  return { signed: d, radius, centerY: bestY };
+}
+
+// Signed distance from `p` to the parent tube surface: < 0 inside, > 0 outside, 0 on surface.
+export function signedDistance(surface: ParentSurface, p: THREE.Vector3): number {
+  return nearestSurfaceSample(surface, p).signed;
 }
 
 // Bisection for the surface crossing (signedDistance = 0) between inside point `a` and outside

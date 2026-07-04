@@ -288,6 +288,7 @@ export function setupTweakpane({
   const floorState = {
     visible: true,
     tiling: 6,
+    collar: true,
   };
 
   function setToneMapping(mode: THREE.ToneMapping): void {
@@ -340,6 +341,9 @@ export function setupTweakpane({
     folder
       .addBinding(floorState, "tiling", { label: "tiling", min: 1, max: 24, step: 1 })
       .on("change", (e) => mainScene.setFloorTiling(e.value));
+    folder
+      .addBinding(floorState, "collar", { label: "root collar" })
+      .on("change", (e) => mainScene.setCollarVisible(e.value));
   }
 
   function buildSceneControls(container: ContainerApi): void {
@@ -518,7 +522,10 @@ export function setupTweakpane({
       .on("change", (event) => mainScene.mesher.setSurfaceVisible(event.value));
     container
       .addBinding(debugView, "wireframe", { label: "wireframe" })
-      .on("change", (event) => mainScene.mesher.setSurfaceWireframe(event.value));
+      .on("change", (event) => {
+        mainScene.mesher.setSurfaceWireframe(event.value);
+        mainScene.setCollarWireframe(event.value);
+      });
     container
       .addBinding(debugView, "view", {
         label: "surface view",
@@ -629,6 +636,7 @@ export function setupTweakpane({
   function initFloor(): void {
     mainScene.setFloorVisible(floorState.visible);
     mainScene.setFloorTiling(floorState.tiling);
+    mainScene.setCollarVisible(floorState.collar);
   }
 
   buildGenerationControls(genPage);
