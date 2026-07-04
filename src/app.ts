@@ -4,9 +4,6 @@ import { WebGPURenderer, PMREMGenerator } from "three/webgpu";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { MainScene } from "./scene/main";
-import { bakeService } from "./scene/material/graph/bake-service";
-import { createExport } from "./debug/export";
-import { installBakeDevHandles } from "./debug/bake-setup";
 import { loadRendererConfig, setupTweakpane } from "./debug/tweakpane";
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -50,23 +47,13 @@ controls.enableDamping = true;
 const mainScene = new MainScene();
 const rendererSize = new THREE.Vector2();
 
-// Bake/export tooling (dev), bound to the renderer + scene it renders against. Consumed by the pane's
-// Export/Bake buttons and by the DEV console handles below.
-const exporter = createExport({
-  renderer,
-  registry: mainScene.materialController.getRegistry(),
-  liveDocument: () => mainScene.materialController.document,
-});
-
 // Build the entire Settings pane. Returns the handful of handles the render loop + DEV console still need.
-const { stats, refreshTexturePreview, initFloor, materialEditor, rebuildEditor } = setupTweakpane({
-  app,
+const { stats, initFloor } = setupTweakpane({
   paneHost,
   renderer,
   mainScene,
   rendererConfig,
   resize,
-  exporter,
 });
 
 const timer = new THREE.Timer();
@@ -85,37 +72,24 @@ function animate(timestamp?: number): void {
 
   renderer.getDrawingBufferSize(rendererSize);
   mainScene.update(timer.getDelta(), camera, rendererSize);
-  refreshTexturePreview();
   controls.update();
-  // Skip the frame render while a bake is compiling pipelines: `renderer.compileAsync` mutates shared
-  // renderer state, so rendering during its await window corrupts the output (black screen / broken
-  // geometry). The canvas holds its last frame for the ~sub-second compile; the DOM UI stays responsive.
-  if (!bakeService.rendererBusy) renderer.render(mainScene.scene, camera);
+  renderer.render(mainScene.scene, camera);
   stats.end();
 }
 
-// Resize on window resize + on node-editor dock/undock (its onLayoutChange hook pads #app → the canvas
-// reflows). We deliberately do NOT use a ResizeObserver on the canvas: `renderer.setSize` writes the canvas
-// backing-store attributes, which on Firefox perturb the canvas's laid-out content box — so observing that
-// box feeds setSize back into the observer, an infinite shrink loop that hard-freezes the page. A window /
-// onLayoutChange trigger isn't watching the perturbed box, so there's no loop.
+// Resize on window resize. We deliberately do NOT use a ResizeObserver on the canvas: `renderer.setSize`
+// writes the canvas backing-store attributes, which on Firefox perturb the canvas's laid-out content box, so
+// observing that box feeds setSize back into the observer.
 window.addEventListener("resize", () => resize());
-// #app pads with a 0.15s transition when the editor docks; onLayoutChange fires at the START of that
-// transition (pre-final size), so also resize when the padding transition finishes to capture the final box.
-app.addEventListener("transitionend", (e) => {
-  if ((e as TransitionEvent).propertyName.startsWith("padding")) resize();
-});
 
 // WebGPURenderer initialises its backend asynchronously (unlike WebGLRenderer). Wait for it before
 // the first render, then drive the loop via setAnimationLoop (the WebGPU-friendly RAF).
 await renderer.init();
-// Offline baking needs the renderer — hand it to the one shared bake service now that it's initialised,
-// then refresh both surfaces so they swap from the live startup fallback to the baked offline material.
-bakeService.attachRenderer(renderer);
-mainScene.treeSurface.refresh();
+mainScene.treeMaterial.setRenderer(renderer);
+mainScene.floorMaterial.setRenderer(renderer);
+await mainScene.treeMaterial.refresh();
 
-// The visual floor: load the chosen floor preset (independent of the tree's graph), refresh its surface,
-// and apply visibility/tiling. Owned by the pane (floorState), so it runs via the returned handle.
+// The visual floor is independent of the tree material; the pane owns visibility and tiling.
 initFloor();
 
 // Shared IBL environment: one RoomEnvironment PMREM cubemap drives image-based lighting for every tree
@@ -145,14 +119,9 @@ if (import.meta.env.DEV) {
     __renderer: renderer,
     __camera: camera,
     __controls: controls,
-    __editor: materialEditor,
-    __openEditor: rebuildEditor,
     __frame: () => {
       mainScene.update(0, camera, rendererSize);
       renderer.render(mainScene.scene, camera);
     },
   });
-  // Bake-to-disk console handles (__bakeService, __baker, __savePng, __bakeConfig, __bakeMaterialTask,
-  // __tilingTest) live in debug/bake-setup alongside the /export-bake route.
-  installBakeDevHandles({ mainScene, exporter });
 }

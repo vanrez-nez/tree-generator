@@ -1,18 +1,9 @@
 import * as EssentialsPlugin from "@tweakpane/plugin-essentials";
 import type { CubicBezierApi } from "@tweakpane/plugin-essentials";
 import type { ContainerApi } from "@tweakpane/core";
-import {
-  Boxes,
-  GitBranch,
-  LayoutGrid,
-  Monitor,
-  SlidersVertical,
-  Sprout,
-  Sun,
-  SwatchBook,
-} from "lucide";
+import { Boxes, GitBranch, LayoutGrid, Monitor, SlidersVertical, Sprout, Sun } from "lucide";
 import * as THREE from "three";
-import { WebGPURenderer, MeshPhysicalNodeMaterial } from "three/webgpu";
+import type { WebGPURenderer } from "three/webgpu";
 import { FolderApi, Pane } from "tweakpane";
 import { DEFAULT_MESHER_OPTIONS, MainScene } from "../scene/main";
 import { DEFAULT_SUBDIVISIONS } from "../scene/tree";
@@ -36,31 +27,17 @@ import { TwistModifier } from "../scene/graph/modifiers/twist";
 import { addModifierEnvelopeControls } from "../tweak-pane/modifier-envelope";
 import { StatsBladeApi, StatsPanePluginBundle } from "../tweak-pane/stats-blade";
 import { createLayers, type LayerType, LayersPluginBundle } from "../tweak-pane/layers";
-import {
-  TexturePreviewBladeApi,
-  TexturePreviewPluginBundle,
-} from "../tweak-pane/texture-preview-blade";
 import { VerticalTabsApi, VerticalTabsPluginBundle } from "../tweak-pane/vertical-tabs-blade";
-import { NodeEditorPanel } from "../node-editor";
-import { buildMaterialEditorConfig } from "../scene/material/editor-config";
-import { bakeService } from "../scene/material/graph/bake-service";
-import { countGraphNodes } from "../scene/material/graph/compiler";
-import { BakeProgressWidget } from "../ui/bake-progress-widget";
-import { MATERIAL_PRESETS, makePreset, DEFAULT_PRESET } from "../scene/material/presets";
-import type { PbrSocket } from "../scene/material/graph/types";
-import type { ExportApi } from "./export";
 
-// Renderer config (Render tab). `antialias` + `samples` (MSAA) are WebGPU CONSTRUCTOR-only options — the
-// device can't change them live — so they're persisted and applied on the next construction (a reload).
-// `pixelRatio` and `transparentBg` apply live. `alpha: true` is fixed so the transparent-bg toggle works
-// at runtime via setClearAlpha.
 export interface RendererConfig {
   antialias: boolean;
-  samples: number; // MSAA sample count when antialias is on (2 / 4 / 8)
+  samples: number;
   pixelRatio: number;
   transparentBg: boolean;
 }
+
 const RENDERER_CONFIG_KEY = "rendererConfig";
+
 export function loadRendererConfig(): RendererConfig {
   const defaults: RendererConfig = {
     antialias: true,
@@ -76,49 +53,41 @@ export function loadRendererConfig(): RendererConfig {
 }
 
 export interface TweakpaneDeps {
-  app: HTMLDivElement;
   paneHost: HTMLDivElement;
   renderer: WebGPURenderer;
   mainScene: MainScene;
   rendererConfig: RendererConfig;
   resize: () => void;
-  exporter: ExportApi;
 }
 
 export interface TweakpaneHandles {
   stats: StatsBladeApi;
-  refreshTexturePreview: () => void;
-  // Load the chosen floor preset + apply visibility/tiling. Owns floorState, so app.ts calls it after
-  // renderer.init() (the surfaces can only bake once the renderer is attached to the bake service).
   initFloor: () => void;
-  // Dockable material node editor + its (re)open callback — exposed for the DEV console handles.
-  materialEditor: NodeEditorPanel;
-  rebuildEditor: () => void;
 }
 
-// Snap a binding's range to the codec grid, so dragged/typed values land exactly on values the
-// code can represent (no silent quantization surprises).
 function formRange(key: keyof TreeForm): { min: number; max: number; step: number } {
   const field = FIELDS.find((spec) => spec.key === key);
-  if (!field) {
-    throw new Error(`No field spec for form key: ${key}`);
-  }
+  if (!field) throw new Error(`No field spec for form key: ${key}`);
   return { min: field.min, max: field.max, step: field.step };
 }
 
-// Per-line disc-tube controls: radius (max), tip taper, opacity, visibility, and a cubic-Bézier
-// curve that shapes how the radius falls off from the line's start to its tip.
+function downloadJson(filename: string, data: unknown): void {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
 function addLineTubeControls(folder: ContainerApi, line: GraphLine): void {
   const tube = line.tube;
-
-  if (!tube) {
-    return;
-  }
+  if (!tube) return;
 
   const tubeFolder = folder.addFolder({ title: "Tube", expanded: false });
   tubeFolder.addBinding(tube, "visible");
   tubeFolder.addBinding(tube, "radius", { min: 0, max: 1, step: 0.005 });
-  // Density is driven globally by Mesh → subdivisions, not per line.
   tubeFolder.addBinding(tube, "tipScale", { label: "tip", min: 0, max: 1, step: 0.01 });
   tubeFolder.addBinding(tube, "opacity", { min: 0, max: 1, step: 0.01 });
 
@@ -136,188 +105,68 @@ function addLineTubeControls(folder: ContainerApi, line: GraphLine): void {
 }
 
 function buildModifierControls(folder: ContainerApi, modifier: LineModifier): void {
-  // `enabled` is driven by the layer's eye toggle, so only params + envelope here.
   if (modifier instanceof SmoothModifier) {
-    folder.addBinding(modifier.params, "mode", {
-      options: {
-        Laplacian: "laplacian",
-        Spline: "spline",
-      },
-    });
-    folder.addBinding(modifier.params, "iterations", {
-      min: 1,
-      max: 24,
-      step: 1,
-    });
-    folder.addBinding(modifier.params, "segments", {
-      min: 1,
-      max: 128,
-      step: 1,
-    });
-    folder.addBinding(modifier.params, "strength", {
-      min: 0,
-      max: 1,
-      step: 0.01,
-    });
+    folder.addBinding(modifier.params, "mode", { options: { Laplacian: "laplacian", Spline: "spline" } });
+    folder.addBinding(modifier.params, "iterations", { min: 1, max: 24, step: 1 });
+    folder.addBinding(modifier.params, "segments", { min: 1, max: 128, step: 1 });
+    folder.addBinding(modifier.params, "strength", { min: 0, max: 1, step: 0.01 });
   }
 
   if (modifier instanceof GnarlModifier) {
-    folder.addBinding(modifier.params, "seed", {
-      min: 0,
-      max: 100000,
-      step: 1,
-    });
-    folder.addBinding(modifier.params, "amount", {
-      min: 0,
-      max: 2,
-      step: 0.01,
-    });
-    folder.addBinding(modifier.params, "amplitude", {
-      min: 0,
-      max: 0.75,
-      step: 0.01,
-    });
-    folder.addBinding(modifier.params, "cycles", {
-      min: 0.1,
-      max: 8,
-      step: 0.1,
-    });
+    folder.addBinding(modifier.params, "seed", { min: 0, max: 100000, step: 1 });
+    folder.addBinding(modifier.params, "amount", { min: 0, max: 2, step: 0.01 });
+    folder.addBinding(modifier.params, "amplitude", { min: 0, max: 0.75, step: 0.01 });
+    folder.addBinding(modifier.params, "cycles", { min: 0.1, max: 8, step: 0.1 });
     folder.addBinding(modifier.params, "lockX", { label: "lock X" });
     folder.addBinding(modifier.params, "lockY", { label: "lock Y" });
     folder.addBinding(modifier.params, "lockZ", { label: "lock Z" });
   }
 
   if (modifier instanceof TwistModifier) {
-    folder.addBinding(modifier.params, "seed", {
-      min: 0,
-      max: 100000,
-      step: 1,
-    });
-    folder.addBinding(modifier.params, "amount", {
-      min: 0,
-      max: 2,
-      step: 0.01,
-    });
-    folder.addBinding(modifier.params, "radius", {
-      min: 0,
-      max: 0.5,
-      step: 0.01,
-    });
-    folder.addBinding(modifier.params, "turns", {
-      min: 0,
-      max: 8,
-      step: 0.1,
-    });
+    folder.addBinding(modifier.params, "seed", { min: 0, max: 100000, step: 1 });
+    folder.addBinding(modifier.params, "amount", { min: 0, max: 2, step: 0.01 });
+    folder.addBinding(modifier.params, "radius", { min: 0, max: 0.5, step: 0.01 });
+    folder.addBinding(modifier.params, "turns", { min: 0, max: 8, step: 0.1 });
   }
 
   if (modifier instanceof CoilModifier) {
-    folder.addBinding(modifier.params, "seed", {
-      min: 0,
-      max: 100000,
-      step: 1,
-    });
-    folder.addBinding(modifier.params, "amount", {
-      min: 0,
-      max: 2,
-      step: 0.01,
-    });
-    folder.addBinding(modifier.params, "turns", {
-      min: 0,
-      max: 8,
-      step: 0.1,
-    });
-    folder.addBinding(modifier.params, "bias", {
-      min: 0.25,
-      max: 4,
-      step: 0.05,
-    });
+    folder.addBinding(modifier.params, "seed", { min: 0, max: 100000, step: 1 });
+    folder.addBinding(modifier.params, "amount", { min: 0, max: 2, step: 0.01 });
+    folder.addBinding(modifier.params, "turns", { min: 0, max: 8, step: 0.1 });
+    folder.addBinding(modifier.params, "bias", { min: 0.25, max: 4, step: 0.05 });
   }
 
   if (modifier instanceof FootAlignModifier) {
-    folder.addBinding(modifier.params, "height", {
-      min: 0,
-      max: 0.5,
-      step: 0.01,
-    });
-    folder.addBinding(modifier.params, "amount", {
-      min: 0,
-      max: 1,
-      step: 0.01,
-    });
+    folder.addBinding(modifier.params, "height", { min: 0, max: 0.5, step: 0.01 });
+    folder.addBinding(modifier.params, "amount", { min: 0, max: 1, step: 0.01 });
   }
 
   if (modifier instanceof DiscAlignModifier) {
-    folder.addBinding(modifier.params, "clearance", {
-      readonly: true,
-    });
-    folder.addBinding(modifier.params, "safety", {
-      min: 1,
-      max: 3,
-      step: 0.05,
-    });
-    folder.addBinding(modifier.params, "spacing", {
-      min: 0,
-      max: 0.5,
-      step: 0.01,
-    });
+    folder.addBinding(modifier.params, "clearance", { readonly: true });
+    folder.addBinding(modifier.params, "safety", { min: 1, max: 3, step: 0.05 });
+    folder.addBinding(modifier.params, "spacing", { min: 0, max: 0.5, step: 0.01 });
   }
 
   addModifierEnvelopeControls(folder, modifier);
 }
 
 function modifierTypeName(modifier: LineModifier): string {
-  if (modifier instanceof GnarlModifier) {
-    return "Gnarl";
-  }
-  if (modifier instanceof TwistModifier) {
-    return "Twist";
-  }
-  if (modifier instanceof CoilModifier) {
-    return "Coil";
-  }
-  if (modifier instanceof FootAlignModifier) {
-    return "Foot Align";
-  }
-  if (modifier instanceof DiscAlignModifier) {
-    return "Disc Align";
-  }
+  if (modifier instanceof GnarlModifier) return "Gnarl";
+  if (modifier instanceof TwistModifier) return "Twist";
+  if (modifier instanceof CoilModifier) return "Coil";
+  if (modifier instanceof FootAlignModifier) return "Foot Align";
+  if (modifier instanceof DiscAlignModifier) return "Disc Align";
   return "Smooth";
 }
 
-// Each line's modifiers are themselves a sortable layer list: add/remove modifiers,
-// toggle them with the eye (`enabled`), and reorder them to change the modifier stack.
 function buildModifierLayers(folder: ContainerApi, line: GraphLine): void {
   const modifierTypes: LayerType<LineModifier>[] = [
-    {
-      name: "Smooth",
-      createState: () => new SmoothModifier(),
-      build: (modFolder, layer) => buildModifierControls(modFolder, layer.state),
-    },
-    {
-      name: "Gnarl",
-      createState: () => new GnarlModifier(),
-      build: (modFolder, layer) => buildModifierControls(modFolder, layer.state),
-    },
-    {
-      name: "Twist",
-      createState: () => new TwistModifier(),
-      build: (modFolder, layer) => buildModifierControls(modFolder, layer.state),
-    },
-    {
-      name: "Coil",
-      createState: () => new CoilModifier(),
-      build: (modFolder, layer) => buildModifierControls(modFolder, layer.state),
-    },
-    {
-      name: "Foot Align",
-      createState: () => new FootAlignModifier(),
-      build: (modFolder, layer) => buildModifierControls(modFolder, layer.state),
-    },
-    {
-      name: "Disc Align",
-      createState: () => new DiscAlignModifier(),
-      build: (modFolder, layer) => buildModifierControls(modFolder, layer.state),
-    },
+    { name: "Smooth", createState: () => new SmoothModifier(), build: (modFolder, layer) => buildModifierControls(modFolder, layer.state) },
+    { name: "Gnarl", createState: () => new GnarlModifier(), build: (modFolder, layer) => buildModifierControls(modFolder, layer.state) },
+    { name: "Twist", createState: () => new TwistModifier(), build: (modFolder, layer) => buildModifierControls(modFolder, layer.state) },
+    { name: "Coil", createState: () => new CoilModifier(), build: (modFolder, layer) => buildModifierControls(modFolder, layer.state) },
+    { name: "Foot Align", createState: () => new FootAlignModifier(), build: (modFolder, layer) => buildModifierControls(modFolder, layer.state) },
+    { name: "Disc Align", createState: () => new DiscAlignModifier(), build: (modFolder, layer) => buildModifierControls(modFolder, layer.state) },
   ];
 
   createLayers(folder, {
@@ -347,16 +196,12 @@ function buildModifierLayers(folder: ContainerApi, line: GraphLine): void {
   });
 }
 
-// Build the entire Settings pane and wire it to the scene/renderer. Returns the handful of handles the
-// render loop + DEV console still need (stats blade, per-frame preview refresh, floor init, node editor).
 export function setupTweakpane({
-  app,
   paneHost,
   renderer,
   mainScene,
   rendererConfig,
   resize,
-  exporter,
 }: TweakpaneDeps): TweakpaneHandles {
   const saveRendererConfig = (): void =>
     localStorage.setItem(RENDERER_CONFIG_KEY, JSON.stringify(rendererConfig));
@@ -365,34 +210,22 @@ export function setupTweakpane({
   pane.registerPlugin(EssentialsPlugin);
   pane.registerPlugin(StatsPanePluginBundle);
   pane.registerPlugin(LayersPluginBundle);
-  pane.registerPlugin(TexturePreviewPluginBundle);
   pane.registerPlugin(VerticalTabsPluginBundle);
   const stats = pane.addBlade({ view: "stats" }) as StatsBladeApi;
-  // Backend label is finalised after renderer.init() by the caller (WebGPU vs WebGL2 fallback).
 
-  // Single source of truth for the tree's form. Every form control binds to this object; the code
-  // field is just a serialized view of it. `form` <-> `code` round-trips losslessly (tree-code.ts),
-  // so you can read a code off a tuned tree and paste it back to reproduce that exact tree.
   const form: TreeForm = { ...DEFAULT_FORM };
   const codeState = { code: encodeForm(form) };
   let refreshCode: () => void = () => {};
-  // Set while a wholesale form replacement refreshes the bound controls, so their change events
-  // don't each fire a redundant commit (and re-encode) mid-update.
   let suppressFormSync = false;
 
-  // Push the live form to the scene, refresh the code readout, and rebuild the dependent panels.
   function commitForm(): void {
-    if (suppressFormSync) {
-      return;
-    }
+    if (suppressFormSync) return;
     codeState.code = encodeForm(form);
     refreshCode();
     mainScene.setTreeForm(form);
     rebuildScenePanels();
   }
 
-  // Replace the whole form at once (from a pasted code or the Random button): copy the values in,
-  // refresh every bound control, then commit a single time.
   function applyForm(next: TreeForm): void {
     Object.assign(form, next);
     suppressFormSync = true;
@@ -409,184 +242,23 @@ export function setupTweakpane({
     view: "verticalTabs",
     stickyTabs: true,
     pages: [
-      {
-        title: "Gen",
-        tooltip: "Generation",
-        icon: Sprout,
-        color: "#6ee7b7",
-      },
-      {
-        title: "Graph",
-        tooltip: "Graph",
-        icon: GitBranch,
-        color: "#8aa8ff",
-      },
-      {
-        title: "Mesh",
-        tooltip: "Mesh",
-        icon: Boxes,
-        color: "#c084fc",
-      },
-      {
-        title: "Texture",
-        tooltip: "Texture",
-        icon: SwatchBook,
-        color: "#f59e0b",
-      },
-      {
-        title: "Scene",
-        tooltip: "Scene (lighting + tone mapping)",
-        icon: Sun,
-        color: "#fbbf24",
-      },
-      {
-        title: "Render",
-        tooltip: "Renderer (antialias, samples, alpha)",
-        icon: Monitor,
-        color: "#38bdf8",
-      },
-      {
-        title: "Floor",
-        tooltip: "Visual floor (independent material)",
-        icon: LayoutGrid,
-        color: "#a3a3a3",
-      },
-      {
-        title: "Debug",
-        tooltip: "Debug",
-        icon: SlidersVertical,
-        color: "#fb7185",
-      },
+      { title: "Gen", tooltip: "Generation", icon: Sprout, color: "#6ee7b7" },
+      { title: "Graph", tooltip: "Graph", icon: GitBranch, color: "#8aa8ff" },
+      { title: "Mesh", tooltip: "Mesh", icon: Boxes, color: "#c084fc" },
+      { title: "Scene", tooltip: "Scene", icon: Sun, color: "#fbbf24" },
+      { title: "Render", tooltip: "Renderer", icon: Monitor, color: "#38bdf8" },
+      { title: "Floor", tooltip: "Visual floor", icon: LayoutGrid, color: "#a3a3a3" },
+      { title: "Debug", tooltip: "Debug", icon: SlidersVertical, color: "#fb7185" },
     ],
   }) as VerticalTabsApi;
-  const [genPage, graphPage, meshPage, texturePage, scenePage, renderPage, floorPage, debugPage] =
-    mainTabs.pages;
+  const [genPage, graphPage, meshPage, scenePage, renderPage, floorPage, debugPage] = mainTabs.pages;
 
   const graphTabs = graphPage.addTab({
-    pages: [
-      {
-        title: "Layers",
-      },
-      {
-        title: "Joints",
-      },
-      {
-        title: "Roots",
-      },
-    ],
+    pages: [{ title: "Layers" }, { title: "Joints" }, { title: "Roots" }],
   });
   const [graphLayersPage, graphJointsPage, graphRootsPage] = graphTabs.pages;
-
-  // The Lines + Joints panels are rebuilt whenever the tree is regenerated (their line/joint
-  // instances change), so we track the folders they create to dispose them on rebuild.
   let scenePanelFolders: Array<{ dispose: () => void }> = [];
 
-  // 2D texture-preview state (declared before buildTextureLayers runs, which references it).
-  type PreviewChannel = "basecolor" | "normal" | "ao" | "roughness";
-  let texturePreview: TexturePreviewBladeApi | null = null;
-  const previewState = { channel: "basecolor" as PreviewChannel, seams: false };
-  // Maps the preview channel UI options to the graph's PBR output socket keys.
-  const PREVIEW_SOCKET: Record<PreviewChannel, PbrSocket> = {
-    basecolor: "baseColor",
-    normal: "normal",
-    ao: "ambientOcclusion",
-    roughness: "roughness",
-  };
-  // The preview is re-baked (async, one in-flight) when marked dirty — on channel/scale/backend change
-  // or a graph recompile — rather than every frame.
-  let previewDirty = true;
-  let previewBaking = false;
-  const markPreviewDirty = (): void => {
-    previewDirty = true;
-  };
-  mainScene.treeSurface.onRebuilt(markPreviewDirty);
-  // Material-graph UI state. `worldPerTile` maps to the FBM generator's scale; `backend` toggles the
-  // live procedural vs convertToTexture baked-map compile.
-  const triplanarState = { enabled: false, worldPerTile: 1.2, sharpness: 8, parallax: 0 };
-  const materialState = {
-    backend: "offline" as "live" | "offline",
-    debugNormals: false,
-    preset: DEFAULT_PRESET,
-  };
-
-  // Visual floor state. The floor has its own material controller (mainScene.floorMaterialController), driven
-  // only by preset selection — independent of the tree's node graph. The chosen preset persists by key.
-  const FLOOR_PRESET_KEY = "floorPreset";
-  const DEFAULT_FLOOR_PRESET = "rock";
-  // Fall back to the default if the persisted preset key no longer exists (e.g. a removed preset).
-  const storedFloorPreset = localStorage.getItem(FLOOR_PRESET_KEY);
-  const floorState = {
-    preset: MATERIAL_PRESETS.some((p) => p.key === storedFloorPreset)
-      ? (storedFloorPreset as string)
-      : DEFAULT_FLOOR_PRESET,
-    visible: true,
-    tiling: 6,
-    // Parallax-occlusion depth for the floor surface. Default 0 = OFF (opt-in: the march is GPU-heavy). Only
-    // has an effect when the preset bakes a height map (e.g. rock) and triplanar is off.
-    parallax: 0,
-  };
-
-  // Direct configuration of the THREE surface material (the MeshPhysicalNodeMaterial the controller binds to
-  // the tree), exposed in Texture > Material. These are the renderer-side PBR knobs — distinct from the node
-  // graph that authors the channel maps. Note: a channel actively driven by the graph (e.g. roughness in the
-  // bark preset) overrides its scalar here; the physical lobes (clearcoat / sheen / transmission /
-  // iridescence) and envMapIntensity / flatShading are never graph-driven, so they always take effect.
-  const surfaceMaterialState = {
-    envMapIntensity: 1,
-    flatShading: false,
-    // Basecolor / roughness / metalness are authored by the node graph and baked into channel maps, which a
-    // node material samples instead of the scalar properties. So these three are exposed as FACTORS that
-    // multiply the baked channel (glTF roughnessFactor-style) — identity at 1 / white. Routed through the
-    // controller's offline factor uniforms, not applySurfaceMaterialState.
-    baseColorTint: "#ffffff",
-    roughnessFactor: 1,
-    metalnessFactor: 1,
-    clearcoat: 0,
-    clearcoatRoughness: 0.03,
-    sheen: 0,
-    sheenRoughness: 0.3,
-    sheenColor: "#ffffff",
-    transmission: 0,
-    thickness: 0.5,
-    ior: 1.5,
-    iridescence: 0,
-    iridescenceIOR: 1.3,
-  };
-
-  // Push the state onto the controller's current surface material. The offline material instance is stable
-  // (so values persist across re-bakes), but the live backend rebuilds a fresh material on recompile — the
-  // onRecompile hook below re-applies then. `needsUpdate` forces the node material to re-read the scalars.
-  function applySurfaceMaterialState(): void {
-    const m = mainScene.treeSurface.material as MeshPhysicalNodeMaterial;
-    const s = surfaceMaterialState;
-    m.envMapIntensity = s.envMapIntensity;
-    m.flatShading = s.flatShading;
-    m.clearcoat = s.clearcoat;
-    m.clearcoatRoughness = s.clearcoatRoughness;
-    m.sheen = s.sheen;
-    m.sheenRoughness = s.sheenRoughness;
-    m.sheenColor.set(s.sheenColor);
-    m.transmission = s.transmission;
-    m.thickness = s.thickness;
-    m.ior = s.ior;
-    m.iridescence = s.iridescence;
-    m.iridescenceIOR = s.iridescenceIOR;
-    m.needsUpdate = true;
-  }
-
-  // The live backend swaps in a new material instance on recompile; re-apply the configured state so the
-  // settings survive a graph/backend change. Offline reuses one stable material, so this is a no-op there.
-  let lastSurfaceMaterial: unknown = mainScene.treeSurface.material;
-  mainScene.treeSurface.onRebuilt(() => {
-    const m = mainScene.treeSurface.material;
-    if (m !== lastSurfaceMaterial) {
-      lastSurfaceMaterial = m;
-      applySurfaceMaterialState();
-    }
-  });
-
-  // Scene tab: tone mapping + lighting. Blender's viewport tone-maps (AgX) by default, so a "None" surface
-  // looks blown-out vs the baked albedo — exposing these lets the lit look match the texture.
   const TONE_MAPPING_MODES: Record<string, THREE.ToneMapping> = {
     None: THREE.NoToneMapping,
     AgX: THREE.AgXToneMapping,
@@ -605,15 +277,15 @@ export function setupTweakpane({
     ambColor: `#${mainScene.ambientLight.color.getHexString()}`,
     envIntensity: 0.1,
   };
-  // Baked-shadow knobs, seeded from the light's configured shadow (see MainScene.configureShadow).
   const shadowState = {
     softness: mainScene.directionalLight.shadow.radius,
     darkness: mainScene.directionalLight.shadow.intensity,
   };
+  const floorState = {
+    visible: true,
+    tiling: 6,
+  };
 
-  // Apply a tone-mapping mode: set it on the renderer and force every scene material to recompile (the tone
-  // curve is baked into each node material's output, so a mode change needs a rebuild — exposure is a live
-  // uniform and doesn't).
   function setToneMapping(mode: THREE.ToneMapping): void {
     renderer.toneMapping = mode;
     mainScene.scene.traverse((obj) => {
@@ -623,40 +295,11 @@ export function setupTweakpane({
     });
   }
 
-  // Toggle a transparent canvas (the renderer is constructed with alpha:true, so clear-alpha works live).
-  // Drops the scene's opaque background and clears with alpha 0, so the canvas composites over the page.
   function applyTransparentBg(on: boolean): void {
-    mainScene.scene.background = on ? null : new THREE.Color(0x111111); // 0x111111 = MainScene default
+    mainScene.scene.background = on ? null : new THREE.Color(0x111111);
     renderer.setClearAlpha(on ? 0 : 1);
   }
 
-  // The Texture tab drives the node-graph material (src/scene/material/). A single shared HEIGHT field
-  // feeds the basecolor (gradient map), normal (slope) and AO (cavity) channels. Editing any param
-  // changes the graph signature, so MainScene's poll re-bakes the affected channels on the GPU. No
-  // explicit invalidate needed — params feed each node's signature.
-  // 2D texture preview (top of the Texture tab): drag to pan the tiling texture, wheel to zoom, with a
-  // channel selector and a seams overlay. Fed from MainScene's animate loop when the material changes.
-  function refreshTexturePreview(): void {
-    if (!texturePreview || !previewDirty || previewBaking) return;
-    previewDirty = false;
-    previewBaking = true;
-    const socket = PREVIEW_SOCKET[previewState.channel];
-    void bakeService
-      .readImage(mainScene.materialController, socket, 256)
-      .then((image) => {
-        if (image) texturePreview?.setImageData(image);
-      })
-      .catch(() => {
-        /* a transient compile/readback failure just leaves the previous preview in place */
-      })
-      .finally(() => {
-        previewBaking = false;
-      });
-  }
-
-  // Render tab: renderer-level config. Pixel ratio + transparent background apply live; antialias and MSAA
-  // samples are WebGPU construction-time options (the device can't change them on the fly), so they're
-  // persisted and applied on the next load via the Apply (reload) button.
   function buildRenderControls(container: ContainerApi): void {
     const quality = container.addFolder({ title: "Quality", expanded: true });
     quality
@@ -673,12 +316,11 @@ export function setupTweakpane({
         saveRendererConfig();
       });
 
-    // MSAA: constructor-only on WebGPU. Edits persist; "Apply (reload)" rebuilds the renderer with them.
     const aa = container.addFolder({ title: "Anti-aliasing", expanded: true });
     aa.addBinding(rendererConfig, "antialias", { label: "MSAA" }).on("change", saveRendererConfig);
     aa.addBinding(rendererConfig, "samples", {
       label: "samples",
-      options: { "2×": 2, "4×": 4, "8×": 8 },
+      options: { "2x": 2, "4x": 4, "8x": 8 },
     }).on("change", saveRendererConfig);
     aa.addButton({ title: "Apply (reload)" }).on("click", () => {
       saveRendererConfig();
@@ -686,35 +328,16 @@ export function setupTweakpane({
     });
   }
 
-  // Floor tab: the visual ground plane's own material (preset-driven, independent of the tree's node graph),
-  // plus visibility and tiling. Selecting a preset loads it into the floor's separate controller only.
   function buildFloorControls(container: ContainerApi): void {
     const folder = container.addFolder({ title: "Floor", expanded: true });
     folder
       .addBinding(floorState, "visible", { label: "visible" })
       .on("change", (e) => mainScene.setFloorVisible(e.value));
     folder
-      .addBinding(floorState, "preset", {
-        label: "material",
-        options: Object.fromEntries(MATERIAL_PRESETS.map((p) => [p.label, p.key])),
-      })
-      .on("change", (e) => {
-        mainScene.floorMaterialController.loadDocument(makePreset(e.value));
-        localStorage.setItem(FLOOR_PRESET_KEY, e.value);
-      });
-    folder
       .addBinding(floorState, "tiling", { label: "tiling", min: 1, max: 24, step: 1 })
       .on("change", (e) => mainScene.setFloorTiling(e.value));
-    // Parallax-occlusion depth: shader-side height relief (motion parallax + self-occlusion) over the baked
-    // height map. Needs a preset with a Height channel (e.g. rock) and triplanar off; 0 = flat.
-    folder
-      .addBinding(floorState, "parallax", { label: "parallax", min: 0, max: 0.12, step: 0.005 })
-      .on("change", (e) => mainScene.floorSurface.setParallaxScale(e.value));
-    // Open the node editor on the FLOOR's own graph (independent of the tree) so it can be tuned in place.
-    folder.addButton({ title: "Open Floor Node Editor" }).on("click", () => openFloorEditor());
   }
 
-  // Scene tab: tone mapping + lighting, one folder per group. Drives the renderer and the lights live.
   function buildSceneControls(container: ContainerApi): void {
     const tone = container.addFolder({ title: "Tone Mapping", expanded: true });
     tone
@@ -735,11 +358,9 @@ export function setupTweakpane({
       .addBinding(sceneState, "dirPosition", { label: "direction" })
       .on("change", (e) => {
         mainScene.directionalLight.position.set(e.value.x, e.value.y, e.value.z);
-        mainScene.requestShadowBake(); // sun moved → re-bake the frozen shadow
+        mainScene.requestShadowBake();
       });
 
-    // Baked (static) shadow controls. The map renders only on a re-bake (tree regen / sun move), so these are
-    // quality knobs, not per-frame cost. Softness is the VSM blur width.
     const shadow = dir.addFolder({ title: "Shadow", expanded: true });
     shadow
       .addBinding(shadowState, "softness", { label: "softness", min: 0, max: 25, step: 0.5 })
@@ -759,161 +380,18 @@ export function setupTweakpane({
       .addBinding(sceneState, "ambColor", { label: "color", view: "color" })
       .on("change", (e) => mainScene.ambientLight.color.set(e.value));
 
-    // Image-based lighting fill (the shared RoomEnvironment PMREM set up after renderer.init()).
     const env = container.addFolder({ title: "Environment (IBL)", expanded: true });
     env
       .addBinding(sceneState, "envIntensity", { label: "intensity", min: 0, max: 3, step: 0.05 })
       .on("change", (e) => (mainScene.scene.environmentIntensity = e.value));
   }
 
-  function buildTextureLayers(): void {
-    const previewFolder = texturePage.addFolder({ title: "Preview", expanded: true });
-    texturePreview = previewFolder.addBlade({
-      view: "texturePreview",
-      height: 220,
-    }) as TexturePreviewBladeApi;
-    previewFolder
-      .addBinding(previewState, "channel", {
-        options: { Basecolor: "basecolor", Normal: "normal", AO: "ao", Roughness: "roughness" },
-      })
-      .on("change", () => markPreviewDirty());
-    previewFolder
-      .addBinding(previewState, "seams")
-      .on("change", (event) => texturePreview?.setSeams(event.value));
-
-    // Material graph controls. The backend toggle switches the offline baked-texture surface (default) vs
-    // live procedural shading.
-    const materialFolder = texturePage.addFolder({ title: "Material", expanded: true });
-    materialFolder
-      .addBinding(materialState, "backend", { options: { Offline: "offline", Live: "live" } })
-      .on("change", (event) => mainScene.treeSurface.setBackend(event.value));
-    // Preset graph selector — loads a named starter document (configs are authored here; future presets too).
-    materialFolder
-      .addBinding(materialState, "preset", {
-        label: "preset",
-        options: Object.fromEntries(MATERIAL_PRESETS.map((p) => [p.label, p.key])),
-      })
-      .on("change", (event) => {
-        mainScene.materialController.loadDocument(makePreset(event.value));
-        // Only refresh the editor if it's already open — changing a preset must not pop it open. It opens
-        // solely from the "Open Node Editor" button.
-        if (materialEditor.isOpen()) rebuildEditor();
-      });
-    // Debug: paint the offline surface with its shading normal (geometry + normal map) as RGB — relief
-    // visible = the normal map is perturbing the surface.
-    materialFolder
-      .addBinding(materialState, "debugNormals", { label: "debug normals" })
-      .on("change", (event) => mainScene.treeSurface.setNormalDebug(event.value));
-    // The dockable node editor (src/node-editor/) shows the live material graph, generated from the
-    // registry. Param/toggle edits flow into the controller and recompile the surface.
-    materialFolder.addButton({ title: "Open Node Editor" }).on("click", () => rebuildEditor());
-
-    // THREE surface-material properties — the renderer-side PBR config for the selected material. Every
-    // control writes straight onto the live MeshPhysicalNodeMaterial via applySurfaceMaterialState.
-    const surface = materialFolder.addFolder({ title: "Surface (PBR)", expanded: true });
-    const onSurface = (): void => applySurfaceMaterialState();
-    surface
-      .addBinding(surfaceMaterialState, "envMapIntensity", { label: "env intensity", min: 0, max: 3, step: 0.05 })
-      .on("change", onSurface);
-    surface.addBinding(surfaceMaterialState, "flatShading", { label: "flat shading" }).on("change", onSurface);
-    // Factors multiplied into the baked channels (the scalar props are ignored once the graph drives them).
-    surface
-      .addBinding(surfaceMaterialState, "baseColorTint", { label: "color tint", view: "color" })
-      .on("change", (e) => mainScene.treeSurface.setColorTint(e.value));
-    surface
-      .addBinding(surfaceMaterialState, "roughnessFactor", { label: "roughness ×", min: 0, max: 2, step: 0.01 })
-      .on("change", (e) => mainScene.treeSurface.setRoughnessFactor(e.value));
-    surface
-      .addBinding(surfaceMaterialState, "metalnessFactor", { label: "metalness ×", min: 0, max: 1, step: 0.01 })
-      .on("change", (e) => mainScene.treeSurface.setMetalnessFactor(e.value));
-
-    const coat = surface.addFolder({ title: "Clearcoat", expanded: false });
-    coat
-      .addBinding(surfaceMaterialState, "clearcoat", { label: "weight", min: 0, max: 1, step: 0.01 })
-      .on("change", onSurface);
-    coat
-      .addBinding(surfaceMaterialState, "clearcoatRoughness", { label: "roughness", min: 0, max: 1, step: 0.01 })
-      .on("change", onSurface);
-
-    const sheen = surface.addFolder({ title: "Sheen", expanded: false });
-    sheen
-      .addBinding(surfaceMaterialState, "sheen", { label: "weight", min: 0, max: 1, step: 0.01 })
-      .on("change", onSurface);
-    sheen
-      .addBinding(surfaceMaterialState, "sheenRoughness", { label: "roughness", min: 0, max: 1, step: 0.01 })
-      .on("change", onSurface);
-    sheen
-      .addBinding(surfaceMaterialState, "sheenColor", { label: "color", view: "color" })
-      .on("change", onSurface);
-
-    const trans = surface.addFolder({ title: "Transmission", expanded: false });
-    trans
-      .addBinding(surfaceMaterialState, "transmission", { label: "weight", min: 0, max: 1, step: 0.01 })
-      .on("change", onSurface);
-    trans
-      .addBinding(surfaceMaterialState, "thickness", { label: "thickness", min: 0, max: 5, step: 0.05 })
-      .on("change", onSurface);
-    trans
-      .addBinding(surfaceMaterialState, "ior", { label: "IOR", min: 1, max: 2.5, step: 0.01 })
-      .on("change", onSurface);
-
-    const irid = surface.addFolder({ title: "Iridescence", expanded: false });
-    irid
-      .addBinding(surfaceMaterialState, "iridescence", { label: "weight", min: 0, max: 1, step: 0.01 })
-      .on("change", onSurface);
-    irid
-      .addBinding(surfaceMaterialState, "iridescenceIOR", { label: "IOR", min: 1, max: 2.5, step: 0.01 })
-      .on("change", onSurface);
-
-    // Triplanar projection of the baked maps onto the surface (off → plain UV sampling). Off by default.
-    const triplanarFolder = texturePage.addFolder({ title: "Triplanar", expanded: true });
-    triplanarFolder
-      .addBinding(triplanarState, "enabled", { label: "enabled" })
-      .on("change", (event) => mainScene.treeSurface.setTriplanar(event.value));
-    triplanarFolder
-      .addBinding(triplanarState, "worldPerTile", { label: "world / tile", min: 0.2, max: 6, step: 0.05 })
-      .on("change", (event) => mainScene.treeSurface.setScale(event.value));
-    triplanarFolder
-      .addBinding(triplanarState, "sharpness", { label: "sharpness", min: 1, max: 24, step: 0.5 })
-      .on("change", (event) => mainScene.treeSurface.setSharpness(event.value));
-    // Parallax-occlusion depth (UV-space path — disable triplanar to see it). Needs a Height channel baked.
-    triplanarFolder
-      .addBinding(triplanarState, "parallax", { label: "parallax", min: 0, max: 0.12, step: 0.005 })
-      .on("change", (event) => mainScene.treeSurface.setParallaxScale(event.value));
-
-    // Export each PBR channel to a PNG (baked from the graph via convertToTexture readback).
-    const exportFolder = texturePage.addFolder({ title: "Export PNG", expanded: false });
-    for (const channel of ["basecolor", "normal", "ao", "roughness"] as const) {
-      exportFolder.addButton({ title: `Export ${channel}` }).on("click", () => {
-        void exporter.downloadChannelPng(PREVIEW_SOCKET[channel], `material-${channel}.png`);
-      });
-    }
-
-    // Dev-only: save channels straight into ./bake via the bake server (npm run bake:server).
-    if (import.meta.env.DEV) {
-      const bakeFolder = texturePage.addFolder({ title: "Bake → ./bake (dev)", expanded: false });
-      for (const channel of ["basecolor", "normal", "ao", "roughness"] as const) {
-        bakeFolder
-          .addButton({ title: `Save ${channel}` })
-          .on("click", () => void exporter.saveChannelToBake(PREVIEW_SOCKET[channel]));
-      }
-    }
-  }
-
-  // Generation folder (pinned at the top): the reversible tree code plus the structural knobs that
-  // feed it. Editing any knob re-encodes the code; editing the code (paste) decodes back into every
-  // knob. "Random" rolls a fresh code. All of it regenerates the tree and the dependent panels.
   function buildGenerationControls(container: ContainerApi): void {
     const folder = container.addFolder({ title: "Generation", expanded: true });
-
-    // The code is editable: typing/pasting a valid code reconfigures the whole tree; an invalid one
-    // is rejected and the field snaps back to the current tree's code.
     const codeBinding = folder.addBinding(codeState, "code", { label: "code" });
     refreshCode = () => codeBinding.refresh();
     codeBinding.on("change", (event) => {
-      if (suppressFormSync) {
-        return;
-      }
+      if (suppressFormSync) return;
       const decoded = decodeForm(event.value);
       if (!decoded) {
         codeState.code = encodeForm(form);
@@ -924,7 +402,6 @@ export function setupTweakpane({
     });
 
     folder.addButton({ title: "Random" }).on("click", () => applyForm(randomForm()));
-
     addFormBinding(folder, "height", "height");
     addFormBinding(folder, "branchCount", "branches");
     addFormBinding(folder, "branchLevels", "branch levels");
@@ -934,21 +411,17 @@ export function setupTweakpane({
     addFormBinding(folder, "rootL2", "root L2 fan");
     addFormBinding(folder, "rootL3", "root L3 fan");
 
-    // Proportions + per-level lean: shape variations that are still part of the form (and the code),
-    // tucked into a collapsed subfolder to keep the top of the panel about topology.
     const shape = folder.addFolder({ title: "Proportions", expanded: false });
     addFormBinding(shape, "trunkRadius", "trunk radius");
     addFormBinding(shape, "radiusScale", "radius scale");
     addFormBinding(shape, "tipScale", "tip scale");
-    addFormBinding(shape, "branchLean1", "lean L1 (°)");
-    addFormBinding(shape, "branchLean2", "lean L2 (°)");
-    addFormBinding(shape, "branchLean3", "lean L3 (°)");
+    addFormBinding(shape, "branchLean1", "lean L1");
+    addFormBinding(shape, "branchLean2", "lean L2");
+    addFormBinding(shape, "branchLean3", "lean L3");
 
-    folder.addButton({ title: "Export JSON" }).on("click", () => exporter.downloadDocument(mainScene.getDocument()));
+    folder.addButton({ title: "Export JSON" }).on("click", () => downloadJson("tree.json", mainScene.getDocument()));
   }
 
-  // Tree generation readout. Read-only bindings are monitors that poll `meshStats`, so they refresh
-  // on their own after each (debounced) rebuild.
   function buildTreeStatsControls(container: ContainerApi): void {
     const folder = container.addFolder({ title: "Tree", expanded: true });
     folder.addBinding(mainScene.meshStats, "geometryMs", {
@@ -978,25 +451,18 @@ export function setupTweakpane({
     });
   }
 
-  // Root form controls. These are part of the form (and therefore the code): editing one rebuilds
-  // the whole tree graph (count/topology may change) and re-encodes the code.
   function buildRootControls(container: ContainerApi): void {
     addFormBinding(container, "rootRadius", "radius");
     addFormBinding(container, "rootHeight", "height");
     addFormBinding(container, "rootSeparation", "separation");
     addFormBinding(container, "rootLSmooth", "L smooth");
     addFormBinding(container, "rootLength", "length");
-    addFormBinding(container, "rootDownAngle", "down angle (°)");
-    addFormBinding(container, "rootDownCurve", "down curve (°)");
+    addFormBinding(container, "rootDownAngle", "down angle");
+    addFormBinding(container, "rootDownCurve", "down curve");
     addFormBinding(container, "maxRoots", "max roots");
   }
 
   function buildMeshControls(container: ContainerApi): void {
-    buildMeshFolder(container);
-  }
-
-  // Mesh resolution + surface view: the actual geometry the mesher builds.
-  function buildMeshFolder(container: ContainerApi): void {
     const meshParams = { subdivisions: DEFAULT_SUBDIVISIONS };
     container
       .addBinding(meshParams, "subdivisions", { min: 3, max: 48, step: 1 })
@@ -1011,26 +477,13 @@ export function setupTweakpane({
     };
     container
       .addBinding(mesherParams, "radialResolution", { label: "radial res", min: 3, max: 64, step: 1 })
-      .on("change", () =>
-        mainScene.setMesherOptions({ radialResolution: mesherParams.radialResolution }),
-      );
+      .on("change", () => mainScene.setMesherOptions({ radialResolution: mesherParams.radialResolution }));
     container
       .addBinding(mesherParams, "smoothIterations", { label: "smooth", min: 0, max: 12, step: 1 })
-      .on("change", () =>
-        mainScene.setMesherOptions({ smoothIterations: mesherParams.smoothIterations }),
-      );
+      .on("change", () => mainScene.setMesherOptions({ smoothIterations: mesherParams.smoothIterations }));
 
-    buildCapControls(container);
-
-    container.addButton({ title: "Rebuild mesh" }).on("click", () => mainScene.rebuildMesh());
-  }
-
-  // Per-group tip-cap shape: length (× tip radius, 0 = flat) and roundness (0 = sharp cone,
-  // 1 = rounded dome). The full caps object is owned here and re-sent on every edit.
-  function buildCapControls(parent: ContainerApi): void {
     const caps = structuredClone(DEFAULT_MESHER_OPTIONS.caps);
-    const capsFolder = parent.addFolder({ title: "Caps", expanded: false });
-
+    const capsFolder = container.addFolder({ title: "Caps", expanded: false });
     for (const group of ["trunk", "branch", "root"] as const) {
       capsFolder
         .addBinding(caps[group], "length", { label: `${group} length`, min: 0, max: 4, step: 0.05 })
@@ -1039,10 +492,11 @@ export function setupTweakpane({
         .addBinding(caps[group], "roundness", { label: `${group} round`, min: 0, max: 1, step: 0.01 })
         .on("change", () => mainScene.setMesherOptions({ caps }));
     }
+
+    container.addButton({ title: "Rebuild mesh" }).on("click", () => mainScene.rebuildMesh());
   }
 
-  // Debug instrumentation: overlay visibility + per-point markers, all editing aids.
-  function buildDebugFolder(container: ContainerApi): void {
+  function buildDebugControls(container: ContainerApi): void {
     const debugView = {
       surface: true,
       wireframe: false,
@@ -1054,22 +508,19 @@ export function setupTweakpane({
       debugPoint: true,
       linePoints: false,
     };
-    // Surface visibility + wireframe overlay (moved here from the Mesh folder).
     container
       .addBinding(debugView, "surface", { label: "mesh surface" })
       .on("change", (event) => mainScene.mesher.setSurfaceVisible(event.value));
     container
       .addBinding(debugView, "wireframe", { label: "wireframe" })
       .on("change", (event) => mainScene.mesher.setSurfaceWireframe(event.value));
-    // Surface view: shaded PBR, view-space normals (normal map in action), or the UV checker.
     container
       .addBinding(debugView, "view", {
         label: "surface view",
         options: { Surface: "surface", Normals: "normals", UV: "uv" },
       })
       .on("change", (event) => mainScene.mesher.setDebugView(event.value));
-    // Apply the initial (off) state to the scene — the change handlers only fire on user input, so the
-    // graph overlay and reference helpers would otherwise stay visible despite the unchecked boxes.
+
     mainScene.setGraphVisible(debugView.graph);
     mainScene.setDebugHelpersVisible(debugView.helpers);
     container
@@ -1093,16 +544,12 @@ export function setupTweakpane({
   }
 
   function buildLineLayers(container: ContainerApi): { dispose: () => void } {
-    // Each graph line is a layer; selecting one reveals its properties + modifier layers.
     const lineType: LayerType<GraphLine> = {
       name: "Line",
       createState: () =>
         mainScene.graph.addLine({
           color: 0x9ad1ff,
-          points: [
-            new THREE.Vector3(-0.5, 0, 0),
-            new THREE.Vector3(0.5, 0, 0),
-          ],
+          points: [new THREE.Vector3(-0.5, 0, 0), new THREE.Vector3(0.5, 0, 0)],
         }),
       build: (folder, layer) => {
         const line = layer.state;
@@ -1126,9 +573,7 @@ export function setupTweakpane({
         visible: line.object.visible,
       })),
       onSelect: (layer) => {
-        if (layer) {
-          mainScene.selectedLineId = layer.id;
-        }
+        if (layer) mainScene.selectedLineId = layer.id;
       },
       onVisibility: (layer) => {
         (layer.state as GraphLine).object.visible = layer.visible;
@@ -1141,20 +586,14 @@ export function setupTweakpane({
 
   function buildJointsPage(container: ContainerApi): FolderApi[] {
     const folders: FolderApi[] = [];
-
     for (const { document, joint } of mainScene.graph.getJointEntries()) {
-      // Collapsed by default; populate the bindings only the first time the folder is expanded,
-      // so opening the Joints tab doesn't build controls for every joint at once.
       const folder = container.addFolder({ title: document.id, expanded: false });
       folders.push(folder);
       let built = false;
 
       folder.on("fold", (event) => {
-        if (built || !event.expanded) {
-          return;
-        }
+        if (built || !event.expanded) return;
         built = true;
-
         const jointView = {
           id: document.id,
           parent: `${document.parentLineId} @ ${document.parentT.toFixed(2)}`,
@@ -1164,22 +603,11 @@ export function setupTweakpane({
         folder.addBinding(jointView, "id", { readonly: true });
         folder.addBinding(jointView, "parent", { readonly: true });
         folder.addBinding(jointView, "child", { readonly: true });
-        folder.addBinding(joint, "maxLeanAngle", {
-          label: "Max lean (°)",
-          min: 0,
-          max: 90,
-          step: 1,
-        });
-        folder.addBinding(joint, "directionPoints", {
-          label: "Direction points",
-          min: 1,
-          max: 16,
-          step: 1,
-        });
+        folder.addBinding(joint, "maxLeanAngle", { label: "Max lean", min: 0, max: 90, step: 1 });
+        folder.addBinding(joint, "directionPoints", { label: "Direction points", min: 1, max: 16, step: 1 });
         folder.addBinding(joint, "collarT", { label: "collar", readonly: true });
       });
     }
-
     return folders;
   }
 
@@ -1188,16 +616,13 @@ export function setupTweakpane({
   }
 
   function rebuildScenePanels(): void {
-    for (const folder of scenePanelFolders) {
-      folder.dispose();
-    }
+    for (const folder of scenePanelFolders) folder.dispose();
     scenePanelFolders = [];
     buildScenePanels();
   }
 
   function initFloor(): void {
-    mainScene.floorMaterialController.loadDocument(makePreset(floorState.preset));
-    mainScene.floorSurface.refresh();
+    void mainScene.floorMaterial.refresh();
     mainScene.setFloorVisible(floorState.visible);
     mainScene.setFloorTiling(floorState.tiling);
   }
@@ -1206,45 +631,12 @@ export function setupTweakpane({
   buildTreeStatsControls(genPage);
   buildMeshControls(meshPage);
   buildRootControls(graphRootsPage);
-  buildDebugFolder(debugPage);
+  buildDebugControls(debugPage);
   buildSceneControls(scenePage);
   buildRenderControls(renderPage);
   buildFloorControls(floorPage);
-  applyTransparentBg(rendererConfig.transparentBg); // reflect the persisted choice on startup
+  applyTransparentBg(rendererConfig.transparentBg);
   buildScenePanels();
 
-  // Dockable material node editor (src/node-editor/). Opened from the Texture tab; it pads #app so the
-  // 3D canvas reflows — `onLayoutChange` fires resize() on dock/undock/handle-drag (replacing the canvas
-  // ResizeObserver, which infinite-loops setSize on Firefox — see the resize wiring in app.ts).
-  const materialEditor = new NodeEditorPanel({ appElement: app, onLayoutChange: () => resize() });
-  // Progress widget for the bake of whichever material the editor is showing (two loaders: nodes recompiled
-  // + textures regenerated), docked to the node editor's bottom-left corner. `setActive` re-scopes it to the
-  // open document (tree / floor) so it monitors only the current graph.
-  const bakeWidget = new BakeProgressWidget({
-    mount: materialEditor.overlayHost,
-    subscribe: (cb) => bakeService.onBakeReport(cb),
-  });
-  // (Re)open the editor with a fresh config from the controller's active document. Passed as the rerender
-  // callback so group enter/exit navigation can swap the displayed subgraph.
-  const rebuildEditor = (): void => {
-    materialEditor.open(buildMaterialEditorConfig(mainScene.materialController, rebuildEditor));
-    bakeWidget.setActive(
-      "tree",
-      () => countGraphNodes(mainScene.materialController.document),
-      () => mainScene.treeSurface.regenerate(),
-    );
-  };
-  // Same dockable editor, but bound to the FLOOR's separate controller — tuning the floor graph never touches
-  // the tree (different controller; the floor one doesn't persist). Opened from the Floor tab.
-  const openFloorEditor = (): void => {
-    materialEditor.open(buildMaterialEditorConfig(mainScene.floorMaterialController, openFloorEditor));
-    bakeWidget.setActive(
-      "floor",
-      () => countGraphNodes(mainScene.floorMaterialController.document),
-      () => mainScene.floorSurface.regenerate(),
-    );
-  };
-  buildTextureLayers();
-
-  return { stats, refreshTexturePreview, initFloor, materialEditor, rebuildEditor };
+  return { stats, initFloor };
 }

@@ -11,12 +11,6 @@ body,
   overflow: hidden;
 }
 
-#app {
-  --node-editor-top-inset: 0px;
-  --node-editor-bottom-inset: 0px;
-  transition: padding 0.15s ease;
-}
-
 body {
   min-width: 320px;
   background: #111111;
@@ -30,14 +24,13 @@ body {
 
 .pane-host {
   position: fixed;
-  top: calc(16px + var(--node-editor-top-inset));
+  top: 16px;
   right: 16px;
   width: min(25rem, calc(100vw - 32px));
   /* Hug the pane's actual height (not the full viewport), so the empty area below it doesn't overlay the
-     canvas and swallow clicks. Cap at the viewport minus the docked node-editor insets, and scroll only
-     when the pane is genuinely taller. Folding the pane now collapses the host with it. */
+     canvas and swallow clicks. Cap at the viewport and scroll only when the pane is genuinely taller. */
   height: auto;
-  max-height: calc(100vh - 32px - var(--node-editor-top-inset) - var(--node-editor-bottom-inset));
+  max-height: calc(100vh - 32px);
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -47,7 +40,3 @@ body {
   position: static !important;
   width: min(25rem, calc(100vw - 32px)) !important;
 }
-
-/* While the node editor is docked, the canvas content box is inset via inline padding on #app set by
-   the panel; the canvas (width/height:100%) shrinks into the remaining area and `resize()` reacts.
-   The fixed Tweakpane remains visible, with its scroll bounds adjusted by editor inset variables. */

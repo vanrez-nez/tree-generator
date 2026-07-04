@@ -4,7 +4,7 @@ import type { Graph } from "../graph/graph";
 import { buildStemFromGraph } from "./graph-adapter";
 import { meshTree, type MesherOptions } from "./welding-mesher";
 import { weldMeshToBufferGeometry } from "./to-buffer-geometry";
-import { createUvDebugMaterial } from "../material/tsl/uv-debug-material";
+import { createUvDebugMaterial } from "./uv-debug-material";
 
 // Surface mesher for the whole tree. Reconstructs a welded skeleton from the graph, runs the
 // welding mesher, and exposes the result under `object`.
@@ -13,17 +13,14 @@ import { createUvDebugMaterial } from "../material/tsl/uv-debug-material";
 // solid and a wireframe overlay, toggled separately. The solid is pushed back with polygonOffset so
 // the wireframe sits on top of it.
 //
-// The solid's surface material is owned by the MaterialGraphController and pushed in via
-// setSurfaceMaterial — it is the live TSL MeshStandardNodeMaterial compiled from the material graph
-// (material-graph-plan.md), recompiled and re-pushed whenever the graph's topology/backend changes.
+// The solid's surface material is supplied by the runtime and pushed in via setSurfaceMaterial.
 // The solid mesh can be swapped to a debug visualiser: "normals" (MeshNormalMaterial) or "uv" (TSL).
 export type DebugView = "surface" | "normals" | "uv";
 
 export class TreeMesher {
   readonly object = new THREE.Group();
 
-  // Placeholder until the controller pushes the compiled material (in MainScene's constructor, before
-  // the first frame). Never rendered in practice.
+  // Placeholder until MainScene pushes the runtime material. Never rendered in practice.
   private surfaceMaterial: MeshStandardNodeMaterial = new MeshStandardNodeMaterial({
     side: THREE.DoubleSide,
     polygonOffset: true,
@@ -76,9 +73,8 @@ export class TreeMesher {
     this.solidMesh.visible = this.surfaceVisibleWanted && hasGeometry;
   }
 
-  // Swap in a freshly-compiled surface material (from MaterialGraphController). needsUpdate forces a
-  // node-material recompile against the current geometry (the empty-geometry pipeline gotcha — see
-  // build()). The previous material is disposed.
+  // Swap in a surface material. needsUpdate forces a node-material recompile against the current geometry
+  // (the empty-geometry pipeline gotcha — see build()). The previous material is disposed.
   setSurfaceMaterial(material: MeshStandardNodeMaterial): void {
     if (material === this.surfaceMaterial) return;
     const previous = this.surfaceMaterial;

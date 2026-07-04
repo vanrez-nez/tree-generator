@@ -6,9 +6,7 @@ import { DEFAULT_FORM, type TreeForm } from "./tree-code";
 import { RootSystem } from "./root-system";
 import { TreeMesher } from "./mesher/tree-mesher";
 import type { MesherOptions } from "./mesher/welding-mesher";
-import { MaterialGraphController } from "./material/graph/controller";
-import { TexturedSurface } from "./material/graph/textured-surface";
-import { bakeService } from "./material/graph/bake-service";
+import { MaterialGraphRuntime } from "material-designer-runtime";
 
 // How long graph edits must settle before the (expensive) surface mesh is rebuilt.
 const MESH_REBUILD_DEBOUNCE_MS = 200;
@@ -30,17 +28,10 @@ export class MainScene {
   readonly scene = new THREE.Scene();
   readonly graph = new Graph();
   readonly mesher = new TreeMesher();
-  // The tree's editable material GRAPH (document + editor API) and the live textured SURFACE built from it.
-  // The graph holds no renderer/textures; the surface bakes through the shared bakeService (src/scene/
-  // material/graph). Splitting them means an export bake of some other material can't knock this one out.
-  readonly materialController = new MaterialGraphController();
-  readonly treeSurface = new TexturedSurface(this.materialController, bakeService, "tree");
+  readonly treeMaterial = new MaterialGraphRuntime({ source: "tree" });
 
-  // The visual floor: a solid ground plane purely for presentation (not gameplay/collision). It has its OWN
-  // independent graph (no persistence → never touches the tree's saved graph) and surface; the tree owns the
-  // node editor, the floor is driven by preset selection only (Floor tab in app.ts).
-  readonly floorMaterialController = new MaterialGraphController(undefined, null);
-  readonly floorSurface = new TexturedSurface(this.floorMaterialController, bakeService, "floor");
+  // The visual floor: a solid ground plane purely for presentation (not gameplay/collision).
+  readonly floorMaterial = new MaterialGraphRuntime({ source: "floor" });
   private floorPlane: THREE.Mesh<THREE.BufferGeometry, THREE.Material>;
   private floorBaseUv: Float32Array; // unscaled [0,1] uv, kept so the tiling control can re-scale it
 
@@ -87,10 +78,8 @@ export class MainScene {
     this.scene.add(this.mesher.object);
     this.loadTree();
 
-    // Bind the tree's textured surface material to the mesh, and re-push it whenever the surface rebuilds
-    // (a re-bake or backend switch driven by node-editor edits).
-    this.mesher.setSurfaceMaterial(this.treeSurface.material);
-    this.treeSurface.onRebuilt(() => this.mesher.setSurfaceMaterial(this.treeSurface.material));
+    this.mesher.setSurfaceMaterial(this.treeMaterial.material);
+    this.treeMaterial.surface.onRebuilt(() => this.mesher.setSurfaceMaterial(this.treeMaterial.material));
 
     // Same light DIRECTION as before (the old (2,2,3) ×4), pushed out so it sits well above the tree top —
     // a directional's shading is distance-independent, but the shadow camera must clear the geometry.
@@ -100,13 +89,13 @@ export class MainScene {
     this.scene.add(this.directionalLight.target); // target at origin; the shadow camera aims here
     this.scene.add(this.ambientLight);
 
-    // Visual floor plane, bound to its own material controller (re-pushed on recompile, like the surface).
+    // Visual floor plane, bound to its own runtime material.
     this.floorPlane = this.createFloorPlane();
     this.floorBaseUv = (this.floorPlane.geometry.getAttribute("uv").array as Float32Array).slice();
     this.setFloorTiling(6);
     this.scene.add(this.floorPlane);
-    this.floorSurface.onRebuilt(() => {
-      this.floorPlane.material = this.floorSurface.material;
+    this.floorMaterial.surface.onRebuilt(() => {
+      this.floorPlane.material = this.floorMaterial.material;
     });
 
     this.addDebugInstrumentation();
@@ -120,7 +109,7 @@ export class MainScene {
     geometry.rotateX(-Math.PI / 2); // lie flat on the XZ ground plane (faces +Y)
     const vertexCount = geometry.getAttribute("position").count;
     geometry.setAttribute("vertexAo", new THREE.Float32BufferAttribute(new Float32Array(vertexCount).fill(1), 1));
-    const mesh = new THREE.Mesh(geometry, this.floorSurface.material);
+    const mesh = new THREE.Mesh(geometry, this.floorMaterial.material);
     mesh.name = "floor";
     mesh.receiveShadow = true; // catches the tree's baked shadow
     mesh.position.y = -0.01; // just under the debug grid to avoid z-fighting
@@ -347,7 +336,7 @@ export class MainScene {
 
     // Texture time = the offline channel re-bake (render to RTs); 0 in the live backend. Total = geometry
     // + texture. Refreshed each frame (cheap) so the read-only monitors pick up the latest values.
-    this.meshStats.textureMs = this.treeSurface.getLastBakeMs();
+    this.meshStats.textureMs = this.treeMaterial.surface.getLastBakeMs();
     this.meshStats.totalMs = this.meshStats.geometryMs + this.meshStats.textureMs;
   }
 }

@@ -4,7 +4,7 @@ export type Quad = [number, number, number, number];
 
 // Intermediate mesh the welding mesher writes into before conversion to a THREE.BufferGeometry.
 // A face is a quad of vertex indices; UVs are stored separately and referenced per-face by
-// `uvLoops` (Blender's loop model). Per-vertex attributes:
+// `uvLoops`. Per-vertex attributes:
 //   smoothAmount — smoothing weight driving the radius-weighted Laplacian pass
 //   radius       — local branch radius (exposed for shading)
 //   directionA   — local growth direction (exposed for shading)
