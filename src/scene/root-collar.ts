@@ -94,10 +94,11 @@ export class RootCollar {
   setMaterial(material: THREE.Material): void {
     this.material = material;
     const nodeMat = material as MeshStandardNodeMaterial;
-    // Feather the collar into the floor by the per-vertex `mask` attribute. alphaHash keeps the mesh
-    // in the OPAQUE pass (correct depth sort against floor/trunk + normal shadow interaction) while
-    // still dissolving the rim; the dither reads as dirt grain over a dirt surface.
-    nodeMat.alphaHash = true;
+    // Feather the collar into the floor by the per-vertex `mask` attribute, via a smooth alpha blend.
+    // depthWrite stays on (default) so the mounds still self-occlude correctly, and the only thing
+    // behind the feathered rim is the floor 0.01 below — so the blend reads clean with no dither.
+    nodeMat.alphaHash = false;
+    nodeMat.transparent = true;
     nodeMat.opacityNode = attribute("mask", "float");
     // Push the shaded surface slightly back in depth so the wireframe overlay reads on top of it
     // (mirrors the tree surface material).
