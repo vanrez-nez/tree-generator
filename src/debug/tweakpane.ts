@@ -72,7 +72,11 @@ function formRange(key: keyof TreeForm): { min: number; max: number; step: numbe
 }
 
 function downloadJson(filename: string, data: unknown): void {
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  downloadText(filename, JSON.stringify(data, null, 2), "application/json");
+}
+
+function downloadText(filename: string, text: string, type = "text/plain"): void {
+  const blob = new Blob([text], { type });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -420,6 +424,7 @@ export function setupTweakpane({
     addFormBinding(shape, "branchLean3", "lean L3");
 
     folder.addButton({ title: "Export JSON" }).on("click", () => downloadJson("tree.json", mainScene.getDocument()));
+    folder.addButton({ title: "Export OBJ" }).on("click", () => downloadText("tree.obj", mainScene.mesher.toObj()));
   }
 
   function buildTreeStatsControls(container: ContainerApi): void {

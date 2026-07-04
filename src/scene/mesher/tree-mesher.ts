@@ -108,6 +108,51 @@ export class TreeMesher {
     return { vertices, triangles };
   }
 
+  toObj(name = "tree"): string {
+    const geometry = this.solidMesh.geometry;
+    const position = geometry.getAttribute("position");
+    if (!position || position.count === 0) {
+      return `o ${name}\n`;
+    }
+
+    const normal = geometry.getAttribute("normal");
+    const uv = geometry.getAttribute("uv");
+    const index = geometry.getIndex();
+    const lines = [`# tree-graph OBJ export`, `o ${name}`];
+
+    for (let i = 0; i < position.count; i++) {
+      lines.push(`v ${formatObjNumber(position.getX(i))} ${formatObjNumber(position.getY(i))} ${formatObjNumber(position.getZ(i))}`);
+    }
+
+    if (uv) {
+      for (let i = 0; i < uv.count; i++) {
+        lines.push(`vt ${formatObjNumber(uv.getX(i))} ${formatObjNumber(uv.getY(i))}`);
+      }
+    }
+
+    if (normal) {
+      for (let i = 0; i < normal.count; i++) {
+        lines.push(`vn ${formatObjNumber(normal.getX(i))} ${formatObjNumber(normal.getY(i))} ${formatObjNumber(normal.getZ(i))}`);
+      }
+    }
+
+    const vertexRef = (vertexIndex: number): string => {
+      const n = vertexIndex + 1;
+      if (uv && normal) return `${n}/${n}/${n}`;
+      if (uv) return `${n}/${n}`;
+      if (normal) return `${n}//${n}`;
+      return String(n);
+    };
+
+    const vertexAt = (i: number): number => index?.getX(i) ?? i;
+    const count = index ? index.count : position.count;
+    for (let i = 0; i + 2 < count; i += 3) {
+      lines.push(`f ${vertexRef(vertexAt(i))} ${vertexRef(vertexAt(i + 1))} ${vertexRef(vertexAt(i + 2))}`);
+    }
+
+    return `${lines.join("\n")}\n`;
+  }
+
   // Swap the solid mesh's material to a debug visualizer (or back to the shaded PBR surface).
   setDebugView(view: DebugView): void {
     this.currentView = view;
@@ -135,4 +180,8 @@ export class TreeMesher {
     this.uvDebugMaterial.dispose();
     this.wireMaterial.dispose();
   }
+}
+
+function formatObjNumber(value: number): string {
+  return Number.isInteger(value) ? String(value) : Number(value.toFixed(6)).toString();
 }
