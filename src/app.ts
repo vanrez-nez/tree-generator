@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { WebGPURenderer, PMREMGenerator } from "three/webgpu";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
+import type { MaterialGraphDocument } from "material-designer-runtime";
 import { MainScene } from "./scene/main";
 import { loadRendererConfig, setupTweakpane } from "./debug/tweakpane";
 
@@ -59,6 +60,14 @@ const { stats, initFloor } = setupTweakpane({
 const timer = new THREE.Timer();
 timer.connect(document);
 
+async function loadMaterialDocument(path: string): Promise<MaterialGraphDocument> {
+  const response = await fetch(path);
+  if (!response.ok) {
+    throw new Error(`Failed to load material document ${path}: ${response.status}`);
+  }
+  return (await response.json()) as MaterialGraphDocument;
+}
+
 function resize(): void {
   const { clientWidth, clientHeight } = sceneCanvas;
   renderer.setSize(clientWidth, clientHeight, false);
@@ -87,7 +96,13 @@ window.addEventListener("resize", () => resize());
 await renderer.init();
 mainScene.treeMaterial.setRenderer(renderer);
 mainScene.floorMaterial.setRenderer(renderer);
-await mainScene.treeMaterial.refresh();
+const [treeMaterialDocument, floorMaterialDocument] = await Promise.all([
+  loadMaterialDocument("/materials/bark.json"),
+  loadMaterialDocument("/materials/cracked-clay.json"),
+]);
+mainScene.treeMaterial.setDocument(treeMaterialDocument);
+mainScene.floorMaterial.setDocument(floorMaterialDocument);
+await Promise.all([mainScene.treeMaterial.refresh(), mainScene.floorMaterial.refresh()]);
 
 // The visual floor is independent of the tree material; the pane owns visibility and tiling.
 initFloor();

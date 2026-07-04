@@ -622,7 +622,6 @@ export function setupTweakpane({
   }
 
   function initFloor(): void {
-    void mainScene.floorMaterial.refresh();
     mainScene.setFloorVisible(floorState.visible);
     mainScene.setFloorTiling(floorState.tiling);
   }
