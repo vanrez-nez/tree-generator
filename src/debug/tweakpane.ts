@@ -290,6 +290,16 @@ export function setupTweakpane({
     tiling: 6,
     collar: true,
   };
+  // Root-collar shaping params (mirrors RootCollar DEFAULTS). Live-editable; sweep to find good values.
+  const collarState = {
+    centerHeight: 0.12,
+    slope: 1.5,
+    disturbance: 0.04,
+    disturbanceScale: 1.6,
+    floorBlend: 0.5,
+    rootBlend: 0.25,
+    rootRaise: 0.12,
+  };
 
   function setToneMapping(mode: THREE.ToneMapping): void {
     renderer.toneMapping = mode;
@@ -344,6 +354,27 @@ export function setupTweakpane({
     folder
       .addBinding(floorState, "collar", { label: "root collar" })
       .on("change", (e) => mainScene.setCollarVisible(e.value));
+
+    // Root-collar shaping. Each slider triggers a cheap collar-only rebuild (the tree is untouched).
+    const collar = folder.addFolder({ title: "Root Collar", expanded: true });
+    const bind = (
+      key: keyof typeof collarState,
+      label: string,
+      min: number,
+      max: number,
+      step: number,
+    ): void => {
+      collar
+        .addBinding(collarState, key, { label, min, max, step })
+        .on("change", (e) => mainScene.setCollarOptions({ [key]: e.value }));
+    };
+    bind("centerHeight", "center height", 0, 0.5, 0.005);
+    bind("slope", "slope", 0.3, 4, 0.05);
+    bind("disturbance", "disturbance", 0, 0.15, 0.005);
+    bind("disturbanceScale", "disturb scale", 0.3, 5, 0.1);
+    bind("floorBlend", "floor blend", 0.05, 1.5, 0.05);
+    bind("rootBlend", "root blend", 0.02, 0.6, 0.01);
+    bind("rootRaise", "root raise", 0, 0.3, 0.005);
   }
 
   function buildSceneControls(container: ContainerApi): void {

@@ -10,46 +10,60 @@ import {
 import { hashNoise, smoothstep } from "./graph/modifiers/utils";
 
 // The "root collar" is the disturbed soil where the roots meet the floor: a low, cheap radial disc
-// centred on the trunk base whose vertices are pushed UP against the root + trunk tubes (the union
-// signed-distance field from collar.ts), so dirt mounds against and between the root flares and
-// tapers back to floor level. It is a separate mesh (blending into the floor texture alone can't add
-// relief) carrying its own dirt material, alpha-feathered at the rim so it dissolves into the floor.
+// centred on the trunk base. Its height is a smooth DOME (peak at the centre, sloping to the floor at
+// the rim) plus a FILLET where dirt banks up against each root/trunk (from the root-tube SDF in
+// collar.ts, capped so the root still emerges) plus disturbance noise. Two edges are shaped: the outer
+// edge alpha-feathers into the floor (floorBlend), and the inner edges bank up against the roots
+// (rootBlend/rootRaise + a darkened contact crease). It is a separate mesh (blending into the floor
+// texture alone can't add relief) carrying its own dirt material.
 //
-// Rebuilt in the same debounced pass as the tree surface (MainScene), so it re-mounds whenever a root
-// parameter changes. World space == graph space here (no group transforms), and the trunk base sits at
-// the world origin with the ground at y = 0 — so a ground sample is simply the disc vertex (x, 0, z).
+// Rebuilt on demand (MainScene): in the tree's debounced pass, and on a cheap collar-only pass when a
+// collar param changes. World space == graph space here (no group transforms), and the trunk base sits
+// at the world origin with the ground at y = 0 — so a ground sample is simply the disc vertex (x, 0, z).
 
 export interface RootCollarOptions {
-  ringCount?: number; // concentric rings (radial resolution)
-  sectorCount?: number; // vertices per ring (angular resolution)
-  radialExponent?: number; // r_k = R*(k/K)^exp — clusters rings near the centre where roots converge
+  // --- dome shape ---
+  centerHeight?: number; // peak dirt height at the centre (trunk base)
+  slope?: number; // dome falloff exponent: 1≈cone, >1 flat-top/steep-rim, <1 pointy centre
+  // --- disturbance (surface noise) ---
+  disturbance?: number; // value-noise height amplitude
+  disturbanceScale?: number; // noise cells per world unit (feature size)
+  // --- edges ---
+  floorBlend?: number; // outer feather width: how far the rim fades into the floor
+  rootBlend?: number; // root-fillet reach: how far dirt banks up from a root/trunk surface
+  rootRaise?: number; // root-fillet height: how much dirt banks up against a root/trunk
+  capFraction?: number; // fillet height cap = capFraction * local tube radius (roots stay exposed)
+  // --- extent ---
   reachMargin?: number; // extra radius past the roots' horizontal reach
   minRadius?: number; // floor on the disc radius (roots absent / very short)
-  moundReach?: number; // horizontal falloff distance past the tube surface
-  moundAmplitude?: number; // peak dirt height above the floor
-  capFraction?: number; // mound height cap = capFraction * local tube radius (roots stay exposed)
+  // --- ground-band trim for the root SDF ---
   aboveBand?: number; // ground band above y = 0 that contributes soil
   belowBand?: number; // ground band below y = 0 that contributes soil
-  noiseAmplitude?: number; // value-noise height detail
-  noiseFrequency?: number; // noise cells per world unit
+  // --- tessellation ---
+  ringCount?: number; // concentric rings (radial resolution)
+  sectorCount?: number; // vertices per ring (angular resolution)
+  radialExponent?: number; // inner-ring bias r_k = innerEnd*(k/K)^exp (near-linear for a smooth dome)
   rimJitter?: number; // world-space jitter of the alpha-feather rim (breaks the clean circle)
   seed?: number;
 }
 
 const DEFAULTS: Required<RootCollarOptions> = {
-  ringCount: 22,
-  sectorCount: 64,
-  radialExponent: 1.8,
+  centerHeight: 0.12,
+  slope: 1.5,
+  disturbance: 0.04,
+  disturbanceScale: 1.6,
+  floorBlend: 0.5,
+  rootBlend: 0.25,
+  rootRaise: 0.12,
+  capFraction: 0.6,
   reachMargin: 0.35,
   minRadius: 0.8,
-  moundReach: 0.25,
-  moundAmplitude: 0.14,
-  capFraction: 0.6,
   aboveBand: 0.15,
   belowBand: 0.6,
-  noiseAmplitude: 0.05,
-  noiseFrequency: 1.6,
-  rimJitter: 0.12,
+  ringCount: 30,
+  sectorCount: 64,
+  radialExponent: 1.15,
+  rimJitter: 0.1,
   seed: 1337,
 };
 
@@ -107,6 +121,12 @@ export class RootCollar {
     nodeMat.polygonOffsetUnits = 1;
     nodeMat.needsUpdate = true;
     this.mesh.material = material;
+  }
+
+  // Merge a partial options patch (from the live controls). Does NOT rebuild — the caller schedules
+  // the (cheap) collar-only rebuild.
+  setOptions(patch: Partial<RootCollarOptions>): void {
+    Object.assign(this.opts, patch);
   }
 
   setVisible(visible: boolean): void {
@@ -241,12 +261,24 @@ export class RootCollar {
       aos[index] = s.ao;
     };
 
+    // Ring radii: split into the dome body [0, innerEnd] and a dense, evenly-spaced feather band
+    // [innerEnd, reach] so the outer alpha feather always has enough geometry to read smooth (no
+    // polygonal edge) regardless of how narrow floorBlend is.
+    const floorBlend = Math.min(this.opts.floorBlend, reach * 0.9);
+    const innerEnd = Math.max(1e-3, reach - floorBlend);
+    const featherRings = Math.min(ringCount - 1, 6);
+    const innerRings = ringCount - featherRings;
+    const ringRadius = (k: number): number => {
+      if (k <= innerRings) return innerEnd * Math.pow(k / innerRings, radialExponent);
+      return innerEnd + floorBlend * ((k - innerRings) / featherRings);
+    };
+
     // Centre vertex.
     writeVertex(0, 0, 0);
 
     // Rings.
     for (let k = 1; k <= ringCount; k += 1) {
-      const radius = reach * Math.pow(k / ringCount, radialExponent);
+      const radius = ringRadius(k);
       const base = 1 + (k - 1) * sectorCount;
       for (let j = 0; j < sectorCount; j += 1) {
         const angle = (j / sectorCount) * Math.PI * 2;
@@ -290,8 +322,9 @@ export class RootCollar {
     return geometry;
   }
 
-  // The mound field at ground point (x, 0, z): its height above the floor, its alpha mask (rim
-  // feather), and its baked AO (crevice + contact darkening).
+  // The dirt field at ground point (x, 0, z): a dome + a fillet banking up against the roots, plus
+  // disturbance noise. Returns height above the floor, the outer alpha mask (rim feather), and the
+  // baked AO (root-contact crease darkening).
   private sampleField(
     surfaces: GroundSurface[],
     reach: number,
@@ -312,32 +345,32 @@ export class RootCollar {
       }
     }
 
-    // presence: 1 at/inside a tube, fading to 0 by `moundReach` past its surface.
-    const presence = smoothstep01(clamp01(1 - Math.max(d, 0) / o.moundReach));
-
     const radius = Math.hypot(x, z);
-    const radialFalloff = 1 - smoothstepRange(reach * 0.55, reach, radius); // fade mounds at the rim
-    const innerSolid = 1 - smoothstepRange(reach * 0.25, reach * 0.5, radius); // solid pad at the base
+    const rN = clamp01(radius / reach);
 
-    const n = value2D(x * o.noiseFrequency, z * o.noiseFrequency, o.seed); // [0,1]
+    // Dome: peak at the centre, sloping to the floor at the rim.
+    const dome = o.centerHeight * Math.pow(clamp01(1 - rN), o.slope);
 
-    // Height: mound against the tubes, capped so the tube still emerges; a small raised pad at the
-    // base; noise grain only where there is dirt; never below the floor; feathered at the rim.
-    const cap = o.capFraction * nearestRadius;
-    const hMound = Math.min(o.moundAmplitude * presence, cap);
-    const hBase = innerSolid * 0.02;
-    let height = Math.max(hBase, hMound) + presence * o.noiseAmplitude * (n - 0.5) * 2;
-    height = Math.max(0, height) * radialFalloff;
+    // Root fillet: dirt banks up as it approaches a root/trunk surface (d → 0), capped so the tube
+    // still emerges. rootProx is 1 at/inside the tube and 0 by `rootBlend` away.
+    const rootProx = smoothstep01(1 - clamp01(Math.max(d, 0) / Math.max(o.rootBlend, 1e-4)));
+    const rootFillet = Math.min(o.rootRaise * rootProx, o.capFraction * nearestRadius);
+
+    // Fade everything to exactly the floor across the outer band, so the rim is flush.
+    const floorCover = 1 - smoothstepRange(reach - o.floorBlend, reach, radius);
+
+    const n = value2D(x * o.disturbanceScale, z * o.disturbanceScale, o.seed); // [0,1], 2-octave
+    let height = (dome + rootFillet + o.disturbance * (n - 0.5) * 2) * floorCover;
+    height = Math.max(0, height);
 
     // Alpha mask: opaque across the interior, feathering to 0 by the rim with a noise-jittered
     // boundary so the collar dissolves into the floor along a broken (non-circular) edge.
-    const rimStart = reach * 0.65 + (n - 0.5) * 2 * o.rimJitter;
+    const rimStart = reach - o.floorBlend + (n - 0.5) * 2 * o.rimJitter;
     const mask = clamp01(1 - smoothstepRange(rimStart, reach, radius));
 
-    // AO: a dark crease where the dirt meets a root (|d| small), plus gentle darkening of the low
-    // inter-mound field so the raised mounds read lighter. → 1 at the rim, matching the floor.
+    // AO: a dark crease where the dirt banks against a root (|d| small). → 1 elsewhere.
     const contact = 1 - smoothstepRange(0, 0.08, Math.abs(d));
-    const ao = clamp(1 - radialFalloff * (0.5 * contact + 0.25 * (1 - presence)), 0.35, 1);
+    const ao = clamp(1 - 0.5 * contact * floorCover, 0.35, 1);
 
     return { height, mask, ao };
   }
@@ -364,9 +397,17 @@ function smoothstepRange(edge0: number, edge1: number, x: number): number {
   return t * t * (3 - 2 * t);
 }
 
-// Bilinear value noise over the integer lattice, from the shared hash. Reuses `smoothstep` (utils) for
-// the per-axis interpolation. Deterministic (no new dependency), so the collar is stable across builds.
+// 2-octave value noise in [0,1]: a coarse base plus a finer detail octave, for a more natural clumped
+// disturbance than a single octave. Deterministic (no new dependency), so the collar is stable.
 function value2D(x: number, z: number, seed: number): number {
+  const base = valueBilinear(x, z, seed);
+  const detail = valueBilinear(x * 2.03, z * 2.03, seed ^ 0x9e3779b1);
+  return clamp01(base * 0.65 + detail * 0.35);
+}
+
+// Bilinear value noise over the integer lattice, from the shared hash. Reuses `smoothstep` (utils) for
+// the per-axis interpolation.
+function valueBilinear(x: number, z: number, seed: number): number {
   const ix = Math.floor(x);
   const iz = Math.floor(z);
   const fx = x - ix;

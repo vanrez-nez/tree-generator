@@ -4,7 +4,7 @@ import type { GraphDocument } from "./graph/document";
 import { DEFAULT_SUBDIVISIONS, buildTreeDocument } from "./tree";
 import { DEFAULT_FORM, type TreeForm } from "./tree-code";
 import { RootSystem } from "./root-system";
-import { RootCollar } from "./root-collar";
+import { RootCollar, type RootCollarOptions } from "./root-collar";
 import { TreeMesher } from "./mesher/tree-mesher";
 import type { MesherOptions } from "./mesher/welding-mesher";
 import { MaterialGraphRuntime } from "material-designer-runtime";
@@ -68,6 +68,9 @@ export class MainScene {
   private debugLinePointsVisible = false;
   private debugT = 0.5;
   private meshDirty = false;
+  // Collar params changed but the tree didn't: rebuild only the (cheap) collar next frame, skipping
+  // the expensive tree-surface + shadow rebuild.
+  private collarDirty = false;
   private meshRebuildTimer: ReturnType<typeof setTimeout> | undefined;
   // Last graph-geometry signature we reacted to. The graph is the source of truth: whenever its
   // drawn geometry changes (from any source — UI, joints, root system, code), the signature
@@ -177,6 +180,23 @@ export class MainScene {
   // Toggle the root-collar wireframe overlay (shares the surface wireframe debug checkbox).
   setCollarWireframe(wireframe: boolean): void {
     this.rootCollar.setWireframe(wireframe);
+  }
+
+  // Update root-collar shaping params live (from the pane). Schedules a cheap collar-only rebuild.
+  setCollarOptions(patch: Partial<RootCollarOptions>): void {
+    this.rootCollar.setOptions(patch);
+    this.collarDirty = true;
+  }
+
+  // Rebuild the collar against the current trunk + root lines (world points valid for this frame).
+  private rebuildCollar(): void {
+    this.rootCollar.build(
+      this.graph.getLineById("trunk"),
+      this.graph
+        .getLineEntries()
+        .filter(({ id }) => /^root-\d+$/.test(id))
+        .map(({ line }) => line),
+    );
   }
 
   // Repeat the floor material `tiles` times across the plane (scales the uv attribute from the [0,1] base).
@@ -354,13 +374,8 @@ export class MainScene {
       this.mesher.build(this.graph, this.mesherOptions);
       // Re-mound the dirt collar against the freshly resolved roots + trunk base. Reads world
       // polylines valid for this frame (graph.update ran above, or the memoized cache is still good).
-      this.rootCollar.build(
-        this.graph.getLineById("trunk"),
-        this.graph
-          .getLineEntries()
-          .filter(({ id }) => /^root-\d+$/.test(id))
-          .map(({ line }) => line),
-      );
+      this.rebuildCollar();
+      this.collarDirty = false;
       this.meshStats.geometryMs = performance.now() - start;
       const { vertices, triangles } = this.mesher.getStats();
       this.meshStats.vertices = vertices;
@@ -368,6 +383,10 @@ export class MainScene {
       this.meshDirty = false;
       // The surface geometry changed → re-bake the (frozen) shadow map once for the new tree.
       this.requestShadowBake();
+    } else if (this.collarDirty) {
+      // Collar-only change (a shaping slider moved): rebuild just the collar, no tree/shadow work.
+      this.rebuildCollar();
+      this.collarDirty = false;
     }
 
     // Texture time = the offline channel re-bake (render to RTs); 0 in the live backend. Total = geometry
