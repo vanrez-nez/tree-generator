@@ -27,10 +27,6 @@ export type GraphLineOptions = {
   tube?: LineTubeOptions;
 };
 
-type LineGeometryWithInstanceCache = LineGeometry & {
-  _maxInstanceCount?: number;
-};
-
 const DEBUG_POINT_RADIUS = 0.055;
 const DEBUG_POINT_SCREEN_RADIUS = 0.0047;
 
@@ -195,7 +191,10 @@ export class GraphLineVisual {
     depthWrite: false,
   });
   private readonly linePointDebugMarkers: THREE.Mesh[] = [];
-  private readonly geometry = new LineGeometry();
+  private geometry = new LineGeometry();
+  // Segment count of the geometry currently on `this.line`, so we can detect when the instanced
+  // fat-line buffer needs to grow/shrink (see `setGeometryPoints`). -1 until the first draw.
+  private drawnSegmentCount = -1;
   // Drawn as an always-visible overlay: depthTest off + a high renderOrder so the line
   // skeleton shows through the surface mesh regardless of camera angle.
   private readonly material = new Line2NodeMaterial({
@@ -314,9 +313,26 @@ export class GraphLineVisual {
     }
 
     this.line.visible = true;
+
+    // The fat line is instanced: one instance per segment, backed by an `instanceStart`/`instanceEnd`
+    // buffer that `setFromPoints` reallocates on every call. When the segment count GROWS on a reused
+    // `LineGeometry` (e.g. the coil modifier densifies a 12-point line into 64 segments), the WebGPU
+    // renderer can keep the previous, smaller instance buffer bound while `geometry.instanceCount`
+    // already reflects the larger count — raising "Instance range ... requires a larger buffer than
+    // the bound buffer size" and invalidating the whole command buffer (rendering stops). Swapping in
+    // a fresh geometry whenever the segment count changes bumps `geometry.id`, and the renderer's
+    // geometry-id check is the one cache-invalidation path that is never missed, so it always rebinds
+    // the correctly sized buffer.
+    const segmentCount = points.length - 1;
+    if (segmentCount !== this.drawnSegmentCount) {
+      const previous = this.geometry;
+      this.geometry = new LineGeometry();
+      this.line.geometry = this.geometry;
+      previous.dispose();
+      this.drawnSegmentCount = segmentCount;
+    }
+
     this.geometry.setFromPoints(points);
-    (this.geometry as LineGeometryWithInstanceCache)._maxInstanceCount =
-      this.geometry.instanceCount;
     this.geometry.computeBoundingSphere();
   }
 
