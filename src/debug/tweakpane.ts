@@ -297,8 +297,10 @@ export function setupTweakpane({
     disturbance: 0.04,
     disturbanceScale: 1.6,
     floorBlend: 0.5,
-    rootBlend: 0.25,
     rootRaise: 0.12,
+    rootEdgeBlend: 0.12,
+    rootEdgeAO: 0.5,
+    rootEdgeMix: 0.5,
   };
 
   function setToneMapping(mode: THREE.ToneMapping): void {
@@ -373,8 +375,10 @@ export function setupTweakpane({
     bind("disturbance", "disturbance", 0, 0.15, 0.005);
     bind("disturbanceScale", "disturb scale", 0.3, 5, 0.1);
     bind("floorBlend", "floor blend", 0.05, 1.5, 0.05);
-    bind("rootBlend", "root blend", 0.02, 0.6, 0.01);
     bind("rootRaise", "root raise", 0, 0.3, 0.005);
+    bind("rootEdgeBlend", "root edge", 0.02, 0.4, 0.01);
+    bind("rootEdgeAO", "root AO", 0, 1, 0.05);
+    bind("rootEdgeMix", "root bark mix", 0, 1, 0.05);
   }
 
   function buildSceneControls(container: ContainerApi): void {

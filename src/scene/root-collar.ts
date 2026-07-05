@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { attribute } from "three/tsl";
+import { attribute, mix, normalWorld, positionWorld, texture, vec2 } from "three/tsl";
 import type { MeshStandardNodeMaterial } from "three/webgpu";
 import type { GraphLine } from "./graph/line";
 import {
@@ -14,8 +14,9 @@ import { hashNoise, smoothstep } from "./graph/modifiers/utils";
 // the rim) plus a FILLET where dirt banks up against each root/trunk (from the root-tube SDF in
 // collar.ts, capped so the root still emerges) plus disturbance noise. Two edges are shaped: the outer
 // edge alpha-feathers into the floor (floorBlend), and the inner edges bank up against the roots
-// (rootBlend/rootRaise + a darkened contact crease). It is a separate mesh (blending into the floor
-// texture alone can't add relief) carrying its own dirt material.
+// (rootRaise) and soften the collar↔root seam via a contact band (rootEdgeBlend) that darkens (AO,
+// rootEdgeAO) and/or dissolves (alpha, rootEdgeFade) the dirt into the root. It is a separate mesh
+// (blending into the floor texture alone can't add relief) carrying its own dirt material.
 //
 // Rebuilt on demand (MainScene): in the tree's debounced pass, and on a cheap collar-only pass when a
 // collar param changes. World space == graph space here (no group transforms), and the trunk base sits
@@ -30,9 +31,12 @@ export interface RootCollarOptions {
   disturbanceScale?: number; // noise cells per world unit (feature size)
   // --- edges ---
   floorBlend?: number; // outer feather width: how far the rim fades into the floor
-  rootBlend?: number; // root-fillet reach: how far dirt banks up from a root/trunk surface
-  rootRaise?: number; // root-fillet height: how much dirt banks up against a root/trunk
+  rootRaise?: number; // root-fillet height: how much dirt banks up against a root/trunk (geometry)
   capFraction?: number; // fillet height cap = capFraction * local tube radius (roots stay exposed)
+  // --- collar↔root seam texture blend ---
+  rootEdgeBlend?: number; // band width around a root/trunk surface over which the seam softens
+  rootEdgeAO?: number; // 0–1: contact-shadow darkening of the collar toward a root
+  rootEdgeMix?: number; // 0–1: how strongly the tree (bark) texture bleeds into the collar at the seam
   // --- extent ---
   reachMargin?: number; // extra radius past the roots' horizontal reach
   minRadius?: number; // floor on the disc radius (roots absent / very short)
@@ -53,9 +57,11 @@ const DEFAULTS: Required<RootCollarOptions> = {
   disturbance: 0.04,
   disturbanceScale: 1.6,
   floorBlend: 0.5,
-  rootBlend: 0.25,
   rootRaise: 0.12,
   capFraction: 0.6,
+  rootEdgeBlend: 0.12,
+  rootEdgeAO: 0.5,
+  rootEdgeMix: 0.5,
   reachMargin: 0.35,
   minRadius: 0.8,
   aboveBand: 0.15,
@@ -70,6 +76,23 @@ const DEFAULTS: Required<RootCollarOptions> = {
 // A near-ground tube (root or trunk base) the mound field is built against.
 type GroundSurface = ParentSurface;
 
+// Source for bleeding the tree (bark) texture into the collar at the root seam: the tree surface's
+// baked base-colour texture + its world-space triplanar scale/sharpness uniforms (so the bark reads at
+// the tree's scale). `scale`/`sharpness` are TSL UniformNodes.
+export interface TreeColorSource {
+  getTexture: () => THREE.Texture | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  scale: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sharpness: any;
+}
+
+// Reach of the geometric root fillet (dirt banking up against a root), as a fixed distance past the
+// tube surface — the old `rootBlend` knob, folded to a constant since its per-look value added little.
+const FILLET_REACH = 0.3;
+// Darkest the seam contact-shadow AO can go (floor is 1.0).
+const AO_MIN = 0.3;
+
 const _p = new THREE.Vector3();
 
 export class RootCollar {
@@ -79,6 +102,10 @@ export class RootCollar {
   private pipelinePrimed = false;
   // Wireframe overlay (shares the solid geometry), toggled with the tree's wireframe debug checkbox.
   private readonly wireMesh: THREE.Mesh<THREE.BufferGeometry, THREE.Material>;
+  // Tree base-colour source + the collar material's own (runtime-built) base colour, for the seam mix.
+  private treeColor: TreeColorSource | null = null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private baseColorNode: any = null;
 
   constructor(material: THREE.Material, options: RootCollarOptions = {}) {
     this.opts = { ...DEFAULTS, ...options };
@@ -108,9 +135,13 @@ export class RootCollar {
   setMaterial(material: THREE.Material): void {
     this.material = material;
     const nodeMat = material as MeshStandardNodeMaterial;
-    // Feather the collar into the floor by the per-vertex `mask` attribute, via a smooth alpha blend.
-    // depthWrite stays on (default) so the mounds still self-occlude correctly, and the only thing
-    // behind the feathered rim is the floor 0.01 below — so the blend reads clean with no dither.
+    // The collar's own base colour, before we bleed the tree bark into the seam. Captured here (from
+    // the freshly runtime-built material) so re-mixes always start from the un-wrapped colour.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    this.baseColorNode = (nodeMat as any).colorNode ?? null;
+    // Feather the collar into the floor by the per-vertex `mask` attribute, via a smooth alpha blend
+    // (only the outer rim is transparent; the root seam is handled by the colour mix, not alpha).
+    // depthWrite stays on so the mounds self-occlude and the only thing behind the rim is the floor.
     nodeMat.alphaHash = false;
     nodeMat.transparent = true;
     nodeMat.opacityNode = attribute("mask", "float");
@@ -119,8 +150,38 @@ export class RootCollar {
     nodeMat.polygonOffset = true;
     nodeMat.polygonOffsetFactor = 1;
     nodeMat.polygonOffsetUnits = 1;
-    nodeMat.needsUpdate = true;
     this.mesh.material = material;
+    this.applyColorMix(); // wraps colorNode + calls needsUpdate
+  }
+
+  // Point the collar at the tree's baked base-colour texture so the bark can bleed into the root seam.
+  setTreeColorSource(source: TreeColorSource): void {
+    this.treeColor = source;
+    this.applyColorMix();
+  }
+
+  // Re-apply the seam colour mix — call when the tree material re-bakes (its RT texture may change).
+  refreshColor(): void {
+    this.applyColorMix();
+  }
+
+  // Wrap the collar's base colour so the tree bark bleeds in by the per-vertex `barkMix` weight near
+  // the root seam. No-op until the material is built; falls back to the plain base colour with no
+  // tree texture available.
+  private applyColorMix(): void {
+    const mat = this.material as MeshStandardNodeMaterial;
+    const base = this.baseColorNode;
+    if (!base) return;
+    const tex = this.treeColor?.getTexture() ?? null;
+    if (this.treeColor && tex) {
+      const bark = triplanarColorNode(tex, this.treeColor.scale, this.treeColor.sharpness);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (mat as any).colorNode = mix(base, bark, attribute("barkMix", "float"));
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (mat as any).colorNode = base;
+    }
+    mat.needsUpdate = true;
   }
 
   // Merge a partial options patch (from the live controls). Does NOT rebuild — the caller schedules
@@ -249,6 +310,7 @@ export class RootCollar {
     const uvs = new Float32Array(vertexCount * 2);
     const masks = new Float32Array(vertexCount);
     const aos = new Float32Array(vertexCount);
+    const barkMixes = new Float32Array(vertexCount);
 
     const writeVertex = (index: number, x: number, z: number): void => {
       const s = this.sampleField(surfaces, reach, x, z);
@@ -259,6 +321,7 @@ export class RootCollar {
       uvs[index * 2 + 1] = z / (2 * reach) + 0.5;
       masks[index] = s.mask;
       aos[index] = s.ao;
+      barkMixes[index] = s.barkMix;
     };
 
     // Ring radii: split into the dome body [0, innerEnd] and a dense, evenly-spaced feather band
@@ -316,6 +379,8 @@ export class RootCollar {
     // The offline surface material multiplies its AO by this attribute (see createFloorPlane); it is
     // mandatory — omitting it shades the collar to black.
     geometry.setAttribute("vertexAo", new THREE.BufferAttribute(aos, 1));
+    // Per-vertex weight for bleeding the tree bark into the collar colour at the root seam.
+    geometry.setAttribute("barkMix", new THREE.BufferAttribute(barkMixes, 1));
     geometry.setIndex(indices);
     geometry.computeVertexNormals(); // smooth mound normals (no tangents needed on the floor path)
     geometry.computeBoundingSphere();
@@ -330,7 +395,7 @@ export class RootCollar {
     reach: number,
     x: number,
     z: number,
-  ): { height: number; mask: number; ao: number } {
+  ): { height: number; mask: number; ao: number; barkMix: number } {
     const o = this.opts;
     _p.set(x, 0, z);
 
@@ -352,8 +417,8 @@ export class RootCollar {
     const dome = o.centerHeight * Math.pow(clamp01(1 - rN), o.slope);
 
     // Root fillet: dirt banks up as it approaches a root/trunk surface (d → 0), capped so the tube
-    // still emerges. rootProx is 1 at/inside the tube and 0 by `rootBlend` away.
-    const rootProx = smoothstep01(1 - clamp01(Math.max(d, 0) / Math.max(o.rootBlend, 1e-4)));
+    // still emerges. rootProx is 1 at/inside the tube and 0 by FILLET_REACH away.
+    const rootProx = smoothstep01(1 - clamp01(Math.max(d, 0) / FILLET_REACH));
     const rootFillet = Math.min(o.rootRaise * rootProx, o.capFraction * nearestRadius);
 
     // Fade everything to exactly the floor across the outer band, so the rim is flush.
@@ -363,17 +428,39 @@ export class RootCollar {
     let height = (dome + rootFillet + o.disturbance * (n - 0.5) * 2) * floorCover;
     height = Math.max(0, height);
 
-    // Alpha mask: opaque across the interior, feathering to 0 by the rim with a noise-jittered
-    // boundary so the collar dissolves into the floor along a broken (non-circular) edge.
+    // Seam softening: a contact band hugging the nearest root/trunk surface (|d| small). Drives a
+    // contact-shadow AO darkening AND the amount of tree bark bled into the collar colour — so the
+    // collar↔root edge isn't a hard cut, without transparency (which revealed gaps).
+    const band = 1 - smoothstepRange(0, o.rootEdgeBlend, Math.abs(d));
+
+    // Alpha mask: interior opaque, feathering to 0 only at the OUTER rim (into the floor). The root
+    // seam is handled by the colour mix below, not by alpha.
     const rimStart = reach - o.floorBlend + (n - 0.5) * 2 * o.rimJitter;
     const mask = clamp01(1 - smoothstepRange(rimStart, reach, radius));
 
-    // AO: a dark crease where the dirt banks against a root (|d| small). → 1 elsewhere.
-    const contact = 1 - smoothstepRange(0, 0.08, Math.abs(d));
-    const ao = clamp(1 - 0.5 * contact * floorCover, 0.35, 1);
+    // AO: contact shadow that darkens the dirt toward the root by `rootEdgeAO`. → 1 away from roots.
+    const ao = clamp(1 - o.rootEdgeAO * band, AO_MIN, 1);
 
-    return { height, mask, ao };
+    // Bark bleed weight: how much the tree texture mixes into the collar colour here (0 away from
+    // roots → rootEdgeMix at the contact).
+    const barkMix = clamp01(o.rootEdgeMix * band);
+
+    return { height, mask, ao, barkMix };
   }
+}
+
+// World-space triplanar sample of a baked colour texture → an rgb node. Matches the runtime's
+// floor/tree projection (positionWorld*scale, weights from pow(abs(normalWorld), sharpness)) so the
+// bled-in bark reads at the tree's scale. The package doesn't export its own triplanar helper.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function triplanarColorNode(map: THREE.Texture, scale: any, sharpness: any): any {
+  const wp = positionWorld.mul(scale);
+  const wRaw = normalWorld.abs().pow(sharpness);
+  const w = wRaw.div(wRaw.x.add(wRaw.y).add(wRaw.z).add(1e-4));
+  const cx = texture(map, vec2(wp.y, wp.z)).rgb;
+  const cy = texture(map, vec2(wp.z, wp.x)).rgb;
+  const cz = texture(map, vec2(wp.x, wp.y)).rgb;
+  return cx.mul(w.x).add(cy.mul(w.y)).add(cz.mul(w.z));
 }
 
 // --- small math helpers (kept local so the field math is self-contained) ---

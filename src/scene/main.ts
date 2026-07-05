@@ -117,6 +117,15 @@ export class MainScene {
     this.rootCollar.mesh.position.y = 0;
     this.scene.add(this.rootCollar.mesh);
     this.collarMaterial.surface.onRebuilt(() => this.rootCollar.setMaterial(this.collarMaterial.material));
+    // Bleed the tree bark into the collar at the root seam: point the collar at the tree's baked
+    // base-colour texture (sampled at the tree's world-space triplanar scale/sharpness), and re-apply
+    // the mix whenever the tree material re-bakes (its render-target texture can change).
+    this.rootCollar.setTreeColorSource({
+      getTexture: () => this.treeMaterial.surface.getChannelTexture("baseColor"),
+      scale: this.treeMaterial.surface.scaleUniform,
+      sharpness: this.treeMaterial.surface.sharpnessUniform,
+    });
+    this.treeMaterial.surface.onTexturesUpdated(() => this.rootCollar.refreshColor());
 
     this.addDebugInstrumentation();
   }
