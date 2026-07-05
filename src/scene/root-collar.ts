@@ -106,6 +106,9 @@ export class RootCollar {
   private treeColor: TreeColorSource | null = null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private baseColorNode: any = null;
+  // User-requested visibility (the Floor-tab checkbox). Kept separate so a rebuild never re-shows a
+  // collar the user hid — build() only reveals when both this is true AND there's geometry.
+  private visibleWanted = true;
 
   constructor(material: THREE.Material, options: RootCollarOptions = {}) {
     this.opts = { ...DEFAULTS, ...options };
@@ -191,7 +194,14 @@ export class RootCollar {
   }
 
   setVisible(visible: boolean): void {
-    this.mesh.visible = visible && this.hasGeometry();
+    this.visibleWanted = visible;
+    this.updateVisibility();
+  }
+
+  // Reveal the collar only when the user wants it AND there's geometry to draw. The wire overlay is a
+  // child, so it follows the parent's visibility automatically.
+  private updateVisibility(): void {
+    this.mesh.visible = this.visibleWanted && this.hasGeometry();
   }
 
   // Toggle the wireframe overlay (driven by the shared debug checkbox alongside the tree surface).
@@ -210,7 +220,7 @@ export class RootCollar {
       const empty = new THREE.BufferGeometry();
       this.mesh.geometry = empty;
       this.wireMesh.geometry = empty;
-      this.mesh.visible = false;
+      this.updateVisibility(); // no geometry → hidden
       previous.dispose();
       return;
     }
@@ -219,7 +229,7 @@ export class RootCollar {
     this.mesh.geometry = geometry;
     this.wireMesh.geometry = geometry; // wire overlay shares the solid geometry
     previous.dispose();
-    this.mesh.visible = true;
+    this.updateVisibility(); // reveal only if the user hasn't hidden it (never clobber the checkbox)
 
     // First real geometry: force a node-material recompile against it. A TSL material's first compile
     // caches a broken WGSL pipeline if it ran against the empty placeholder geometry (missing

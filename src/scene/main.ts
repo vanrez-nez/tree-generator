@@ -181,9 +181,12 @@ export class MainScene {
     this.floorPlane.visible = visible;
   }
 
-  // Show/hide the root-collar dirt mounds.
+  // Show/hide the root-collar dirt mounds. Re-bake the frozen shadow: the collar sits over the tree's
+  // baked base shadow, so showing/hiding it changes what's revealed and the map must be refreshed to
+  // the current scene (otherwise a stale patch lingers until the next unrelated re-bake).
   setCollarVisible(visible: boolean): void {
     this.rootCollar.setVisible(visible);
+    this.requestShadowBake();
   }
 
   // Toggle the root-collar wireframe overlay (shares the surface wireframe debug checkbox).
@@ -393,9 +396,11 @@ export class MainScene {
       // The surface geometry changed → re-bake the (frozen) shadow map once for the new tree.
       this.requestShadowBake();
     } else if (this.collarDirty) {
-      // Collar-only change (a shaping slider moved): rebuild just the collar, no tree/shadow work.
+      // Collar-only change (a shaping slider moved): rebuild just the collar (skip the tree mesh), but
+      // still refresh the frozen shadow so the map never lags the collar's footprint at the base.
       this.rebuildCollar();
       this.collarDirty = false;
+      this.requestShadowBake();
     }
 
     // Texture time = the offline channel re-bake (render to RTs); 0 in the live backend. Total = geometry
