@@ -1,7 +1,54 @@
 import * as THREE from "three";
+import type { MaskedLine } from "./modifier";
 
 export function getSampleSegments(points: THREE.Vector3[]): number {
   return Math.max(points.length - 1, 64);
+}
+
+// Resample a polyline to `segments + 1` uniform-arc-length points and stamp the material coordinate
+// `s_i = i / segments`. Used once at the top of the stack to build the stable grid every modifier reads.
+export function resampleWithS(points: THREE.Vector3[], segments: number): MaskedLine {
+  const resampled = sampleByArcLength(points, segments);
+  const count = resampled.length;
+  const s = resampled.map((_point, index) => (count <= 1 ? 0 : index / (count - 1)));
+  return { points: resampled, s };
+}
+
+// Resample points to `segments + 1` uniform-arc-length samples AND carry the input's `s` through — each
+// new sample's `s` is the input `s` interpolated at the same arc distance. Count-changing modifiers
+// (coil body, smooth, disc-align) use this so every output point keeps a valid material coordinate.
+export function sampleSWithArcLength(
+  points: THREE.Vector3[],
+  s: number[],
+  segments: number,
+): MaskedLine {
+  const cumulative = [0];
+  for (let index = 1; index < points.length; index += 1) {
+    cumulative[index] = cumulative[index - 1] + points[index - 1].distanceTo(points[index]);
+  }
+  const total = cumulative[cumulative.length - 1];
+
+  if (points.length < 2 || total <= 1e-6) {
+    return { points: points.map((point) => point.clone()), s: s.slice() };
+  }
+
+  const outPoints: THREE.Vector3[] = [];
+  const outS: number[] = [];
+  const last = points.length - 1;
+
+  for (let step = 0; step <= segments; step += 1) {
+    const distance = total * (step / segments);
+    let index = 0;
+    while (index < last - 1 && cumulative[index + 1] < distance) {
+      index += 1;
+    }
+    const segmentLength = Math.max(1e-9, cumulative[index + 1] - cumulative[index]);
+    const localT = THREE.MathUtils.clamp((distance - cumulative[index]) / segmentLength, 0, 1);
+    outPoints.push(points[index].clone().lerp(points[index + 1], localT));
+    outS.push(THREE.MathUtils.lerp(s[index], s[index + 1], localT));
+  }
+
+  return { points: outPoints, s: outS };
 }
 
 export function sampleByArcLength(

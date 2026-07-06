@@ -1,8 +1,10 @@
 import * as THREE from "three";
 import {
-  createDefaultEnvelope,
+  createDefaultMask,
   type LineModifier,
-  type ModifierEnvelope,
+  type MaskedLine,
+  maskWeight,
+  type ModifierMask,
 } from "./modifier";
 import { smoothstep } from "./utils";
 
@@ -13,7 +15,7 @@ export type FootAlignModifierParams = {
 
 export type FootAlignModifierOptions = Partial<FootAlignModifierParams> & {
   enabled?: boolean;
-  envelope?: ModifierEnvelope;
+  mask?: ModifierMask;
 };
 
 const FLOOR_NORMAL = new THREE.Vector3(0, 1, 0);
@@ -28,36 +30,36 @@ const FLOOR_NORMAL = new THREE.Vector3(0, 1, 0);
 export class FootAlignModifier implements LineModifier<FootAlignModifierParams> {
   readonly name = "footAlign";
   enabled: boolean;
-  envelope: ModifierEnvelope;
+  mask: ModifierMask;
   params: FootAlignModifierParams;
 
   constructor({
     amount = 1,
     enabled = true,
-    envelope = createDefaultEnvelope(),
     height = 0.15,
+    mask = createDefaultMask(),
   }: FootAlignModifierOptions = {}) {
     this.enabled = enabled;
-    this.envelope = envelope;
+    this.mask = mask;
     this.params = {
       amount,
       height,
     };
   }
 
-  apply(points: THREE.Vector3[]): THREE.Vector3[] {
+  applyMasked(input: MaskedLine): MaskedLine {
+    const { points, s } = input;
+
     if (points.length < 2 || this.params.amount <= 0) {
-      return points.map((point) => point.clone());
+      return { points: points.map((point) => point.clone()), s };
     }
 
-    const cumulative = [0];
+    let total = 0;
     for (let index = 1; index < points.length; index += 1) {
-      cumulative[index] = cumulative[index - 1] + points[index - 1].distanceTo(points[index]);
+      total += points[index - 1].distanceTo(points[index]);
     }
-    const total = cumulative[cumulative.length - 1];
-
     if (total <= 1e-6) {
-      return points.map((point) => point.clone());
+      return { points: points.map((point) => point.clone()), s };
     }
 
     const amount = THREE.MathUtils.clamp(this.params.amount, 0, 1);
@@ -75,9 +77,9 @@ export class FootAlignModifier implements LineModifier<FootAlignModifierParams> 
       }
 
       const heading = segment.divideScalar(length);
-      const t = cumulative[index] / total;
-      // Full at the base, eases to 0 at `height` and above.
-      const weight = amount * smoothstep(Math.max(0, 1 - t / height));
+      const t = s[index];
+      // Full at the base, eases to 0 at `height` and above, and scoped by the mask.
+      const weight = amount * smoothstep(Math.max(0, 1 - t / height)) * maskWeight(t, this.mask);
 
       if (weight > 1e-6) {
         const toFloor = new THREE.Quaternion().setFromUnitVectors(heading, FLOOR_NORMAL);
@@ -88,6 +90,6 @@ export class FootAlignModifier implements LineModifier<FootAlignModifierParams> 
       result.push(result[index].clone().addScaledVector(heading, length));
     }
 
-    return result;
+    return { points: result, s };
   }
 }

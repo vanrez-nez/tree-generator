@@ -1,8 +1,9 @@
-import * as THREE from "three";
 import {
-  createDefaultEnvelope,
+  createDefaultMask,
   type LineModifier,
-  type ModifierEnvelope,
+  type MaskedLine,
+  maskWeight,
+  type ModifierMask,
   type SeededModifierParams,
 } from "./modifier";
 import {
@@ -19,25 +20,25 @@ export type TwistModifierParams = SeededModifierParams & {
 
 export type TwistModifierOptions = Partial<TwistModifierParams> & {
   enabled?: boolean;
-  envelope?: ModifierEnvelope;
+  mask?: ModifierMask;
 };
 
 export class TwistModifier implements LineModifier<TwistModifierParams> {
   readonly name = "twist";
   enabled: boolean;
-  envelope: ModifierEnvelope;
+  mask: ModifierMask;
   params: TwistModifierParams;
 
   constructor({
     amount = 1,
     enabled = true,
-    envelope = createDefaultEnvelope(),
+    mask = createDefaultMask(),
     radius = 0.12,
     seed = 73192,
     turns = 1.5,
   }: TwistModifierOptions = {}) {
     this.enabled = enabled;
-    this.envelope = envelope;
+    this.mask = mask;
     this.params = {
       amount,
       radius,
@@ -46,9 +47,11 @@ export class TwistModifier implements LineModifier<TwistModifierParams> {
     };
   }
 
-  apply(points: THREE.Vector3[]): THREE.Vector3[] {
+  applyMasked(input: MaskedLine): MaskedLine {
+    const { points, s } = input;
+
     if (points.length < 2 || this.params.amount <= 0 || this.params.radius <= 0) {
-      return points.map((point) => point.clone());
+      return { points: points.map((point) => point.clone()), s };
     }
 
     const first = points[0];
@@ -57,7 +60,7 @@ export class TwistModifier implements LineModifier<TwistModifierParams> {
     const length = axis.length();
 
     if (length <= 1e-6) {
-      return points.map((point) => point.clone());
+      return { points: points.map((point) => point.clone()), s };
     }
 
     axis.normalize();
@@ -67,16 +70,24 @@ export class TwistModifier implements LineModifier<TwistModifierParams> {
     const radius = this.params.radius * this.params.amount * length;
     const turns = this.params.turns * this.params.amount;
 
-    return points.map((point, index) => {
-      const t = index / (points.length - 1);
+    // Additive helix: wrap each point around the base axis by a masked radius. Outside the mask range the
+    // weight is 0 → the point is unchanged. `anchorRampWeight(t)` keeps the base joint kink-free.
+    const output = points.map((point, index) => {
+      const t = s[index];
+      const magnitude = radius * maskWeight(t, this.mask) * anchorRampWeight(t);
+
+      if (magnitude <= 0) {
+        return point.clone();
+      }
+
       const angle = phase + sign * turns * t * Math.PI * 2;
-      // Ramp the helix radius in from the anchor so the base-pinned point 0 doesn't kink.
-      const magnitude = radius * anchorRampWeight(t);
 
       return point
         .clone()
         .addScaledVector(sideA, Math.cos(angle) * magnitude)
         .addScaledVector(sideB, Math.sin(angle) * magnitude);
     });
+
+    return { points: output, s };
   }
 }

@@ -1,6 +1,6 @@
 import type { GraphLineStyle } from "./line";
 import type { LineTubeOptions } from "./line-tube";
-import type { ModifierEnvelope } from "./modifiers/modifier";
+import type { ModifierEnvelope, ModifierMask } from "./modifiers/modifier";
 import type { CoilModifierParams } from "./modifiers/coil";
 import type { DiscAlignModifierParams } from "./modifiers/disc-align";
 import type { FootAlignModifierParams } from "./modifiers/foot-align";
@@ -13,42 +13,48 @@ export type GraphPointDocument = [number, number, number];
 export type SmoothModifierDocument = {
   type: "smooth";
   enabled?: boolean;
-  envelope?: ModifierEnvelope;
+  envelope?: ModifierEnvelope; // legacy; migrated to `mask` on load
+  mask?: ModifierMask;
   params?: Partial<SmoothModifierParams>;
 };
 
 export type GnarlModifierDocument = {
   type: "gnarl";
   enabled?: boolean;
-  envelope?: ModifierEnvelope;
+  envelope?: ModifierEnvelope; // legacy; migrated to `mask` on load
+  mask?: ModifierMask;
   params?: Partial<GnarlModifierParams>;
 };
 
 export type TwistModifierDocument = {
   type: "twist";
   enabled?: boolean;
-  envelope?: ModifierEnvelope;
+  envelope?: ModifierEnvelope; // legacy; migrated to `mask` on load
+  mask?: ModifierMask;
   params?: Partial<TwistModifierParams>;
 };
 
 export type CoilModifierDocument = {
   type: "coil";
   enabled?: boolean;
-  envelope?: ModifierEnvelope;
+  envelope?: ModifierEnvelope; // legacy; migrated to `mask` on load
+  mask?: ModifierMask;
   params?: Partial<CoilModifierParams>;
 };
 
 export type FootAlignModifierDocument = {
   type: "footAlign";
   enabled?: boolean;
-  envelope?: ModifierEnvelope;
+  envelope?: ModifierEnvelope; // legacy; migrated to `mask` on load
+  mask?: ModifierMask;
   params?: Partial<FootAlignModifierParams>;
 };
 
 export type DiscAlignModifierDocument = {
   type: "discAlign";
   enabled?: boolean;
-  envelope?: ModifierEnvelope;
+  envelope?: ModifierEnvelope; // legacy; migrated to `mask` on load
+  mask?: ModifierMask;
   params?: Partial<DiscAlignModifierParams>;
 };
 

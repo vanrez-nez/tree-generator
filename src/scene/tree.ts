@@ -6,7 +6,7 @@ import type {
   JointDocument,
   ModifierDocument,
 } from "./graph/document";
-import type { ModifierEnvelope } from "./graph/modifiers/modifier";
+import type { ModifierMask } from "./graph/modifiers/modifier";
 import { cubicBezierEasing, type CubicBezierCurve } from "./graph/curve";
 import type { LineTubeOptions } from "./graph/line-tube";
 import type { TreeForm } from "./tree-code";
@@ -234,14 +234,14 @@ function addSubLimbs(
   }
 }
 
-// Fades a modifier's displacement in from the base (t = 0), so the ground point is left
-// untouched — keeping the trunk anchored at the origin while it gnarls/twists higher up.
-function footAnchorEnvelope(): ModifierEnvelope {
+// Fades a modifier's displacement in over the base 8% of the line, so the ground point is left
+// untouched — keeping the trunk anchored at the origin while it gnarls/twists higher up. (gnarl/twist
+// also apply an intrinsic `anchorRampWeight`; this authored fade-in is the base-pin's design intent.)
+function footAnchorMask(): ModifierMask {
   return {
-    fadeInEnabled: true,
-    fadeIn: { min: 0, max: 0.08 },
-    fadeOutEnabled: false,
-    fadeOut: { min: 0.5, max: 1 },
+    range: { min: 0, max: 1 },
+    fadeIn: 0.08,
+    fadeOut: 0,
     curve: [0.5, 0, 0.5, 1],
   };
 }
@@ -253,12 +253,12 @@ function buildTrunk(params: TreeParams, rng: Rng): GraphLineDocument {
       { type: "smooth", params: { mode: "laplacian", segments: 24 } },
       {
         type: "gnarl",
-        envelope: footAnchorEnvelope(),
+        mask: footAnchorMask(),
         params: { amount: 1, amplitude: 0.18, cycles: 1.6 },
       },
       {
         type: "twist",
-        envelope: footAnchorEnvelope(),
+        mask: footAnchorMask(),
         params: { amount: 0.6, radius: 0.06, turns: 1 },
       },
       // Guarantee the base stands vertical (perpendicular to the floor) regardless of the

@@ -6,9 +6,16 @@ import { Line2 } from "three/examples/jsm/lines/webgpu/Line2.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { Line2NodeMaterial } from "three/webgpu";
 import { FNV_OFFSET, hashFloat } from "./hash";
-import { applyEnvelope, type LineModifier } from "./modifiers/modifier";
+import { type LineModifier } from "./modifiers/modifier";
+import { resampleWithS } from "./modifiers/utils";
 import { SmoothModifier } from "./modifiers/smooth";
 import { LineTube, type LineTubeOptions } from "./line-tube";
+import { LineDebugMarkers } from "./line-debug-markers";
+import { getPolylinePointTs, ResolvedLine } from "./resolved-line";
+
+// Segments in the stable resampling grid the modifier stack folds over (129 points). Dense enough for
+// smooth perturbations and fine range boundaries; the coil supersamples its own body beyond this.
+const RESOLVE_GRID_SEGMENTS = 128;
 
 export type GraphLineStyle = "normal" | "dashed";
 
@@ -26,9 +33,6 @@ export type GraphLineOptions = {
   thickness?: number;
   tube?: LineTubeOptions;
 };
-
-const DEBUG_POINT_RADIUS = 0.055;
-const DEBUG_POINT_SCREEN_RADIUS = 0.0047;
 
 // A line's connection to the rest of the tree. The world assembler (`VirtualLine.worldPoints`) is
 // the ONLY producer of world-space points, and it always re-bases the pivot onto `anchor()`, so a
@@ -95,6 +99,12 @@ export class VirtualLine {
     return this.worldPoints();
   }
 
+  // The single resolved form both the fat-line geometry and every debug dot read (same array, same
+  // `pointAt`, same `drawable` gate), so a dot is the line's own data by construction and cannot drift.
+  getResolved(): ResolvedLine {
+    return new ResolvedLine(this.worldPoints());
+  }
+
   getPointAt(t: number): THREE.Vector3 {
     return sampleAt(this.worldPoints(), clamp01(t));
   }
@@ -139,13 +149,21 @@ export class VirtualLine {
       : this.placeRest(attachment);
     this.cachedRest = rest;
 
-    let world = rest.map((point) => point.clone());
-    for (const modifier of this.modifiers) {
-      if (modifier.enabled) {
-        const input = world;
-        const output = modifier.apply(input);
-        world = applyEnvelope(input, output, modifier.envelope);
+    // Resample the rest shape to a stable dense grid carrying the material coordinate `s` (arc-length
+    // fraction of the rest line), then fold each enabled modifier over it. Modifiers read `s` (not the
+    // index), so a modifier's range addresses the same physical span regardless of what earlier
+    // modifiers did to the shape or point count. Lines with no modifiers keep their authored points.
+    let world: THREE.Vector3[];
+    if (this.modifiers.some((modifier) => modifier.enabled)) {
+      let masked = resampleWithS(rest, RESOLVE_GRID_SEGMENTS);
+      for (const modifier of this.modifiers) {
+        if (modifier.enabled) {
+          masked = modifier.applyMasked(masked);
+        }
       }
+      world = masked.points;
+    } else {
+      world = rest.map((point) => point.clone());
     }
 
     if (world.length > 0) {
@@ -178,23 +196,13 @@ export class VirtualLine {
 export class GraphLineVisual {
   readonly object = new THREE.Group();
 
-  private readonly debugGeometry = new THREE.SphereGeometry(DEBUG_POINT_RADIUS, 16, 12);
-  private readonly debugMaterial = new THREE.MeshBasicMaterial({
-    color: 0xffffff,
-    depthTest: false,
-    depthWrite: false,
-  });
-  private readonly debugPoint = new THREE.Mesh(this.debugGeometry, this.debugMaterial);
-  private readonly linePointDebugMaterial = new THREE.MeshBasicMaterial({
-    color: 0xfff06a,
-    depthTest: false,
-    depthWrite: false,
-  });
-  private readonly linePointDebugMarkers: THREE.Mesh[] = [];
+  // Every debug/control dot for this line lives inside `debug`. It can only place a dot as a point on the
+  // resolved line (or hide it), so a dot can never render off the graph.
+  private readonly debug = new LineDebugMarkers();
   private geometry = new LineGeometry();
-  // Segment count of the geometry currently on `this.line`, so we can detect when the instanced
-  // fat-line buffer needs to grow/shrink (see `setGeometryPoints`). -1 until the first draw.
-  private drawnSegmentCount = -1;
+  // Content hash of the points currently uploaded to `this.geometry`, so we can detect when the drawn
+  // shape actually changed and rebuild the fat-line geometry (see `setGeometry`). -1 until the first draw.
+  private drawnPointsHash = -1;
   // Drawn as an always-visible overlay: depthTest off + a high renderOrder so the line
   // skeleton shows through the surface mesh regardless of camera angle.
   private readonly material = new Line2NodeMaterial({
@@ -207,14 +215,13 @@ export class GraphLineVisual {
 
   constructor(private readonly lineState: GraphLine) {
     this.object.add(this.line);
-    this.object.add(this.debugPoint);
+    this.object.add(this.debug.object);
 
     if (this.lineState.tube) {
       this.object.add(this.lineState.tube.object);
     }
 
     this.line.renderOrder = 9;
-    this.debugPoint.renderOrder = 10;
     this.updateDrawing();
   }
 
@@ -232,16 +239,21 @@ export class GraphLineVisual {
       mat.resolution.copy(viewportSize);
     }
 
-    this.debugMaterial.color.set(this.lineState.color);
-    this.debugPoint.visible = this.lineState.debugPointVisible;
-    this.debugPoint.position.copy(this.lineState.getPointAt(this.lineState.debugT));
-    this.updateDebugPointScale(camera);
-
-    const drawPoints = this.lineState.virtual.getDrawPoints();
-    this.updateLinePointDebugMarkers(drawPoints, camera);
-    this.setGeometryPoints(drawPoints);
-    this.lineState.tube?.update(drawPoints);
-    this.lineState.geometryHash = computeGeometryHash(drawPoints, this.lineState.tube);
+    // One resolved model feeds both instruments: the fat-line geometry and every debug dot read the same
+    // `points`, the same `pointAt`, and the same `drawable` gate — so a dot is the line's own data and
+    // cannot drift off it.
+    const resolved = this.lineState.virtual.getResolved();
+    this.setGeometry(resolved);
+    this.debug.sync(resolved, {
+      debugT: this.lineState.debugT,
+      debugPointVisible: this.lineState.debugPointVisible,
+      linePointsVisible: this.lineState.debugLinePointsVisible,
+      authoredPoints: this.lineState.points,
+      color: this.lineState.color,
+      camera,
+    });
+    this.lineState.tube?.update(resolved.points as THREE.Vector3[]);
+    this.lineState.geometryHash = computeGeometryHash(resolved.points, this.lineState.tube);
 
     if (this.lineState.style === "dashed") {
       this.line.computeLineDistances();
@@ -252,20 +264,13 @@ export class GraphLineVisual {
   // and `updateDrawing` was skipped this frame. Reuses the marker positions set by the last full draw — no
   // geometry/modifier work.
   refreshCameraScale(camera?: THREE.Camera): void {
-    this.updateDebugPointScale(camera);
-
-    if (this.lineState.debugLinePointsVisible) {
-      for (const marker of this.linePointDebugMarkers) {
-        if (marker.visible) {
-          this.updateMarkerScale(marker, camera);
-        }
-      }
-    }
+    this.debug.rescale(camera);
   }
 
   dispose(): void {
     this.object.remove(this.line);
-    this.object.remove(this.debugPoint);
+    this.object.remove(this.debug.object);
+    this.debug.dispose();
 
     if (this.lineState.tube) {
       this.object.remove(this.lineState.tube.object);
@@ -274,131 +279,41 @@ export class GraphLineVisual {
 
     this.geometry.dispose();
     this.material.dispose();
-    this.debugGeometry.dispose();
-    this.debugMaterial.dispose();
-    this.linePointDebugMaterial.dispose();
   }
 
-  private updateDebugPointScale(camera?: THREE.Camera): void {
-    if (!camera) {
-      this.debugPoint.scale.setScalar(1);
-      return;
-    }
-
-    if (camera instanceof THREE.PerspectiveCamera) {
-      const distance = camera.position.distanceTo(this.debugPoint.getWorldPosition(_worldPosition));
-      const visibleHeight =
-        2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) * distance;
-      this.debugPoint.scale.setScalar(
-        (visibleHeight * DEBUG_POINT_SCREEN_RADIUS) / DEBUG_POINT_RADIUS,
-      );
-      return;
-    }
-
-    if (camera instanceof THREE.OrthographicCamera) {
-      const visibleHeight = (camera.top - camera.bottom) / camera.zoom;
-      this.debugPoint.scale.setScalar(
-        (visibleHeight * DEBUG_POINT_SCREEN_RADIUS) / DEBUG_POINT_RADIUS,
-      );
-      return;
-    }
-
-    this.debugPoint.scale.setScalar(1);
-  }
-
-  private setGeometryPoints(points: THREE.Vector3[]): void {
-    if (points.length < 2) {
+  private setGeometry(resolved: ResolvedLine): void {
+    // Same existence gate the dots use (`resolved.drawable`): no span to draw ⇒ the line hides, and so do
+    // its dots (in `debug.sync`) — one condition, one fate, no origin fallback.
+    if (!resolved.drawable) {
       this.line.visible = false;
       return;
     }
 
     this.line.visible = true;
 
+    const points = resolved.points;
+
+    // Only rebuild when the drawn shape actually changed.
+    const hash = computeGeometryHash(points);
+    if (hash === this.drawnPointsHash) {
+      return;
+    }
+    this.drawnPointsHash = hash;
+
     // The fat line is instanced: one instance per segment, backed by an `instanceStart`/`instanceEnd`
-    // buffer that `setFromPoints` reallocates on every call. When the segment count GROWS on a reused
-    // `LineGeometry` (e.g. the coil modifier densifies a 12-point line into 64 segments), the WebGPU
-    // renderer can keep the previous, smaller instance buffer bound while `geometry.instanceCount`
-    // already reflects the larger count — raising "Instance range ... requires a larger buffer than
-    // the bound buffer size" and invalidating the whole command buffer (rendering stops). Swapping in
-    // a fresh geometry whenever the segment count changes bumps `geometry.id`, and the renderer's
-    // geometry-id check is the one cache-invalidation path that is never missed, so it always rebinds
-    // the correctly sized buffer.
-    const segmentCount = points.length - 1;
-    if (segmentCount !== this.drawnSegmentCount) {
-      const previous = this.geometry;
-      this.geometry = new LineGeometry();
-      this.line.geometry = this.geometry;
-      previous.dispose();
-      this.drawnSegmentCount = segmentCount;
-    }
-
-    this.geometry.setFromPoints(points);
+    // buffer. A REUSED `LineGeometry` does not reliably re-upload that buffer on the WebGPU backend —
+    // updating it in place with `setFromPoints` leaves the GPU drawing the PREVIOUS shape (so dragging a
+    // coil/twist slider freezes the rendered line while its debug dots move to the new shape), and when
+    // the segment count grows it can even bind a too-small buffer ("Instance range ... requires a larger
+    // buffer", which invalidates the command buffer). Swapping in a FRESH geometry bumps `geometry.id`,
+    // the one cache-invalidation the renderer never misses, so the line always reflects `points`.
+    // `setFromPoints` reads the array without mutating it; the resolved points stay the single source.
+    const previous = this.geometry;
+    this.geometry = new LineGeometry();
+    this.geometry.setFromPoints(points as THREE.Vector3[]);
     this.geometry.computeBoundingSphere();
-  }
-
-  private updateLinePointDebugMarkers(
-    drawPoints: THREE.Vector3[],
-    camera?: THREE.Camera,
-  ): void {
-    const points = this.lineState.points;
-    const pointTs = getPolylinePointTs(points);
-    this.syncLinePointDebugMarkerCount(points.length);
-
-    for (let index = 0; index < this.linePointDebugMarkers.length; index += 1) {
-      const marker = this.linePointDebugMarkers[index];
-      marker.visible = this.lineState.debugLinePointsVisible;
-
-      if (!marker.visible) {
-        continue;
-      }
-
-      marker.position.copy(getLinearPointAt(drawPoints, pointTs[index]));
-      this.updateMarkerScale(marker, camera);
-    }
-  }
-
-  private syncLinePointDebugMarkerCount(count: number): void {
-    while (this.linePointDebugMarkers.length < count) {
-      const marker = new THREE.Mesh(this.debugGeometry, this.linePointDebugMaterial);
-      marker.renderOrder = 11;
-      this.linePointDebugMarkers.push(marker);
-      this.object.add(marker);
-    }
-
-    while (this.linePointDebugMarkers.length > count) {
-      const marker = this.linePointDebugMarkers.pop();
-
-      if (marker) {
-        this.object.remove(marker);
-      }
-    }
-  }
-
-  private updateMarkerScale(marker: THREE.Mesh, camera?: THREE.Camera): void {
-    if (!camera) {
-      marker.scale.setScalar(1);
-      return;
-    }
-
-    if (camera instanceof THREE.PerspectiveCamera) {
-      const distance = camera.position.distanceTo(marker.getWorldPosition(_worldPosition));
-      const visibleHeight =
-        2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) * distance;
-      marker.scale.setScalar(
-        (visibleHeight * DEBUG_POINT_SCREEN_RADIUS) / DEBUG_POINT_RADIUS,
-      );
-      return;
-    }
-
-    if (camera instanceof THREE.OrthographicCamera) {
-      const visibleHeight = (camera.top - camera.bottom) / camera.zoom;
-      marker.scale.setScalar(
-        (visibleHeight * DEBUG_POINT_SCREEN_RADIUS) / DEBUG_POINT_RADIUS,
-      );
-      return;
-    }
-
-    marker.scale.setScalar(1);
+    this.line.geometry = this.geometry;
+    previous.dispose();
   }
 }
 
@@ -533,7 +448,7 @@ export class GraphLine {
 // Hash everything about a line the mesher consumes: the drawn centerline plus the tube's radius
 // profile (radius/tipScale/curve) and sampling density. Visual-only fields (color, opacity,
 // segments, thickness) are excluded — they don't change the surface.
-function computeGeometryHash(points: THREE.Vector3[], tube?: LineTube): number {
+function computeGeometryHash(points: readonly THREE.Vector3[], tube?: LineTube): number {
   let hash = FNV_OFFSET;
 
   for (const point of points) {
@@ -579,28 +494,3 @@ function getLinearPointAt(points: THREE.Vector3[], t: number): THREE.Vector3 {
   return start.clone().lerp(end, segmentT);
 }
 
-function getPolylinePointTs(points: THREE.Vector3[]): number[] {
-  if (points.length === 0) {
-    return [];
-  }
-
-  if (points.length === 1) {
-    return [0];
-  }
-
-  const distances = [0];
-
-  for (let index = 1; index < points.length; index += 1) {
-    distances[index] = distances[index - 1] + points[index - 1].distanceTo(points[index]);
-  }
-
-  const totalDistance = distances[distances.length - 1];
-
-  if (totalDistance <= 1e-6) {
-    return points.map((_point, index) => index / Math.max(points.length - 1, 1));
-  }
-
-  return distances.map((distance) => distance / totalDistance);
-}
-
-const _worldPosition = new THREE.Vector3();

@@ -1,8 +1,10 @@
 import * as THREE from "three";
 import {
-  createDefaultEnvelope,
+  createDefaultMask,
   type LineModifier,
-  type ModifierEnvelope,
+  type MaskedLine,
+  maskWeight,
+  type ModifierMask,
   type SeededModifierParams,
 } from "./modifier";
 import {
@@ -24,13 +26,13 @@ export type GnarlModifierParams = SeededModifierParams & {
 
 export type GnarlModifierOptions = Partial<GnarlModifierParams> & {
   enabled?: boolean;
-  envelope?: ModifierEnvelope;
+  mask?: ModifierMask;
 };
 
 export class GnarlModifier implements LineModifier<GnarlModifierParams> {
   readonly name = "gnarl";
   enabled: boolean;
-  envelope: ModifierEnvelope;
+  mask: ModifierMask;
   params: GnarlModifierParams;
 
   constructor({
@@ -38,14 +40,14 @@ export class GnarlModifier implements LineModifier<GnarlModifierParams> {
     amount = 1,
     cycles = 1.6,
     enabled = true,
-    envelope = createDefaultEnvelope(),
     lockX = false,
     lockY = false,
     lockZ = false,
+    mask = createDefaultMask(),
     seed = 73192,
   }: GnarlModifierOptions = {}) {
     this.enabled = enabled;
-    this.envelope = envelope;
+    this.mask = mask;
     this.params = {
       amplitude,
       amount,
@@ -57,9 +59,11 @@ export class GnarlModifier implements LineModifier<GnarlModifierParams> {
     };
   }
 
-  apply(points: THREE.Vector3[]): THREE.Vector3[] {
+  applyMasked(input: MaskedLine): MaskedLine {
+    const { points, s } = input;
+
     if (points.length < 2 || this.params.amount <= 0 || this.params.amplitude <= 0) {
-      return points.map((point) => point.clone());
+      return { points: points.map((point) => point.clone()), s };
     }
 
     const first = points[0];
@@ -68,7 +72,7 @@ export class GnarlModifier implements LineModifier<GnarlModifierParams> {
     const length = axis.length();
 
     if (length <= 1e-6) {
-      return points.map((point) => point.clone());
+      return { points: points.map((point) => point.clone()), s };
     }
 
     axis.normalize();
@@ -77,13 +81,21 @@ export class GnarlModifier implements LineModifier<GnarlModifierParams> {
     const phase = seededRandom(this.params.seed ^ 0x9e3779b1) * 64;
     const amplitude = this.params.amplitude * this.params.amount * length;
 
-    return points.map((point, index) => {
-      const t = index / (points.length - 1);
+    // Additive perturbation: displace each point off the axis by a masked amount. Outside the mask range
+    // the weight is 0 → the point is unchanged, so gnarl composes with other modifiers instead of
+    // cancelling. `anchorRampWeight(t)` keeps the base joint kink-free when the range touches s = 0.
+    const output = points.map((point, index) => {
+      const t = s[index];
+      const weight = maskWeight(t, this.mask) * anchorRampWeight(t);
+
+      if (weight <= 0) {
+        return point.clone();
+      }
+
       const angleNoise = noise(t * this.params.cycles + phase);
       const radiusNoise = 0.65 + 0.35 * noise(t * this.params.cycles * 1.37 + phase + 17.23);
       const angle = angleNoise * Math.PI * 2;
-      // Ramp displacement in from the anchor so the base-pinned point 0 doesn't kink.
-      const magnitude = amplitude * radiusNoise * anchorRampWeight(t);
+      const magnitude = amplitude * radiusNoise * weight;
 
       const delta = new THREE.Vector3()
         .addScaledVector(sideA, Math.cos(angle) * magnitude)
@@ -95,5 +107,7 @@ export class GnarlModifier implements LineModifier<GnarlModifierParams> {
 
       return point.clone().add(delta);
     });
+
+    return { points: output, s };
   }
 }

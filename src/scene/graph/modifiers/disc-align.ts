@@ -1,10 +1,11 @@
 import * as THREE from "three";
 import {
-  createDefaultEnvelope,
+  createDefaultMask,
   type LineModifier,
-  type ModifierEnvelope,
+  type MaskedLine,
+  type ModifierMask,
 } from "./modifier";
-import { makePerpendicularBasis, sampleByArcLength } from "./utils";
+import { makePerpendicularBasis, sampleSWithArcLength } from "./utils";
 
 export type DiscAlignModifierParams = {
   clearance: number; // the tube radius the discs must clear (injected per line by the tree)
@@ -14,7 +15,7 @@ export type DiscAlignModifierParams = {
 
 export type DiscAlignModifierOptions = Partial<DiscAlignModifierParams> & {
   enabled?: boolean;
-  envelope?: ModifierEnvelope;
+  mask?: ModifierMask;
 };
 
 /**
@@ -23,23 +24,23 @@ export type DiscAlignModifierOptions = Partial<DiscAlignModifierParams> & {
  * line to a uniform spacing and hard-clamp the turn per step to
  * `θmax = 2·asin(min(1, s / (2·K·clearance)))`, guaranteeing the discrete radius of curvature
  * `s / (2·sin(θ/2)) >= K·clearance` — i.e. the perpendicular discs can never cross on a bend. This
- * is a mathematical limit, not a relax pass.
+ * is a mesh-safety pass meant to run last on the full line; its default mask is the whole range.
  */
 export class DiscAlignModifier implements LineModifier<DiscAlignModifierParams> {
   readonly name = "discAlign";
   enabled: boolean;
-  envelope: ModifierEnvelope;
+  mask: ModifierMask;
   params: DiscAlignModifierParams;
 
   constructor({
     clearance = 0,
     enabled = true,
-    envelope = createDefaultEnvelope(),
+    mask = createDefaultMask(),
     safety = 1.1,
     spacing = 0,
   }: DiscAlignModifierOptions = {}) {
     this.enabled = enabled;
-    this.envelope = envelope;
+    this.mask = mask;
     this.params = {
       clearance,
       safety,
@@ -47,26 +48,32 @@ export class DiscAlignModifier implements LineModifier<DiscAlignModifierParams> 
     };
   }
 
-  apply(points: THREE.Vector3[]): THREE.Vector3[] {
+  applyMasked(input: MaskedLine): MaskedLine {
+    const { points, s } = input;
+
     if (points.length < 2) {
-      return points.map((point) => point.clone());
+      return { points: points.map((point) => point.clone()), s };
     }
 
     let total = 0;
     for (let index = 1; index < points.length; index += 1) {
       total += points[index - 1].distanceTo(points[index]);
     }
-
     if (total <= 1e-6) {
-      return points.map((point) => point.clone());
+      return { points: points.map((point) => point.clone()), s };
     }
 
-    // Uniform resample so the curvature test has a constant step.
-    const segments =
-      this.params.spacing > 1e-4
-        ? THREE.MathUtils.clamp(Math.round(total / this.params.spacing), 4, 512)
-        : Math.max(points.length - 1, 8);
-    const resampled = sampleByArcLength(points, segments);
+    // Uniform resample (carrying s) so the curvature test has a constant step. Never resample COARSER
+    // than the incoming segmentation: `spacing` (the mesher's ring density, injected by assignTubes) would
+    // otherwise downsample smooth's curve, and the clamp — running on that coarse step — would facet a
+    // tight bend (e.g. a root's base corner) into a few hard-angled chords instead of a smooth arc. The
+    // mesher resamples every line to its own ring density independently (graph-adapter buildLineChain), so
+    // keeping the fine density here is free for the mesh — it just feeds it a smoother curve to sample.
+    const requested =
+      this.params.spacing > 1e-4 ? Math.round(total / this.params.spacing) : points.length - 1;
+    const segments = THREE.MathUtils.clamp(Math.max(requested, points.length - 1), 4, 512);
+    const resampled = sampleSWithArcLength(points, s, segments);
+    const resampledPoints = resampled.points;
     const step = total / segments;
 
     const clearance = this.params.clearance;
@@ -74,17 +81,16 @@ export class DiscAlignModifier implements LineModifier<DiscAlignModifierParams> 
       return resampled;
     }
 
-    // Hard limit on the turn per step from the local-reach condition.
     const safety = Math.max(this.params.safety, 1e-3);
     const sinHalf = THREE.MathUtils.clamp(step / (2 * safety * clearance), 0, 1);
     const maxTurn = 2 * Math.asin(sinHalf);
 
-    const result: THREE.Vector3[] = [resampled[0].clone()];
-    let heading = resampled[1].clone().sub(resampled[0]).normalize();
-    result.push(resampled[0].clone().addScaledVector(heading, step));
+    const result: THREE.Vector3[] = [resampledPoints[0].clone()];
+    let heading = resampledPoints[1].clone().sub(resampledPoints[0]).normalize();
+    result.push(resampledPoints[0].clone().addScaledVector(heading, step));
 
     for (let index = 1; index < segments; index += 1) {
-      const desired = resampled[index + 1].clone().sub(resampled[index]);
+      const desired = resampledPoints[index + 1].clone().sub(resampledPoints[index]);
 
       if (desired.lengthSq() > 1e-12) {
         desired.normalize();
@@ -105,6 +111,6 @@ export class DiscAlignModifier implements LineModifier<DiscAlignModifierParams> 
       result.push(result[index].clone().addScaledVector(heading, step));
     }
 
-    return result;
+    return { points: result, s: resampled.s };
   }
 }

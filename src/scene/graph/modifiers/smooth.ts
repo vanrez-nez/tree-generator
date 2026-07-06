@@ -1,9 +1,12 @@
 import * as THREE from "three";
 import {
-  createDefaultEnvelope,
+  createDefaultMask,
   type LineModifier,
-  type ModifierEnvelope,
+  type MaskedLine,
+  maskWeight,
+  type ModifierMask,
 } from "./modifier";
+import { sampleSWithArcLength } from "./utils";
 
 export type SmoothMode = "laplacian" | "spline";
 
@@ -16,25 +19,25 @@ export type SmoothModifierParams = {
 
 export type SmoothModifierOptions = Partial<SmoothModifierParams> & {
   enabled?: boolean;
-  envelope?: ModifierEnvelope;
+  mask?: ModifierMask;
 };
 
 export class SmoothModifier implements LineModifier<SmoothModifierParams> {
   readonly name = "smooth";
   enabled: boolean;
-  envelope: ModifierEnvelope;
+  mask: ModifierMask;
   params: SmoothModifierParams;
 
   constructor({
     enabled = true,
-    envelope = createDefaultEnvelope(),
     iterations = 1,
+    mask = createDefaultMask(),
     mode = "laplacian",
     segments = 16,
     strength = 0.5,
   }: SmoothModifierOptions = {}) {
     this.enabled = enabled;
-    this.envelope = envelope;
+    this.mask = mask;
     this.params = {
       iterations,
       mode,
@@ -43,111 +46,38 @@ export class SmoothModifier implements LineModifier<SmoothModifierParams> {
     };
   }
 
-  apply(points: THREE.Vector3[]): THREE.Vector3[] {
-    if (this.params.mode === "spline") {
-      return this.applySpline(points);
+  applyMasked(input: MaskedLine): MaskedLine {
+    if (input.points.length < 2) {
+      return { points: input.points.map((point) => point.clone()), s: input.s };
     }
 
-    return this.applyLaplacian(points);
-  }
+    // Resample by arc length (carrying s), then smooth. The smoothing amount is scaled by the mask, so
+    // smoothing can be scoped to a span; outside the range the resampled point passes through unchanged.
+    const segments = Math.max(1, Math.floor(this.params.segments));
+    const { points, s } = sampleSWithArcLength(input.points, input.s, segments);
 
-  private applySpline(points: THREE.Vector3[]): THREE.Vector3[] {
-    if (points.length < 2) {
-      return points.map((point) => point.clone());
+    if (this.params.mode === "spline" && points.length >= 3) {
+      const curve = new THREE.CatmullRomCurve3(points);
+      const output = points.map((point, index) => {
+        const target = curve.getPoint(index / (points.length - 1));
+        return point.clone().lerp(target, maskWeight(s[index], this.mask));
+      });
+      return { points: output, s };
     }
 
-    const steps = Math.max(1, Math.floor(this.params.segments));
-
-    if (points.length < 3) {
-      return samplePolyline(points, steps);
-    }
-
-    const curve = new THREE.CatmullRomCurve3(points);
-    const splinePoints: THREE.Vector3[] = [];
-
-    for (let step = 0; step <= steps; step += 1) {
-      splinePoints.push(curve.getPoint(step / steps));
-    }
-
-    return splinePoints;
-  }
-
-  private applyLaplacian(points: THREE.Vector3[]): THREE.Vector3[] {
-    if (points.length < 2) {
-      return points.map((point) => point.clone());
-    }
-
-    let smoothedPoints = samplePolyline(
-      points,
-      Math.max(1, Math.floor(this.params.segments)),
-    );
-
-    if (smoothedPoints.length < 3) {
-      return smoothedPoints;
-    }
-
+    let smoothed = points.map((point) => point.clone());
     const iterations = Math.max(1, Math.floor(this.params.iterations));
     const strength = THREE.MathUtils.clamp(this.params.strength, 0, 1);
 
     for (let iteration = 0; iteration < iterations; iteration += 1) {
-      const nextPoints = smoothedPoints.map((point) => point.clone());
-
-      for (let index = 1; index < smoothedPoints.length - 1; index += 1) {
-        const average = smoothedPoints[index - 1]
-          .clone()
-          .add(smoothedPoints[index + 1])
-          .multiplyScalar(0.5);
-        nextPoints[index].lerp(average, strength);
+      const next = smoothed.map((point) => point.clone());
+      for (let index = 1; index < smoothed.length - 1; index += 1) {
+        const average = smoothed[index - 1].clone().add(smoothed[index + 1]).multiplyScalar(0.5);
+        next[index].lerp(average, strength * maskWeight(s[index], this.mask));
       }
-
-      smoothedPoints = nextPoints;
+      smoothed = next;
     }
 
-    return smoothedPoints;
+    return { points: smoothed, s };
   }
-}
-
-function samplePolyline(points: THREE.Vector3[], segments: number): THREE.Vector3[] {
-  const cumulativeLengths = [0];
-
-  for (let index = 1; index < points.length; index += 1) {
-    cumulativeLengths[index] =
-      cumulativeLengths[index - 1] + points[index - 1].distanceTo(points[index]);
-  }
-
-  const totalLength = cumulativeLengths[cumulativeLengths.length - 1];
-
-  if (totalLength <= 1e-6) {
-    return points.map((point) => point.clone());
-  }
-
-  const samples: THREE.Vector3[] = [];
-
-  for (let step = 0; step <= segments; step += 1) {
-    samples.push(sampleAtDistance(points, cumulativeLengths, totalLength * (step / segments)));
-  }
-
-  return samples;
-}
-
-function sampleAtDistance(
-  points: THREE.Vector3[],
-  cumulativeLengths: number[],
-  distance: number,
-): THREE.Vector3 {
-  const lastIndex = points.length - 1;
-  let index = 0;
-
-  while (index < lastIndex - 1 && cumulativeLengths[index + 1] < distance) {
-    index += 1;
-  }
-
-  const segmentLength = Math.max(1e-9, cumulativeLengths[index + 1] - cumulativeLengths[index]);
-  const localT = THREE.MathUtils.clamp(
-    (distance - cumulativeLengths[index]) / segmentLength,
-    0,
-    1,
-  );
-
-  return points[index].clone().lerp(points[index + 1], localT);
 }

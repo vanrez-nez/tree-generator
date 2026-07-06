@@ -8,7 +8,7 @@ import type {
 import { FNV_OFFSET, hashFloat, hashInt, hashString } from "./hash";
 import { Joint } from "./joint";
 import { beginWorldFrame, GraphLine, type GraphLineOptions } from "./line";
-import type { LineModifier } from "./modifiers/modifier";
+import { envelopeToMask, type LineModifier } from "./modifiers/modifier";
 import { CoilModifier } from "./modifiers/coil";
 import { DiscAlignModifier } from "./modifiers/disc-align";
 import { FootAlignModifier } from "./modifiers/foot-align";
@@ -201,7 +201,7 @@ export class Graph {
       for (const modifier of line.modifiers) {
         hash = hashInt(hash, modifier.enabled ? 1 : 0);
         hash = hashString(hash, JSON.stringify(modifier.params));
-        hash = hashString(hash, JSON.stringify(modifier.envelope));
+        hash = hashString(hash, JSON.stringify(modifier.mask));
       }
     }
 
@@ -293,7 +293,7 @@ function createModifier(modifierDocument: ModifierDocument): LineModifier {
     return new SmoothModifier({
       ...modifierDocument.params,
       enabled: modifierDocument.enabled,
-      envelope: modifierDocument.envelope,
+      mask: modifierDocument.mask ?? envelopeToMask(modifierDocument.envelope),
     });
   }
 
@@ -301,7 +301,7 @@ function createModifier(modifierDocument: ModifierDocument): LineModifier {
     return new GnarlModifier({
       ...modifierDocument.params,
       enabled: modifierDocument.enabled,
-      envelope: modifierDocument.envelope,
+      mask: modifierDocument.mask ?? envelopeToMask(modifierDocument.envelope),
     });
   }
 
@@ -309,7 +309,7 @@ function createModifier(modifierDocument: ModifierDocument): LineModifier {
     return new TwistModifier({
       ...modifierDocument.params,
       enabled: modifierDocument.enabled,
-      envelope: modifierDocument.envelope,
+      mask: modifierDocument.mask ?? envelopeToMask(modifierDocument.envelope),
     });
   }
 
@@ -317,7 +317,7 @@ function createModifier(modifierDocument: ModifierDocument): LineModifier {
     return new CoilModifier({
       ...modifierDocument.params,
       enabled: modifierDocument.enabled,
-      envelope: modifierDocument.envelope,
+      mask: modifierDocument.mask ?? envelopeToMask(modifierDocument.envelope),
     });
   }
 
@@ -325,13 +325,13 @@ function createModifier(modifierDocument: ModifierDocument): LineModifier {
     return new FootAlignModifier({
       ...modifierDocument.params,
       enabled: modifierDocument.enabled,
-      envelope: modifierDocument.envelope,
+      mask: modifierDocument.mask ?? envelopeToMask(modifierDocument.envelope),
     });
   }
 
   return new DiscAlignModifier({
     ...modifierDocument.params,
     enabled: modifierDocument.enabled,
-    envelope: modifierDocument.envelope,
+    mask: modifierDocument.mask ?? envelopeToMask(modifierDocument.envelope),
   });
 }
