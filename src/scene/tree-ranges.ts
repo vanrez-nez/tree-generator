@@ -31,7 +31,7 @@ export const RANGES = {
   branchL3: { min: 0, max: 5, step: 1, randMin: 0, randMax: 2 }, // L3 children per parent
 
   // Root topology.
-  rootLevels: { min: 1, max: 3, step: 1, randMin: 1, randMax: 2 },
+  rootLevels: { min: 1, max: 3, step: 1, randMin: 1, randMax: 1 },
   rootL2: { min: 0, max: 5, step: 1, randMin: 1, randMax: 3 },
   rootL3: { min: 0, max: 5, step: 1, randMin: 0, randMax: 2 },
 
@@ -49,9 +49,15 @@ export const RANGES = {
   rootRadius: { min: 0.2, max: 0.7, step: 0.01, randMin: 0.4, randMax: 0.6 },
   rootHeight: { min: 0, max: 0.5, step: 0.01, randMin: 0, randMax: 0.08 }, // trunk fraction roots attach
   rootLength: { min: 0.5, max: 3, step: 0.05, randMin: 1.2, randMax: 2.4 },
-  rootDownAngle: { min: 0, max: 90, step: 5, randMin: 0, randMax: 30 },
-  rootDownCurve: { min: 0, max: 90, step: 5, randMin: 0, randMax: 35 },
+  rootDownAngle: { min: -90, max: 90, step: 5, randMin: -10, randMax: 5 }, // <0 tilts the flare up
+  rootDownCurve: { min: -90, max: 90, step: 5, randMin: -10, randMax: 10 }, // <0 curves the flare up
   maxRoots: { min: 0, max: 16, step: 1, randMin: 5, randMax: 10 },
   rootSeparation: { min: 0, max: 2, step: 0.05, randMin: 0.4, randMax: 1 },
   rootLSmooth: { min: 0, max: 1, step: 0.05, randMin: 0.3, randMax: 0.8 },
+
+  // Trunk crown coil (curls the top 20% of the trunk into a scroll). Appended last so the code grid
+  // grows here; turns = 0 or amount = 0 disables the coil (identity), so Random can roll it off.
+  trunkCoilTurns: { min: 0, max: 1, step: 0.05, randMin: 0, randMax: 1 },
+  trunkCoilAmount: { min: 0, max: 1, step: 0.05, randMin: 0, randMax: 1 },
+  trunkCoilBias: { min: 0, max: 2, step: 0.05, randMin: 0, randMax: 2 },
 } satisfies Record<string, Range>;

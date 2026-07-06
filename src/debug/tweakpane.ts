@@ -462,6 +462,11 @@ export function setupTweakpane({
     addFormBinding(shape, "branchLean2", "lean L2");
     addFormBinding(shape, "branchLean3", "lean L3");
 
+    const trunkCoil = folder.addFolder({ title: "Trunk coil", expanded: false });
+    addFormBinding(trunkCoil, "trunkCoilTurns", "turns");
+    addFormBinding(trunkCoil, "trunkCoilAmount", "amount");
+    addFormBinding(trunkCoil, "trunkCoilBias", "bias");
+
     folder.addButton({ title: "Export JSON" }).on("click", () => downloadJson("tree.json", mainScene.getDocument()));
     folder.addButton({ title: "Export OBJ" }).on("click", () => downloadText("tree.obj", mainScene.mesher.toObj()));
   }

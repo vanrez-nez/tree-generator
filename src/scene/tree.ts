@@ -42,11 +42,14 @@ type TreeParams = {
   rootRadius: number; // max disc radius at the root base (decoupled from the branch radiusScale)
   rootHeight: number; // trunk parameter (0..0.5) where roots attach
   rootLength: number; // root polyline length
-  rootDownAngle: number; // initial tilt below horizontal (degrees), outer flare only
-  rootDownCurve: number; // extra downward bend accumulated over the length (degrees), outer flare
+  rootDownAngle: number; // initial tilt below horizontal (degrees), outer flare only; negative tilts up
+  rootDownCurve: number; // bend accumulated over the length (degrees), outer flare; negative curves up
   maxRoots: number; // cap on root count (actual = min(maxRoots, how many fit around the base))
   rootSeparation: number; // inner descent radial offset, relative to trunk radius (0 = centerline)
   rootLSmooth: number; // how rounded the base corner is (0 = sharp L, 1 = smooth)
+  trunkCoilTurns: number; // crown coil winding count (0 = no coil)
+  trunkCoilAmount: number; // crown coil strength multiplier (0 = no coil)
+  trunkCoilBias: number; // crown coil tightness (total radius shrink e^bias)
 };
 
 // Default mesh resolution. Not part of the form/code: it scales vertex density without changing
@@ -88,6 +91,9 @@ function formToParams(form: TreeForm, subdivisions: number): TreeParams {
     maxRoots: form.maxRoots,
     rootSeparation: form.rootSeparation,
     rootLSmooth: form.rootLSmooth,
+    trunkCoilTurns: form.trunkCoilTurns,
+    trunkCoilAmount: form.trunkCoilAmount,
+    trunkCoilBias: form.trunkCoilBias,
   };
 }
 
@@ -246,6 +252,24 @@ function footAnchorMask(): ModifierMask {
   };
 }
 
+// Roots partition into a gnarled shank (0–60%) and a curled scroll tip (60–100%). gnarl acts only on
+// the shank, coil reshapes only the tip. The ranges are disjoint, so gnarl-then-coil composes cleanly:
+// coil's reconstruction rebuilds just its 0.6–1 body, and the gnarled shank is coil's unchanged pre-span.
+// Hard edges (no fade) keep coil on its exact-spiral path for a crisply-nested tip.
+function rootShankMask(): ModifierMask {
+  return { range: { min: 0, max: 0.6 }, fadeIn: 0, fadeOut: 0, curve: [0.5, 0, 0.5, 1] };
+}
+
+function rootScrollMask(): ModifierMask {
+  return { range: { min: 0.6, max: 1 }, fadeIn: 0, fadeOut: 0, curve: [0.5, 0, 0.5, 1] };
+}
+
+// The trunk's crown coil acts on just the top 20% (s 0.8–1), curling the tip into a scroll while the
+// trunk below is untouched. Hard edges keep coil on its exact-spiral path.
+function trunkCrownMask(): ModifierMask {
+  return { range: { min: 0.8, max: 1 }, fadeIn: 0, fadeOut: 0, curve: [0.5, 0, 0.5, 1] };
+}
+
 // The trunk: a single leader from the ground to the tip, gnarled and twisted. Its base point
 // stays anchored at the origin (smooth pins endpoints; gnarl/twist fade in from the foot).
 function buildTrunk(params: TreeParams, rng: Rng): GraphLineDocument {
@@ -260,6 +284,17 @@ function buildTrunk(params: TreeParams, rng: Rng): GraphLineDocument {
         type: "twist",
         mask: footAnchorMask(),
         params: { amount: 0.6, radius: 0.06, turns: 1 },
+      },
+      // Curl the crown (top 20%) into a scroll. Params come from the form (randomizable per tree);
+      // turns/amount = 0 makes it a no-op. Seeded below so the curl plane varies per tree.
+      {
+        type: "coil",
+        mask: trunkCrownMask(),
+        params: {
+          amount: params.trunkCoilAmount,
+          turns: params.trunkCoilTurns,
+          bias: params.trunkCoilBias,
+        },
       },
       // Guarantee the base stands vertical (perpendicular to the floor) regardless of the
       // lean / gnarl / twist above.
@@ -368,8 +403,9 @@ function rootConfig(params: TreeParams): LimbConfig {
     lengthScale: 0.6,
     modifiers: () => [
       { type: "smooth", params: { mode: "laplacian", segments: 12 } },
-      { type: "gnarl", params: { amount: 0.7, amplitude: 0.14, cycles: 1.4 } },
-      { type: "discAlign", params: { safety: 1.1 } },
+      { type: "gnarl", mask: rootShankMask(), params: { amount: 0.7, amplitude: 0.14, cycles: 1.4 } },
+      { type: "coil", mask: rootScrollMask(), params: { amount: 1, turns: 1.5, bias: 1.4 } },
+      { type: "discAlign", params: { safety: 1.1 } }, // mesh safety: clamp the coil eye to the tube radius
     ],
   };
 }
@@ -428,10 +464,16 @@ function buildRoots(
     const azimuth = (index / count) * Math.PI * 2;
     const id = `root-${index}`;
 
+    // smooth lays down the base segmentation; gnarl gnarls the shank (0–60%), coil curls the tip
+    // (60–100%) into a scroll. discAlign runs LAST purely as mesh safety: it clamps the tight coil eye's
+    // curvature to >= the tube radius so the tube can't self-intersect. Seeded per-root so each differs.
     const modifiers: ModifierDocument[] = [
       { type: "smooth", params: { mode: "laplacian", segments: 32, strength: 0.3 } },
+      { type: "gnarl", mask: rootShankMask(), params: { amount: 0.7, amplitude: 0.14, cycles: 1.4 } },
+      { type: "coil", mask: rootScrollMask(), params: { amount: 1, turns: 2, bias: 1.4 } },
       { type: "discAlign", params: { safety: 1.1 } },
     ];
+    seedModifiers(modifiers, rng);
 
     lines.push({
       id,

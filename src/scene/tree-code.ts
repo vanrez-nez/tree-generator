@@ -63,6 +63,9 @@ export const DEFAULT_FORM: TreeForm = {
   maxRoots: 8,
   rootSeparation: 0.6,
   rootLSmooth: 0.5,
+  trunkCoilTurns: 0.5,
+  trunkCoilAmount: 1,
+  trunkCoilBias: 1.4,
 };
 
 const ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
