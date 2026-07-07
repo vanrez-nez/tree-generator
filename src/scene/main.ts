@@ -5,6 +5,8 @@ import { DEFAULT_SUBDIVISIONS, buildTreeDocument } from "./tree";
 import { DEFAULT_FORM, type TreeForm } from "./tree-code";
 import { RootSystem } from "./root-system";
 import { RootCollar, type RootCollarOptions } from "./root-collar";
+import { RootCrossingDebug, type RootCrossingDebugOptions } from "./root-crossing-debug";
+import { extractSliceSegments } from "./root-crossings";
 import { TreeMesher } from "./mesher/tree-mesher";
 import type { MesherOptions } from "./mesher/welding-mesher";
 import { MaterialGraphRuntime } from "material-designer-runtime";
@@ -40,6 +42,12 @@ export class MainScene {
   // in the same debounced pass as the tree surface (see update()).
   readonly collarMaterial = new MaterialGraphRuntime({ source: "collar" });
   private rootCollar!: RootCollar;
+  // Debug overlay: the exact slice outline where the tree mesh crosses the ground (the groove source).
+  private readonly rootCrossingDebug = new RootCrossingDebug();
+  // Shared gate for the slice extraction — drives BOTH the groove bands and the debug outline.
+  private crossingNormalAngle = 20;
+  // Segments from the last collar rebuild, kept so the overlay can redraw without re-extracting.
+  private lastSliceSegments: number[] = [];
 
   // Scene lighting, exposed so the Scene panel can drive intensity/colour live. The flat ambient is kept
   // low — a shared IBL environment (scene.environment, set up in app.ts) provides the fill that gives the
@@ -127,6 +135,9 @@ export class MainScene {
     });
     this.treeMaterial.surface.onTexturesUpdated(() => this.rootCollar.refreshColor());
 
+    // Root-crossing debug circles overlay (hidden until the debug toggle turns it on).
+    this.scene.add(this.rootCrossingDebug.object);
+
     this.addDebugInstrumentation();
   }
 
@@ -200,15 +211,62 @@ export class MainScene {
     this.collarDirty = true;
   }
 
+  // Show/hide the debug slice outline (where the tree mesh crosses the ground — the same segments the
+  // collar's grooves ring). Showing redraws from the segments extracted by the last collar rebuild.
+  setCrossingDebugVisible(visible: boolean): void {
+    this.rootCrossingDebug.setVisible(visible);
+    if (visible) this.rootCrossingDebug.update(this.lastSliceSegments, this.collarGroundHeight);
+  }
+
+  // Tune the crossing detection / overlay live (from the pane). `normalAngle` is the shared gate for
+  // BOTH the outline and the grooves, so changing it schedules a collar rebuild (which re-extracts and
+  // refreshes the overlay); other keys only restyle the overlay.
+  setCrossingDebugOptions(
+    patch: Partial<RootCrossingDebugOptions> & { normalAngle?: number },
+  ): void {
+    const { normalAngle, ...overlayPatch } = patch;
+    if (normalAngle !== undefined) {
+      this.crossingNormalAngle = normalAngle;
+      this.collarDirty = true;
+      return;
+    }
+    this.rootCrossingDebug.setOptions(overlayPatch);
+    if (this.rootCrossingDebug.visible) {
+      this.rootCrossingDebug.update(this.lastSliceSegments, this.collarGroundHeight);
+    }
+  }
+
+  // The deformed terrain height under the tree: the collar mound over the flat floor. Used by the
+  // overlay for the burial veto + seating the outline on the dirt.
+  private readonly collarGroundHeight = (x: number, z: number): number =>
+    this.rootCollar.heightAt(x, z);
+
+  // Read-only handle to the already-built tree surface geometry (for mesh-based detection). No mesher
+  // change — just reads what the mesher already exposes on its public group.
+  private treeSurfaceGeometry(): THREE.BufferGeometry | undefined {
+    const surface = this.mesher.object.getObjectByName("tree-surface") as THREE.Mesh | undefined;
+    return surface?.geometry;
+  }
+
   // Rebuild the collar against the current trunk + root lines (world points valid for this frame).
+  // Extracts the root/floor slice segments from the built tree mesh first — they drive the collar's
+  // groove bands (always) and the debug outline (when shown), so both see the same data.
   private rebuildCollar(): void {
+    this.lastSliceSegments = extractSliceSegments(
+      this.treeSurfaceGeometry(),
+      this.crossingNormalAngle,
+    );
     this.rootCollar.build(
       this.graph.getLineById("trunk"),
       this.graph
         .getLineEntries()
         .filter(({ id }) => /^root-\d+$/.test(id))
         .map(({ line }) => line),
+      this.lastSliceSegments,
     );
+    if (this.rootCrossingDebug.visible) {
+      this.rootCrossingDebug.update(this.lastSliceSegments, this.collarGroundHeight);
+    }
   }
 
   // Repeat the floor material `tiles` times across the plane (scales the uv attribute from the [0,1] base).
@@ -386,7 +444,7 @@ export class MainScene {
       this.mesher.build(this.graph, this.mesherOptions);
       // Re-mound the dirt collar against the freshly resolved roots + trunk base. Reads world
       // polylines valid for this frame (graph.update ran above, or the memoized cache is still good).
-      this.rebuildCollar();
+      this.rebuildCollar(); // also re-extracts slice segments + refreshes the overlay when shown
       this.collarDirty = false;
       this.meshStats.geometryMs = performance.now() - start;
       const { vertices, triangles } = this.mesher.getStats();
@@ -396,8 +454,9 @@ export class MainScene {
       // The surface geometry changed → re-bake the (frozen) shadow map once for the new tree.
       this.requestShadowBake();
     } else if (this.collarDirty) {
-      // Collar-only change (a shaping slider moved): rebuild just the collar (skip the tree mesh), but
-      // still refresh the frozen shadow so the map never lags the collar's footprint at the base.
+      // Collar-only change (a shaping slider moved, or the crossing gate): rebuild just the collar
+      // (skip the tree mesh), but still refresh the frozen shadow so the map never lags the collar's
+      // footprint at the base. rebuildCollar re-extracts segments + refreshes the overlay when shown.
       this.rebuildCollar();
       this.collarDirty = false;
       this.requestShadowBake();

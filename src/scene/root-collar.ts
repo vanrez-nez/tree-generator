@@ -8,15 +8,23 @@ import {
   type ParentSurface,
 } from "./graph/collar";
 import { hashNoise, smoothstep } from "./graph/modifiers/utils";
+import {
+  BURIED_EPS,
+  EMPTY_SLICE_FIELD,
+  buildSliceField,
+  type SliceField,
+} from "./root-crossings";
 
 // The "root collar" is the disturbed soil where the roots meet the floor: a low, cheap radial disc
 // centred on the trunk base. Its height is a smooth DOME (peak at the centre, sloping to the floor at
 // the rim) plus a FILLET where dirt banks up against each root/trunk (from the root-tube SDF in
-// collar.ts, capped so the root still emerges) plus disturbance noise. Two edges are shaped: the outer
-// edge alpha-feathers into the floor (floorBlend), and the inner edges bank up against the roots
+// collar.ts, capped so the root still emerges) plus disturbance noise, plus INDEPENDENT groove bands
+// ringing the root/floor crossing slices (root-crossings.ts). The collar is fully OPAQUE: the outer
+// edge blends into the floor geometrically (height fades to 0 across floorBlend) and by texture (same
+// world-space triplanar projection as the floor) — no alpha; the inner edges bank up against the roots
 // (rootRaise) and soften the collar↔root seam via a contact band (rootEdgeBlend) that darkens (AO,
-// rootEdgeAO) and/or dissolves (alpha, rootEdgeFade) the dirt into the root. It is a separate mesh
-// (blending into the floor texture alone can't add relief) carrying its own dirt material.
+// rootEdgeAO) and bleeds the bark colour in (rootEdgeMix). It is a separate mesh (blending into the
+// floor texture alone can't add relief) carrying its own dirt material.
 //
 // Rebuilt on demand (MainScene): in the tree's debounced pass, and on a cheap collar-only pass when a
 // collar param changes. World space == graph space here (no group transforms), and the trunk base sits
@@ -37,6 +45,15 @@ export interface RootCollarOptions {
   rootEdgeBlend?: number; // band width around a root/trunk surface over which the seam softens
   rootEdgeAO?: number; // 0–1: contact-shadow darkening of the collar toward a root
   rootEdgeMix?: number; // 0–1: how strongly the tree (bark) texture bleeds into the collar at the seam
+  // --- grooves (concentric bands ringing the root/floor crossing slices) ---
+  // INDEPENDENT of the collar's own shaping: driven only by the slice segments (root-crossings.ts) and
+  // these params — the dome/slope/floorBlend/disturbance never scale or fade them.
+  grooveDepth?: number; // ripple amplitude (symmetric ridges + troughs radiating from a crossing)
+  grooveSpacing?: number; // world distance between consecutive bands
+  grooveReach?: number; // how far out from a crossing the bands fade to nothing
+  grooveSharp?: number; // trough carve bias: 1 = symmetric, >1 cuts the troughs deeper than the ridges
+  grooveJitter?: number; // 0–1: band phase irregularity (own seed, independent of `disturbance`)
+  grooveAO?: number; // 0–1: crevice darkening in the band troughs
   // --- extent ---
   reachMargin?: number; // extra radius past the roots' horizontal reach
   minRadius?: number; // floor on the disc radius (roots absent / very short)
@@ -47,7 +64,6 @@ export interface RootCollarOptions {
   ringCount?: number; // concentric rings (radial resolution)
   sectorCount?: number; // vertices per ring (angular resolution)
   radialExponent?: number; // inner-ring bias r_k = innerEnd*(k/K)^exp (near-linear for a smooth dome)
-  rimJitter?: number; // world-space jitter of the alpha-feather rim (breaks the clean circle)
   seed?: number;
 }
 
@@ -62,14 +78,21 @@ const DEFAULTS: Required<RootCollarOptions> = {
   rootEdgeBlend: 0.12,
   rootEdgeAO: 0.5,
   rootEdgeMix: 0.5,
+  grooveDepth: 0.05,
+  grooveSpacing: 0.2,
+  grooveReach: 0.45,
+  grooveSharp: 1.0,
+  grooveJitter: 0.3,
+  grooveAO: 0.5,
   reachMargin: 0.35,
   minRadius: 0.8,
   aboveBand: 0.15,
   belowBand: 0.6,
-  ringCount: 30,
-  sectorCount: 64,
-  radialExponent: 1.15,
-  rimJitter: 0.1,
+  // Groove bands must resolve anywhere on the disc (crossings sit out near the rim), so the radial
+  // spacing is uniform and both resolutions are higher than the old dome-only disc needed.
+  ringCount: 64,
+  sectorCount: 128,
+  radialExponent: 1.0,
   seed: 1337,
 };
 
@@ -90,6 +113,10 @@ export interface TreeColorSource {
 // Reach of the geometric root fillet (dirt banking up against a root), as a fixed distance past the
 // tube surface — the old `rootBlend` knob, folded to a constant since its per-look value added little.
 const FILLET_REACH = 0.3;
+// The groove bands fade out over this fixed band at the disc rim so the collar's outer edge ALWAYS sits
+// exactly on the floor (crossings can lie close to the rim; without this their ridges lift the boundary
+// into floating faces). A constant on purpose — grooves stay independent of the collar's blend params.
+const GROOVE_RIM_FADE = 0.25;
 // Darkest the seam contact-shadow AO can go (floor is 1.0).
 const AO_MIN = 0.3;
 
@@ -109,6 +136,8 @@ export class RootCollar {
   // User-requested visibility (the Floor-tab checkbox). Kept separate so a rebuild never re-shows a
   // collar the user hid — build() only reveals when both this is true AND there's geometry.
   private visibleWanted = true;
+  // Last build's disc reach, kept so heightAt() can sample the mound dome between rebuilds.
+  private lastReach = 0;
 
   constructor(material: THREE.Material, options: RootCollarOptions = {}) {
     this.opts = { ...DEFAULTS, ...options };
@@ -132,9 +161,11 @@ export class RootCollar {
     this.setMaterial(material);
   }
 
-  // Swap in the collar's surface material and (re)apply the alpha feather. Called from the material
-  // runtime's onRebuilt, which hands back a freshly wired MeshStandardNodeMaterial — the offline
-  // backend rebuilds its node graph on refresh, so the opacity feather must be re-attached each time.
+  // Swap in the collar's surface material. Called from the material runtime's onRebuilt, which hands
+  // back a freshly wired MeshStandardNodeMaterial — the offline backend rebuilds its node graph on
+  // refresh, so material tweaks must be re-applied each time. The collar is fully OPAQUE: the rim
+  // blends into the floor geometrically (height fades to 0 via floorCover) and by texture (same
+  // world-space triplanar projection as the floor) — no alpha feather.
   setMaterial(material: THREE.Material): void {
     this.material = material;
     const nodeMat = material as MeshStandardNodeMaterial;
@@ -142,12 +173,9 @@ export class RootCollar {
     // the freshly runtime-built material) so re-mixes always start from the un-wrapped colour.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     this.baseColorNode = (nodeMat as any).colorNode ?? null;
-    // Feather the collar into the floor by the per-vertex `mask` attribute, via a smooth alpha blend
-    // (only the outer rim is transparent; the root seam is handled by the colour mix, not alpha).
-    // depthWrite stays on so the mounds self-occlude and the only thing behind the rim is the floor.
     nodeMat.alphaHash = false;
-    nodeMat.transparent = true;
-    nodeMat.opacityNode = attribute("mask", "float");
+    nodeMat.transparent = false;
+    nodeMat.opacityNode = null;
     // Push the shaded surface slightly back in depth so the wireframe overlay reads on top of it
     // (mirrors the tree surface material).
     nodeMat.polygonOffset = true;
@@ -210,10 +238,14 @@ export class RootCollar {
   }
 
   // Rebuild the collar disc against the current root + trunk geometry. Reads world polylines from the
-  // graph lines (valid for the current frame — never call beginWorldFrame here).
-  build(trunk: GraphLine | undefined, rootLines: GraphLine[]): void {
+  // graph lines (valid for the current frame — never call beginWorldFrame here). `sliceSegments` are the
+  // root/floor crossing slices (root-crossings.ts, already normal-gated) that the groove bands ring —
+  // buried ones (under the mound dome) are vetoed here, where the fresh reach is known.
+  build(trunk: GraphLine | undefined, rootLines: GraphLine[], sliceSegments?: number[]): void {
     const surfaces = this.collectGroundSurfaces(trunk, rootLines);
     const reach = this.computeReach(rootLines);
+    // Keep the disc reach so heightAt() can sample the current mound dome between rebuilds.
+    this.lastReach = reach;
 
     const previous = this.mesh.geometry;
     if (surfaces.length === 0 || reach <= 1e-4) {
@@ -225,7 +257,27 @@ export class RootCollar {
       return;
     }
 
-    const geometry = this.buildDisc(surfaces, reach);
+    // Groove source: slice segments that are not buried under the mound. Uses the dome directly (not
+    // heightAt) because the mesh's visible flag may lag until updateVisibility below; when the user has
+    // hidden the collar there is no mound to bury anything, so no veto applies.
+    let grooves: SliceField = EMPTY_SLICE_FIELD;
+    if (sliceSegments && sliceSegments.length > 0 && this.opts.grooveDepth > 0) {
+      const kept: number[] = [];
+      for (let i = 0; i < sliceSegments.length; i += 4) {
+        const midX = (sliceSegments[i] + sliceSegments[i + 2]) / 2;
+        const midZ = (sliceSegments[i + 1] + sliceSegments[i + 3]) / 2;
+        if (this.visibleWanted && this.domeHeight(midX, midZ) > BURIED_EPS) continue;
+        kept.push(
+          sliceSegments[i],
+          sliceSegments[i + 1],
+          sliceSegments[i + 2],
+          sliceSegments[i + 3],
+        );
+      }
+      grooves = buildSliceField(kept, this.opts.grooveReach);
+    }
+
+    const geometry = this.buildDisc(surfaces, reach, grooves);
     this.mesh.geometry = geometry;
     this.wireMesh.geometry = geometry; // wire overlay shares the solid geometry
     previous.dispose();
@@ -243,6 +295,27 @@ export class RootCollar {
   dispose(): void {
     this.mesh.geometry.dispose();
     this.wireMesh.material.dispose();
+  }
+
+  // The mound's SMOOTH ground height at (x, z) — the dome the collar adds on top of the flat floor,
+  // faded out at the rim. Deliberately excludes the root fillet (it hugs the root surfaces, so a
+  // fillet-relative crossing test degenerates into the contact line along every root) and the
+  // disturbance noise (which jitters crossings on/off along lying roots). 0 outside the collar, before
+  // the first build, or while the collar is hidden (then the visible terrain IS the flat floor).
+  heightAt(x: number, z: number): number {
+    if (!this.mesh.visible) return 0;
+    return this.domeHeight(x, z);
+  }
+
+  // The dome height regardless of current visibility (build() needs it before updateVisibility runs).
+  private domeHeight(x: number, z: number): number {
+    const reach = this.lastReach;
+    if (reach <= 1e-4) return 0;
+    const o = this.opts;
+    const radius = Math.hypot(x, z);
+    const dome = o.centerHeight * Math.pow(clamp01(1 - clamp01(radius / reach)), o.slope);
+    const floorCover = 1 - smoothstepRange(reach - o.floorBlend, reach, radius);
+    return Math.max(0, dome * floorCover);
   }
 
   private hasGeometry(): boolean {
@@ -310,32 +383,34 @@ export class RootCollar {
     return Math.max(this.opts.minRadius, maxR + this.opts.reachMargin);
   }
 
-  // Radial disc: a centre vertex + concentric rings with non-linear spacing (dense near the centre),
-  // fanned/bridged into triangles. Per-vertex height, alpha mask and AO come from the mound field.
-  private buildDisc(surfaces: GroundSurface[], reach: number): THREE.BufferGeometry {
+  // Radial disc: a centre vertex + concentric rings, fanned/bridged into triangles. Per-vertex height
+  // and AO come from the mound field plus the independent groove bands.
+  private buildDisc(
+    surfaces: GroundSurface[],
+    reach: number,
+    grooves: SliceField,
+  ): THREE.BufferGeometry {
     const { ringCount, sectorCount, radialExponent } = this.opts;
     const vertexCount = 1 + ringCount * sectorCount;
 
     const positions = new Float32Array(vertexCount * 3);
     const uvs = new Float32Array(vertexCount * 2);
-    const masks = new Float32Array(vertexCount);
     const aos = new Float32Array(vertexCount);
     const barkMixes = new Float32Array(vertexCount);
 
     const writeVertex = (index: number, x: number, z: number): void => {
-      const s = this.sampleField(surfaces, reach, x, z);
+      const s = this.sampleField(surfaces, reach, x, z, grooves);
       positions[index * 3 + 0] = x;
       positions[index * 3 + 1] = s.height;
       positions[index * 3 + 2] = z;
       uvs[index * 2 + 0] = x / (2 * reach) + 0.5;
       uvs[index * 2 + 1] = z / (2 * reach) + 0.5;
-      masks[index] = s.mask;
       aos[index] = s.ao;
       barkMixes[index] = s.barkMix;
     };
 
-    // Ring radii: split into the dome body [0, innerEnd] and a dense, evenly-spaced feather band
-    // [innerEnd, reach] so the outer alpha feather always has enough geometry to read smooth (no
+    // Ring radii: split into the dome body [0, innerEnd] and a dense, evenly-spaced rim band
+    // [innerEnd, reach] so the geometric floor blend always has enough geometry to read smooth (no
     // polygonal edge) regardless of how narrow floorBlend is.
     const floorBlend = Math.min(this.opts.floorBlend, reach * 0.9);
     const innerEnd = Math.max(1e-3, reach - floorBlend);
@@ -385,7 +460,6 @@ export class RootCollar {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
-    geometry.setAttribute("mask", new THREE.BufferAttribute(masks, 1));
     // The offline surface material multiplies its AO by this attribute (see createFloorPlane); it is
     // mandatory — omitting it shades the collar to black.
     geometry.setAttribute("vertexAo", new THREE.BufferAttribute(aos, 1));
@@ -398,14 +472,16 @@ export class RootCollar {
   }
 
   // The dirt field at ground point (x, 0, z): a dome + a fillet banking up against the roots, plus
-  // disturbance noise. Returns height above the floor, the outer alpha mask (rim feather), and the
-  // baked AO (root-contact crease darkening).
+  // disturbance noise — and, ADDED INDEPENDENTLY on top, the groove bands ringing the root/floor
+  // crossing slices. Returns height above the floor and the baked AO (root-contact crease + groove
+  // trough darkening).
   private sampleField(
     surfaces: GroundSurface[],
     reach: number,
     x: number,
     z: number,
-  ): { height: number; mask: number; ao: number; barkMix: number } {
+    grooves: SliceField,
+  ): { height: number; ao: number; barkMix: number } {
     const o = this.opts;
     _p.set(x, 0, z);
 
@@ -435,27 +511,49 @@ export class RootCollar {
     const floorCover = 1 - smoothstepRange(reach - o.floorBlend, reach, radius);
 
     const n = value2D(x * o.disturbanceScale, z * o.disturbanceScale, o.seed); // [0,1], 2-octave
-    let height = (dome + rootFillet + o.disturbance * (n - 0.5) * 2) * floorCover;
-    height = Math.max(0, height);
+    // The collar's own field — dome/fillet/noise faded by floorCover. Grooves are NOT part of this.
+    const base = (dome + rootFillet + o.disturbance * (n - 0.5) * 2) * floorCover;
+
+    // Groove bands: concentric ripples ringing the nearest crossing slice, INDEPENDENT of the collar's
+    // shaping — driven only by the distance to the slice segments and the groove params (own noise
+    // seed too). `grooveShade` feeds the AO term below.
+    let groove = 0;
+    let grooveShade = 0;
+    const dSlice = grooves.nearestDist(x, z);
+    if (dSlice < o.grooveReach) {
+      // Hard rim guarantee: whatever the bands do, the disc's outer edge stays exactly on the floor.
+      const rimFade = 1 - smoothstepRange(reach - GROOVE_RIM_FADE, reach, radius);
+      const grooveEnv = (1 - smoothstepRange(0, o.grooveReach, dSlice)) * rimFade;
+      const phase = o.grooveJitter * (value2D(x * 0.9, z * 0.9, o.seed ^ 0x0a1c) - 0.5);
+      const wave = Math.cos((dSlice / Math.max(1e-3, o.grooveSpacing) + phase) * Math.PI * 2);
+      // Symmetric ripple; grooveSharp (>1) deepens the troughs relative to the ridges (carve bias).
+      const profile = wave >= 0 ? wave : wave * o.grooveSharp;
+      groove = o.grooveDepth * profile * grooveEnv;
+      // Shade = trough crevices PLUS a contact band hugging the slice edge itself — the darkening is
+      // strongest right where the root meets the grooved dirt, so the root reads as separate from it.
+      const trough = clamp01(-wave) * grooveEnv;
+      const contact = (1 - smoothstepRange(0, o.grooveSpacing * 0.75, dSlice)) * rimFade;
+      grooveShade = Math.max(trough, contact);
+    }
+
+    // Grooves add AFTER the collar shaping (no floorCover/slope scaling); the floor clamp only keeps
+    // the disc from dipping under the floor plane that sits just below it.
+    let height = Math.max(0, base + groove);
 
     // Seam softening: a contact band hugging the nearest root/trunk surface (|d| small). Drives a
     // contact-shadow AO darkening AND the amount of tree bark bled into the collar colour — so the
     // collar↔root edge isn't a hard cut, without transparency (which revealed gaps).
     const band = 1 - smoothstepRange(0, o.rootEdgeBlend, Math.abs(d));
 
-    // Alpha mask: interior opaque, feathering to 0 only at the OUTER rim (into the floor). The root
-    // seam is handled by the colour mix below, not by alpha.
-    const rimStart = reach - o.floorBlend + (n - 0.5) * 2 * o.rimJitter;
-    const mask = clamp01(1 - smoothstepRange(rimStart, reach, radius));
-
-    // AO: contact shadow that darkens the dirt toward the root by `rootEdgeAO`. → 1 away from roots.
-    const ao = clamp(1 - o.rootEdgeAO * band, AO_MIN, 1);
+    // AO: contact shadow that darkens the dirt toward the root by `rootEdgeAO`, plus the groove shade
+    // (slice-edge contact + trough crevices) by `grooveAO`. → 1 away from roots/grooves.
+    const ao = clamp(1 - o.rootEdgeAO * band - o.grooveAO * grooveShade, AO_MIN, 1);
 
     // Bark bleed weight: how much the tree texture mixes into the collar colour here (0 away from
     // roots → rootEdgeMix at the contact).
     const barkMix = clamp01(o.rootEdgeMix * band);
 
-    return { height, mask, ao, barkMix };
+    return { height, ao, barkMix };
   }
 }
 

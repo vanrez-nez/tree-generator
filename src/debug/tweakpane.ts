@@ -301,6 +301,18 @@ export function setupTweakpane({
     rootEdgeBlend: 0.12,
     rootEdgeAO: 0.5,
     rootEdgeMix: 0.5,
+    grooveDepth: 0.05,
+    grooveSpacing: 0.2,
+    grooveReach: 0.45,
+    grooveSharp: 1.0,
+    grooveJitter: 0.3,
+    grooveAO: 0.5,
+  };
+  // Debug overlay: circles where the tree mesh says a root crosses the floor (future groove sites).
+  // Mirrors RootCrossingDebug DEFAULTS. Toggle + tune the detection while watching the circles.
+  const crossingDebugState = {
+    visible: false,
+    normalAngle: 20,
   };
 
   function setToneMapping(mode: THREE.ToneMapping): void {
@@ -379,6 +391,33 @@ export function setupTweakpane({
     bind("rootEdgeBlend", "root edge", 0.02, 0.4, 0.01);
     bind("rootEdgeAO", "root AO", 0, 1, 0.05);
     bind("rootEdgeMix", "root bark mix", 0, 1, 0.05);
+    // Groove bands ringing the root/floor crossing slices (independent of the collar shaping above;
+    // the crossing gate lives in the Root Crossings folder below).
+    bind("grooveDepth", "groove depth", 0, 0.2, 0.005);
+    bind("grooveSpacing", "groove spacing", 0.05, 0.6, 0.01);
+    bind("grooveReach", "groove reach", 0.1, 1.5, 0.05);
+    bind("grooveSharp", "groove sharp", 1, 5, 0.05);
+    bind("grooveJitter", "groove jitter", 0, 1, 0.05);
+    bind("grooveAO", "groove AO", 0, 1, 0.05);
+
+    // Root-crossing debug: the exact slice outline where the tree mesh passes through the ground —
+    // the shape the future grooves will ring. Tune the normal gate and watch the outline live.
+    const crossings = folder.addFolder({ title: "Root Crossings (debug)", expanded: true });
+    crossings
+      .addBinding(crossingDebugState, "visible", { label: "show slices" })
+      .on("change", (e) => mainScene.setCrossingDebugVisible(e.value));
+    const bindCrossing = (
+      key: keyof Omit<typeof crossingDebugState, "visible">,
+      label: string,
+      min: number,
+      max: number,
+      step: number,
+    ): void => {
+      crossings
+        .addBinding(crossingDebugState, key, { label, min, max, step })
+        .on("change", (e) => mainScene.setCrossingDebugOptions({ [key]: e.value }));
+    };
+    bindCrossing("normalAngle", "normal angle", 0, 90, 1);
   }
 
   function buildSceneControls(container: ContainerApi): void {
