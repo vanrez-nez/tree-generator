@@ -1,4 +1,14 @@
 import * as THREE from "three";
+import {
+  attribute,
+  mat3,
+  mix,
+  modelViewMatrix,
+  normalMap,
+  normalView,
+  texture,
+  vec4,
+} from "three/tsl";
 import { Graph } from "./graph/graph";
 import type { GraphDocument } from "./graph/document";
 import { DEFAULT_SUBDIVISIONS, buildTreeDocument } from "./tree";
@@ -9,6 +19,7 @@ import { RootCrossingDebug, type RootCrossingDebugOptions } from "./root-crossin
 import { extractSliceSegments } from "./root-crossings";
 import { TreeMesher } from "./mesher/tree-mesher";
 import type { MesherOptions } from "./mesher/welding-mesher";
+import { UV_WORLD_PER_TILE } from "./mesher/tree-node";
 import { MaterialGraphRuntime } from "material-designer-runtime";
 
 // How long graph edits must settle before the (expensive) surface mesh is rebuilt.
@@ -16,6 +27,9 @@ const MESH_REBUILD_DEBOUNCE_MS = 200;
 // Directional-light shadow map resolution (square). High for crisp baked edges; cost is paid only when the
 // shadow re-bakes (tree regen / sun move), not per frame.
 const SHADOW_MAP_SIZE = 2048;
+
+// A baked-channel key of the surface texture set ("baseColor", "roughness", ...).
+type SurfaceChannel = Parameters<MaterialGraphRuntime["surface"]["getChannelTexture"]>[0];
 
 export const DEFAULT_MESHER_OPTIONS: MesherOptions = {
   radialResolution: 32,
@@ -76,6 +90,10 @@ export class MainScene {
   private debugLinePointsVisible = false;
   private debugT = 0.5;
   private meshDirty = false;
+  // Triplanar A/B mode state: whether it's on (gates the seam-blend override), and the scaleUniform
+  // value captured when it was switched on, restored on exit.
+  private treeTriplanar = false;
+  private savedTriplanarScale: number | undefined;
   // Collar params changed but the tree didn't: rebuild only the (cheap) collar next frame, skipping
   // the expensive tree-surface + shadow rebuild.
   private collarDirty = false;
@@ -96,7 +114,12 @@ export class MainScene {
     this.loadTree();
 
     this.mesher.setSurfaceMaterial(this.treeMaterial.material);
-    this.treeMaterial.surface.onRebuilt(() => this.mesher.setSurfaceMaterial(this.treeMaterial.material));
+    this.treeMaterial.surface.onRebuilt(() => {
+      // The runtime's wire() just rebuilt the stock channel nodes — layer the seam cross-fade back
+      // on top before handing the material to the mesh.
+      this.applySeamBlend();
+      this.mesher.setSurfaceMaterial(this.treeMaterial.material);
+    });
 
     // Same light DIRECTION as before (the old (2,2,3) ×4), pushed out so it sits well above the tree top —
     // a directional's shading is distance-independent, but the shadow camera must clear the geometry.
@@ -338,6 +361,87 @@ export class MainScene {
       line.debugLinePointsVisible = this.debugLinePointsVisible;
       line.debugT = this.debugT;
     }
+  }
+
+  // A/B reference mode: sample the tree's baked channels by world position (triplanar) instead of
+  // the mesh UVs — zero seams, but bark grain stops following branch axes. While enabled the
+  // projection scale is matched to the UV layout's texel density (one tile per UV_WORLD_PER_TILE
+  // world units) and restored after — the root collar's bark bleed shares the same scale uniform.
+  setTreeTriplanar(on: boolean): void {
+    this.treeTriplanar = on;
+    const surface = this.treeMaterial.surface;
+    if (on && this.savedTriplanarScale === undefined) {
+      this.savedTriplanarScale = surface.scaleUniform.value;
+      surface.setScale(1 / UV_WORLD_PER_TILE);
+    } else if (!on && this.savedTriplanarScale !== undefined) {
+      surface.setScale(this.savedTriplanarScale);
+      this.savedTriplanarScale = undefined;
+    }
+    surface.setTriplanar(on); // re-wires the stock channel nodes in place (no rebuilt event)
+    if (!on) this.applySeamBlend(); // restore the seam cross-fade the re-wire clobbered
+  }
+
+  setTreeTriplanarScale(scale: number): void {
+    this.treeMaterial.surface.setScale(scale);
+  }
+
+  // Junction seam cross-fade. Inside the skirt band at every branch base the tree geometry carries
+  // a second UV set (the parent chart: `uvParent` + its `tangentParent` frame) and a fade weight
+  // (`uvBlend`, 1 at the parent rim → 0 at the child base) — see the welding mesher. Re-wire the
+  // offline surface's channel nodes to sample every baked channel in BOTH charts and mix by that
+  // weight: at the band's edges the blend equals the neighbouring faces exactly, so the chart cut
+  // at branch junctions disappears into a band-tall fade. Everywhere else uvBlend is 0 and the
+  // result matches the stock wiring (modulo the extra fetch).
+  // Must re-run after every runtime wire() (rebuilds, triplanar toggle) since that restores the
+  // stock nodes. Skipped in triplanar mode (world-space sampling has no UV seams) and on the live
+  // backend. Parallax relief is not carried through this path (parallaxScale stays 0 here).
+  private applySeamBlend(): void {
+    const surface = this.treeMaterial.surface;
+    if (this.treeTriplanar || surface.getBackend() !== "offline") return;
+    const material = this.treeMaterial.material;
+    const present = surface.presentChannels();
+
+    // The TSL typings can't follow dynamically-typed attribute() nodes — same any-escape the
+    // root collar's colour mix uses.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    type TslNode = any;
+    const blend: TslNode = attribute("uvBlend", "float");
+    const uvParent: TslNode = attribute("uvParent", "vec2");
+    const dual = (channel: SurfaceChannel): TslNode => {
+      const map = surface.getChannelTexture(channel);
+      if (!map) return null;
+      return mix(texture(map), texture(map, uvParent), blend);
+    };
+
+    const baseColor = present.has("baseColor") ? dual("baseColor") : null;
+    material.colorNode = baseColor ? baseColor.mul(surface.colorTint) : null;
+    const roughness = present.has("roughness") ? dual("roughness") : null;
+    material.roughnessNode = roughness ? roughness.r.mul(surface.roughnessFactor) : null;
+    const metallic = present.has("metallic") ? dual("metallic") : null;
+    material.metalnessNode = metallic ? metallic.r.mul(surface.metalnessFactor) : null;
+    const vertexAo = attribute("vertexAo", "float");
+    const occlusion = present.has("ambientOcclusion") ? dual("ambientOcclusion") : null;
+    material.aoNode = occlusion ? occlusion.r.mul(vertexAo) : vertexAo;
+    material.emissiveNode = present.has("emission") ? dual("emission") : null;
+
+    const normalTex = present.has("normal") ? surface.getChannelTexture("normal") : null;
+    if (normalTex) {
+      // Chart 1: the stock tangent-space path (geometry `tangent` frame).
+      const n1: TslNode = normalMap(texture(normalTex).xyz);
+      // Chart 2: the same decode through the parent chart's frame, hand-rolled in view space.
+      // Bitangent = cross(N, T) * w, matching the mesher's handedness convention.
+      const t2: TslNode = attribute("tangentParent", "vec4");
+      const mapN2: TslNode = texture(normalTex, uvParent).xyz.mul(2).sub(1);
+      const t2View: TslNode = modelViewMatrix.mul(vec4(t2.xyz, 0)).xyz.normalize();
+      const b2View: TslNode = normalView.cross(t2View).mul(t2.w);
+      const tbn2: TslNode = mat3(t2View, b2View, normalView);
+      const n2: TslNode = tbn2.mul(mapN2).normalize();
+      const blended: TslNode = mix(n1, n2, blend);
+      material.normalNode = blended.normalize();
+    } else {
+      material.normalNode = null;
+    }
+    material.needsUpdate = true;
   }
 
   // Replace the tree's form and rebuild the graph from scratch (count/topology may change).

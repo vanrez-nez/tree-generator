@@ -49,10 +49,13 @@ export function weldMeshToBufferGeometry(mesh: WeldMesh): BufferGeometry {
   const positions: number[] = [];
   const normals: number[] = [];
   const uvs: number[] = [];
+  const uvs2: number[] = [];
+  const blends: number[] = [];
   const tangents: number[] = [];
+  const tangents2: number[] = [];
   const ao: number[] = [];
 
-  // Scratch vectors (reused) for the per-triangle tangent basis.
+  // Scratch vectors (reused) for the per-triangle tangent bases.
   const p0 = new Vector3();
   const p1 = new Vector3();
   const p2 = new Vector3();
@@ -60,6 +63,8 @@ export function weldMeshToBufferGeometry(mesh: WeldMesh): BufferGeometry {
   const e2 = new Vector3();
   const triT = new Vector3();
   const triB = new Vector3();
+  const triT2 = new Vector3();
+  const triB2 = new Vector3();
   const n = new Vector3();
   const t = new Vector3();
   const tmp = new Vector3();
@@ -77,13 +82,16 @@ export function weldMeshToBufferGeometry(mesh: WeldMesh): BufferGeometry {
     );
     const uv = mesh.uvs[uvIndex];
     uvs.push(uv ? uv.x : 0, uv ? uv.y : 0);
+    const uv2 = mesh.uvs2[uvIndex];
+    uvs2.push(uv2 ? uv2.x : 0, uv2 ? uv2.y : 0);
+    blends.push(mesh.blend[uvIndex] ?? 0);
     ao.push(vertexAo[vertexIndex]);
   };
 
-  const pushCornerTangent = (vi: number): void => {
+  const pushCornerTangent = (vi: number, srcT: Vector3, srcB: Vector3, out: number[]): void => {
     normalOf(vi, n);
     // Gram-Schmidt: project the triangle tangent onto the plane of this corner's normal.
-    t.copy(triT).addScaledVector(n, -n.dot(triT));
+    t.copy(srcT).addScaledVector(n, -n.dot(srcT));
     if (t.lengthSq() < 1e-12) {
       // Tangent parallel to the normal (degenerate UVs) — pick any perpendicular.
       t.set(1, 0, 0).addScaledVector(n, -n.x);
@@ -91,8 +99,35 @@ export function weldMeshToBufferGeometry(mesh: WeldMesh): BufferGeometry {
     }
     t.normalize();
     // Handedness for the bitangent reconstruction (bitangent = cross(n, t) * w).
-    const w = tmp.copy(n).cross(t).dot(triB) < 0 ? -1 : 1;
-    tangents.push(t.x, t.y, t.z, w);
+    const w = tmp.copy(n).cross(t).dot(srcB) < 0 ? -1 : 1;
+    out.push(t.x, t.y, t.z, w);
+  };
+
+  // Tangent basis of the current triangle (e1/e2 edges) in the given uv set → (outT, outB).
+  const triBasis = (
+    uvSet: typeof mesh.uvs,
+    u0: number,
+    u1: number,
+    u2: number,
+    outT: Vector3,
+    outB: Vector3,
+  ): void => {
+    const uv0 = uvSet[u0];
+    const uv1 = uvSet[u1];
+    const uv2 = uvSet[u2];
+    const du1 = uv1.x - uv0.x;
+    const dv1 = uv1.y - uv0.y;
+    const du2 = uv2.x - uv0.x;
+    const dv2 = uv2.y - uv0.y;
+    const det = du1 * dv2 - du2 * dv1;
+    if (Math.abs(det) > 1e-12) {
+      const f = 1 / det;
+      outT.copy(e1).multiplyScalar(dv2).addScaledVector(e2, -dv1).multiplyScalar(f);
+      outB.copy(e2).multiplyScalar(du1).addScaledVector(e1, -du2).multiplyScalar(f);
+    } else {
+      outT.copy(e1); // degenerate UVs — approximate
+      outB.copy(e2);
+    }
   };
 
   const pushTri = (
@@ -105,35 +140,25 @@ export function weldMeshToBufferGeometry(mesh: WeldMesh): BufferGeometry {
   ): void => {
     if (v0 === v1 || v1 === v2 || v0 === v2) return; // skip degenerate triangles
 
-    // Per-triangle tangent basis from positions + this triangle's own UVs.
+    // Per-triangle tangent bases from positions + this triangle's own UVs — one per chart, so the
+    // skirt's cross-fade can rotate the normal-map frame along with its second UV set.
     p0.copy(mesh.vertices[v0]);
     p1.copy(mesh.vertices[v1]);
     p2.copy(mesh.vertices[v2]);
     e1.subVectors(p1, p0);
     e2.subVectors(p2, p0);
-    const uv0 = mesh.uvs[u0];
-    const uv1 = mesh.uvs[u1];
-    const uv2 = mesh.uvs[u2];
-    const du1 = uv1.x - uv0.x;
-    const dv1 = uv1.y - uv0.y;
-    const du2 = uv2.x - uv0.x;
-    const dv2 = uv2.y - uv0.y;
-    const det = du1 * dv2 - du2 * dv1;
-    if (Math.abs(det) > 1e-12) {
-      const f = 1 / det;
-      triT.copy(e1).multiplyScalar(dv2).addScaledVector(e2, -dv1).multiplyScalar(f);
-      triB.copy(e2).multiplyScalar(du1).addScaledVector(e1, -du2).multiplyScalar(f);
-    } else {
-      triT.copy(e1); // degenerate UVs — approximate
-      triB.copy(e2);
-    }
+    triBasis(mesh.uvs, u0, u1, u2, triT, triB);
+    triBasis(mesh.uvs2, u0, u1, u2, triT2, triB2);
 
     pushCorner(v0, u0);
-    pushCornerTangent(v0);
+    pushCornerTangent(v0, triT, triB, tangents);
+    pushCornerTangent(v0, triT2, triB2, tangents2);
     pushCorner(v1, u1);
-    pushCornerTangent(v1);
+    pushCornerTangent(v1, triT, triB, tangents);
+    pushCornerTangent(v1, triT2, triB2, tangents2);
     pushCorner(v2, u2);
-    pushCornerTangent(v2);
+    pushCornerTangent(v2, triT, triB, tangents);
+    pushCornerTangent(v2, triT2, triB2, tangents2);
   };
 
   for (let p = 0; p < mesh.polygons.length; p++) {
@@ -154,6 +179,11 @@ export function weldMeshToBufferGeometry(mesh: WeldMesh): BufferGeometry {
   // MeshStandardMaterial.aoMap samples the SECOND UV set (`uv1` in r184). We have one UV layout, so
   // duplicate it — the AO map shares the bark UVs.
   geometry.setAttribute("uv1", uvAttribute.clone());
+  // Junction cross-fade inputs (see weld-mesh.ts): the OTHER chart's uv + its tangent frame, and
+  // the fade weight. Identical to uv/tangent (weight 0) everywhere except the junction skirts.
+  geometry.setAttribute("uvParent", new Float32BufferAttribute(uvs2, 2));
+  geometry.setAttribute("uvBlend", new Float32BufferAttribute(blends, 1));
+  geometry.setAttribute("tangentParent", new Float32BufferAttribute(tangents2, 4));
   // Baked form AO, consumed by the surface material's aoNode (multiplied into any node-graph AO).
   geometry.setAttribute("vertexAo", new Float32BufferAttribute(ao, 1));
   geometry.computeBoundingSphere();

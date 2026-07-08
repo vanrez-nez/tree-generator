@@ -589,6 +589,8 @@ export function setupTweakpane({
       surface: true,
       wireframe: false,
       view: "surface" as "surface" | "normals" | "uv",
+      triplanar: false,
+      triplanarScale: 1 / 1.2,
       graph: false,
       helpers: false,
       discs: false,
@@ -611,6 +613,14 @@ export function setupTweakpane({
         options: { Surface: "surface", Normals: "normals", UV: "uv" },
       })
       .on("change", (event) => mainScene.mesher.setDebugView(event.value));
+    // Zero-seam A/B reference: world-space triplanar sampling of the baked channels (grain stops
+    // following branch axes). Scale only applies while triplanar is on.
+    container
+      .addBinding(debugView, "triplanar", { label: "triplanar" })
+      .on("change", (event) => mainScene.setTreeTriplanar(event.value));
+    container
+      .addBinding(debugView, "triplanarScale", { label: "tri scale", min: 0.2, max: 4, step: 0.01 })
+      .on("change", (event) => mainScene.setTreeTriplanarScale(event.value));
 
     mainScene.setGraphVisible(debugView.graph);
     mainScene.setDebugHelpersVisible(debugView.helpers);

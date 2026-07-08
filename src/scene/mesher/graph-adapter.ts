@@ -4,6 +4,7 @@ import type { GraphLine } from "../graph/line";
 import {
   createNode,
   getOrthogonalVector,
+  projectedOnPlane,
   UV_WORLD_PER_TILE,
   type CapGroup,
   type Stem,
@@ -62,6 +63,31 @@ export function buildStemFromGraph(graph: Graph): Stem | undefined {
     // Keep the branch base under the parent ring radius so the hole-punch stays well-formed.
     childHead.radius = Math.min(childHead.radius, parentNode.radius * CHILD_RADIUS_FACTOR);
     parentNode.children.push({ node: childHead, positionInParent });
+
+    // Aim the child's wrap seam (u = 0 sits at the head tangent) back down the parent axis — the
+    // crotch underside, the least visible spot — then re-propagate the minimal-twist frame so the
+    // whole tube turns with the head instead of shearing against it. Skipped when the child runs
+    // parallel to the parent (no defined underside).
+    const seamDir = projectedOnPlane(parentNode.direction.clone().negate(), childHead.direction);
+    if (seamDir.lengthSq() > 1e-12) {
+      childHead.tangent = seamDir.normalize();
+      for (let i = 1; i < childChain.nodes.length; i++) {
+        const previous = childChain.nodes[i - 1];
+        const node = childChain.nodes[i];
+        node.tangent = projectedOnPlane(previous.tangent, node.direction).normalize();
+      }
+    }
+  }
+
+  // World-consistent UV scale: repeat the texture an integer number of times around each tube,
+  // proportional to circumference (from the base = widest radius), so a fat trunk and a thin branch
+  // get the same texel size. Constant per tube (not per ring) so the repeat count never jumps along
+  // a taper, which would seam. Runs AFTER the joint loop: the clamp above may shrink a head radius,
+  // and uRepeat must match the circumference that actually gets meshed.
+  for (const chain of chains.values()) {
+    const baseRadius = chain.nodes[0].radius;
+    const uRepeat = Math.max(1, Math.round((2 * Math.PI * baseRadius) / UV_WORLD_PER_TILE));
+    for (const node of chain.nodes) node.uRepeat = uRepeat;
   }
 
   const trunk = graph.getLineById("trunk") ?? graph.getLineEntries()[0]?.line;
@@ -132,14 +158,8 @@ function buildLineChain(line: GraphLine, group: CapGroup): LineChain | undefined
 
   if (nodes.length === 0) return undefined;
 
-  // World-consistent UV scale: repeat the texture an integer number of times around the tube,
-  // proportional to circumference (from the base = widest radius), so a fat trunk and a thin branch
-  // get the same texel size. Constant per tube (not per ring) so the repeat count never jumps along
-  // a taper, which would seam.
-  const baseRadius = nodes[0].radius;
-  const uRepeat = Math.max(1, Math.round((2 * Math.PI * baseRadius) / UV_WORLD_PER_TILE));
-  for (const node of nodes) node.uRepeat = uRepeat;
-
+  // uRepeat is assigned in buildStemFromGraph's post-graft pass (the joint loop may still clamp
+  // this chain's head radius, and the texel density must match the meshed circumference).
   return { nodes };
 }
 

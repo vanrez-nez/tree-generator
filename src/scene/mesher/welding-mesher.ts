@@ -36,6 +36,8 @@ interface IndexRange {
 
 const TAU = 2 * Math.PI;
 
+const frac = (x: number): number => ((x % 1) + 1) % 1;
+
 function getSmoothAmount(radius: number, nodeLength: number): number {
   return Math.min(1, radius / nodeLength);
 }
@@ -55,6 +57,7 @@ function emitRing(
   mesh: WeldMesh,
   uvY: number,
   uRepeat: number,
+  uPhase: number,
 ): CircleDesignator {
   const vertexIndex = mesh.vertices.length;
   const uvIndex = mesh.uvs.length;
@@ -72,10 +75,11 @@ function emitRing(
     mesh.radius[index] = radius;
     mesh.directionA[index] = direction.clone();
     // u repeats the texture `uRepeat` times around (integer ⇒ seamless wrap; ∝ radius ⇒ consistent
-    // world texel size). Seam vertex carries u = uRepeat (the wrap value), not 1.
-    mesh.uvs.push(new Vector2((i / radialN) * uRepeat, uvY));
+    // world texel size), shifted by the tube's constant phase. Seam vertex carries the wrap value
+    // u = uRepeat + uPhase, not 1.
+    mesh.addUv(new Vector2((i / radialN) * uRepeat + uPhase, uvY));
   }
-  mesh.uvs.push(new Vector2(uRepeat, uvY));
+  mesh.addUv(new Vector2(uRepeat + uPhase, uvY));
   return { vertexIndex, uvIndex, radialN };
 }
 
@@ -109,6 +113,7 @@ function addCircle(
     mesh,
     uvY,
     node.uRepeat,
+    node.uPhase,
   );
 }
 
@@ -282,8 +287,9 @@ function addChildBaseGeometry(
       childBase.vertexIndex + i,
     ];
     // Skirt UVs: a uniform ring band in the child chart. Both rim and child-base corners are keyed
-    // by the loop index `i` (NOT the rotated parent-rim `index`), so the band has uniform x = i/N and
-    // matches the child tube above — no fan/compression. Each ring has N+1 UVs (raw i/i+1 = seam).
+    // by the loop index `i` (NOT the rotated parent-rim `index`), so each ring has uniform u spacing
+    // and the band matches the child tube above — no fan/compression. Each ring has N+1 UVs
+    // (raw i/i+1 = seam); u values (repeat/phase per ring) come from addChildBaseUvs.
     const ringStart = childBase.uvIndex;
     const rimStart = ringStart - (childBase.radialN + 1);
     mesh.uvLoops[p] = [
@@ -305,44 +311,114 @@ function getChildTwist(child: TreeNode, parent: TreeNode): number {
 }
 
 // UVs for the junction skirt + child base ring. Both rings are in the CHILD's chart (x = around the
-// child, N+1 entries for the wrap seam), so the skirt is a uniform ring band — bark grain runs
-// axially and at the same density as the child tube, with no fan/compression or rotated island.
+// child, N+1 entries for the wrap seam) with the SAME repeat and phase, so the skirt is a uniform,
+// shear-free ring band — bark grain runs axially with no fan/compression or rotated island.
+// Both rings MUST share one repeat count: a rim-specific repeat (tried once, to match the parent's
+// texel density at the cut) makes the two rings' u diverge around the loop — they can only agree at
+// the anchor — which shears whole tiles diagonally through the thin band near the wrap seam (dense
+// stripes on fat children, i.e. roots). The residual density mismatch at the cut is hidden by the
+// cross-fade (uvs2/blend) instead. The shared phase lines u up with the parent's u at the
+// attachment angle (see addChildCircle).
 // Returns the child-base ring index (the rim ring sits one band-height below it).
 function addChildBaseUvs(
-  parentUvY: number,
+  rimV: number,
+  baseV: number,
   childRadialN: number,
   childURepeat: number,
-  bandHeight: number,
+  childUPhase: number,
   mesh: WeldMesh,
 ): number {
-  const bandV = parentUvY - bandHeight; // thin collar band, in v (tile) units
-
-  // Rim ring (parent-rim corners of the skirt), one band-height below the child base ring. Uses the
-  // child's u-repeat so it's continuous with the child tube above.
+  // Rim ring (parent-rim corners of the skirt), one band-height below the child base ring.
+  // (applySkirtParentUvs later overwrites these entries' uvs2/blend with the parent chart.)
   for (let i = 0; i < childRadialN; i++) {
-    mesh.uvs.push(new Vector2((i / childRadialN) * childURepeat, bandV));
+    mesh.addUv(new Vector2((i / childRadialN) * childURepeat + childUPhase, rimV));
   }
-  mesh.uvs.push(new Vector2(childURepeat, bandV));
+  mesh.addUv(new Vector2(childURepeat + childUPhase, rimV));
 
-  // Child base ring, continuous with the child tube's first bridge above (at parentUvY).
+  // Child base ring — continuous with the child tube's first bridge above.
   const ringUvStartIndex = mesh.uvs.length;
   for (let i = 0; i < childRadialN; i++) {
-    mesh.uvs.push(new Vector2((i / childRadialN) * childURepeat, parentUvY));
+    mesh.addUv(new Vector2((i / childRadialN) * childURepeat + childUPhase, baseV));
   }
-  mesh.uvs.push(new Vector2(childURepeat, parentUvY));
+  mesh.addUv(new Vector2(childURepeat + childUPhase, baseV));
 
   return ringUvStartIndex;
+}
+
+const wrapToPi = (x: number): number => ((((x + Math.PI) % TAU) + TAU) % TAU) - Math.PI;
+
+// Fill in the skirt band's SECOND UV set: the parent chart, plus a cross-fade weight (1 at the
+// parent rim → 0 at the child base). The surface samples both charts inside the band and mixes,
+// so at the rim the blend equals the parent faces exactly and at the child base it equals the
+// child tube — the chart cut becomes a band-tall fade instead of a hard edge.
+// Runs after addChildBaseGeometry so the lifted base-ring vertex positions exist.
+function applySkirtParentUvs(
+  parent: TreeNode,
+  parentPos: Vector3,
+  parentBaseV: number,
+  parentBase: CircleDesignator,
+  childRange: IndexRange,
+  childBase: CircleDesignator,
+  offset: number,
+  mesh: WeldMesh,
+): void {
+  const radialN = childBase.radialN;
+  const half = Math.floor(radialN / 2);
+  const uvGrowth = parent.length / UV_WORLD_PER_TILE;
+  const rimUvStart = childBase.uvIndex - (radialN + 1);
+
+  // Raw (un-wrapped) angular center of the hole: rim slots run minIndex..minIndex+half-1 WITHOUT
+  // the modulo, so u2 stays monotonic even when the hole crosses the parent's own wrap seam
+  // (a whole-tile offset is invisible with a tiling texture).
+  const slotAngle = TAU / parentBase.radialN;
+  const centerAngle = (childRange.minIndex + (half - 1) / 2) * slotAngle;
+
+  // Rim ring: the exact parent-chart uv of each rim vertex (they ARE parent ring vertices; the
+  // parent base ring sits at parentBaseV, the end ring one uvGrowth above). Loop slot i maps to
+  // childBaseIndices[(i + offset) % N], which is lower-arc slot minIndex+j for j < half and
+  // upper-arc slot minIndex+(N-1-j) above it for j >= half (see getChildIndexOrder).
+  for (let i = 0; i < radialN; i++) {
+    const j = (i + offset) % radialN;
+    const lower = j < half;
+    const rawSlot = childRange.minIndex + (lower ? j : radialN - 1 - j);
+    const u2 = (rawSlot / parentBase.radialN) * parent.uRepeat + parent.uPhase;
+    const v2 = lower ? parentBaseV : parentBaseV + uvGrowth;
+    mesh.uvs2[rimUvStart + i] = new Vector2(u2, v2);
+    mesh.blend[rimUvStart + i] = 1;
+  }
+  // The extra wrap entry closes the loop in the CHILD chart only; the parent chart is continuous
+  // around the rim, so it repeats entry 0.
+  mesh.uvs2[rimUvStart + radialN] = mesh.uvs2[rimUvStart].clone();
+  mesh.blend[rimUvStart + radialN] = 1;
+
+  // Child base ring: extrapolate each lifted vertex's parent cylinder coordinates (angle around /
+  // arc length along the parent), unwrapped around the hole center so the band interpolates within
+  // one period. blend stays 0 here — uv2 only steers the interpolation inside the band.
+  const right = parent.tangent;
+  const up = right.clone().cross(parent.direction);
+  for (let i = 0; i < radialN; i++) {
+    const p = mesh.vertices[childBase.vertexIndex + i].clone().sub(parentPos);
+    const axial = p.dot(parent.direction);
+    const radial = p.addScaledVector(parent.direction, -axial);
+    const rawAngle = Math.atan2(radial.dot(up), radial.dot(right));
+    const angle = centerAngle + wrapToPi(rawAngle - centerAngle);
+    const u2 = (angle / TAU) * parent.uRepeat + parent.uPhase;
+    const v2 = parentBaseV + axial / UV_WORLD_PER_TILE;
+    mesh.uvs2[childBase.uvIndex + i] = new Vector2(u2, v2);
+  }
+  mesh.uvs2[childBase.uvIndex + radialN] = mesh.uvs2[childBase.uvIndex].clone();
 }
 
 function addChildCircle(
   parent: TreeNode,
   child: NodeChild,
   childPos: Vector3,
+  parentPos: Vector3,
   parentBase: CircleDesignator,
   childRange: IndexRange,
-  uvY: number,
+  uvAttach: number,
   mesh: WeldMesh,
-): CircleDesignator {
+): { circle: CircleDesignator; childStartUvY: number } {
   const smoothAmount = getSmoothAmount(child.node.radius, parent.length);
 
   const childRadialN =
@@ -363,14 +439,24 @@ function addChildCircle(
       childRadialN) %
     childRadialN;
 
+  // Parent-chart u at the attachment angle — the anchor the child chart phase-locks to.
+  const branchAngle = getBranchAngleAroundParent(parent, child.node);
+  const parentU = (branchAngle / TAU) * parent.uRepeat + parent.uPhase;
+
+  // The graph adapter aims the child head tangent (u = 0, the wrap seam) down the parent axis, so
+  // loop index N/2 — u at half the repeat — faces up it: anchoring that u to parentU makes the
+  // texture phase continuous at the crotch top, with the wrap seam hidden on the underside.
+  const childUPhase = frac(parentU - 0.5 * child.node.uRepeat);
+  // The whole child tube adopts the phase (meshNodeRec copies it down children[0]).
+  child.node.uPhase = childUPhase;
+
   const childBase: CircleDesignator = {
     vertexIndex: mesh.vertices.length,
-    uvIndex: mesh.uvs.length,
+    // Skirt uvs are pushed AFTER the geometry so the band height can be measured from the actual
+    // vertex positions; the rim ring's N+1 entries come first, then the child base ring.
+    uvIndex: mesh.uvs.length + childRadialN + 1,
     radialN: childRadialN,
   };
-  // Collar band ~ parent radius tall, expressed in v (tile) units.
-  const bandHeight = parent.radius / UV_WORLD_PER_TILE;
-  childBase.uvIndex = addChildBaseUvs(uvY, childRadialN, child.node.uRepeat, bandHeight, mesh);
   addChildBaseGeometry(
     childBaseIndices,
     childBase,
@@ -380,7 +466,46 @@ function addChildCircle(
     smoothAmount,
     mesh,
   );
-  return childBase;
+
+  // Band v-span from the MEASURED rim→base gap (mean, in tile units), so texel density inside the
+  // band matches the world like everywhere else. A fixed parent.radius band is wrong for fat
+  // children (roots): their big hole leaves only a thin physical band, and a tall v-span compresses
+  // the texture into stripes there.
+  let gap = 0;
+  for (let i = 0; i < childRadialN; i++) {
+    gap += mesh.vertices[childBaseIndices[(i + offset) % childRadialN]].distanceTo(
+      mesh.vertices[childBase.vertexIndex + i],
+    );
+  }
+  const bandHeight = Math.max(0.02, gap / childRadialN / UV_WORLD_PER_TILE);
+
+  const baseRingUvIndex = addChildBaseUvs(
+    uvAttach,
+    uvAttach + bandHeight,
+    childRadialN,
+    child.node.uRepeat,
+    childUPhase,
+    mesh,
+  );
+  if (baseRingUvIndex !== childBase.uvIndex) {
+    // addChildBaseGeometry already keyed its uvLoops on the predicted index — a desync here means
+    // something new pushed uvs between the prediction and this call.
+    throw new Error("welding-mesher: skirt uv index prediction desynced");
+  }
+  // uvGrowth of the parent segment: the hole spans [parentBaseV, parentBaseV + uvGrowth] and
+  // uvAttach sits at its center.
+  const parentBaseV = uvAttach - parent.length / UV_WORLD_PER_TILE / 2;
+  applySkirtParentUvs(
+    parent,
+    parentPos,
+    parentBaseV,
+    parentBase,
+    childRange,
+    childBase,
+    offset,
+    mesh,
+  );
+  return { circle: childBase, childStartUvY: uvAttach + bandHeight };
 }
 
 function getSideChildPosition(
@@ -454,6 +579,7 @@ function addCap(
       mesh,
       uvY + s,
       node.uRepeat,
+      node.uPhase,
     );
     bridgeCircles(previous, ring, radialN, mesh);
     previous = ring;
@@ -465,8 +591,7 @@ function addCap(
   mesh.smoothAmount[apexIndex] = 0;
   mesh.radius[apexIndex] = 0;
   mesh.directionA[apexIndex] = node.direction.clone();
-  const apexUvIndex = mesh.uvs.length;
-  mesh.uvs.push(new Vector2(0.5 * node.uRepeat, uvY + 1));
+  const apexUvIndex = mesh.addUv(new Vector2(0.5 * node.uRepeat + node.uPhase, uvY + 1));
 
   // Fan the last ring to the apex. The duplicated apex corner collapses each quad to a single
   // triangle, with the same winding bridgeCircles uses (outward after to-buffer's reversal).
@@ -496,8 +621,7 @@ function addBaseCap(stem: Stem, startCircle: CircleDesignator, mesh: WeldMesh): 
   mesh.smoothAmount[apexIndex] = 0;
   mesh.radius[apexIndex] = 0;
   mesh.directionA[apexIndex] = stem.node.direction.clone().negate();
-  const apexUvIndex = mesh.uvs.length;
-  mesh.uvs.push(new Vector2(0.5 * stem.node.uRepeat, 0));
+  const apexUvIndex = mesh.addUv(new Vector2(0.5 * stem.node.uRepeat + stem.node.uPhase, 0));
 
   const radialN = startCircle.radialN;
   for (let i = 0; i < radialN; i++) {
@@ -534,6 +658,7 @@ function meshNodeRec(
     if (isLeaf(node)) {
       addCap(node, nodePosition, childCircle, opts.caps[node.capGroup], mesh, uvY + uvGrowth);
     } else {
+      node.children[0].node.uPhase = node.uPhase; // continuation: same tube, same chart
       const childPos = getPositionInNode(nodePosition, node);
       meshNodeRec(node.children[0].node, childPos, childCircle, mesh, uvY + uvGrowth, opts);
     }
@@ -546,21 +671,28 @@ function meshNodeRec(
 
   for (let i = 0; i < node.children.length; i++) {
     if (i === 0) {
+      node.children[0].node.uPhase = node.uPhase; // continuation: same tube, same chart
       const childPos = getPositionInNode(nodePosition, node);
       meshNodeRec(node.children[0].node, childPos, endCircle, mesh, uvY + uvGrowth, opts);
     } else {
       const child = node.children[i];
       const childPos = getSideChildPosition(node, child, nodePosition);
-      const childBase = addChildCircle(
+      // The hole spans this segment's full v range [uvY, uvY + uvGrowth]; anchor the child chart at
+      // its centre so v is phase-continuous with the parent at the crotch. The skirt band rises by
+      // its measured physical height from there, and the child tube's own v continues from the top
+      // of the band at exact arc-length density.
+      const uvAttach = uvY + uvGrowth / 2;
+      const { circle: childBase, childStartUvY } = addChildCircle(
         node,
         child,
         childPos,
+        nodePosition,
         base,
         childrenRanges[i - 1],
-        uvY,
+        uvAttach,
         mesh,
       );
-      meshNodeRec(child.node, childPos, childBase, mesh, uvY + uvGrowth, opts);
+      meshNodeRec(child.node, childPos, childBase, mesh, childStartUvY, opts);
     }
   }
 }

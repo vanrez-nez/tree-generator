@@ -33,6 +33,12 @@ export interface TreeNode {
    * texel density is world-consistent and the wrap stays seamless (integer repeats). Default 1.
    */
   uRepeat: number;
+  /**
+   * Constant u offset for this tube's chart, in tile units (only the fractional part shows with a
+   * tiling texture). The mesher sets it per side branch so the child's u lines up with the parent's
+   * u at the attachment angle, and copies it down children[0] so the tube stays one chart. Default 0.
+   */
+  uPhase: number;
   /** authoring/source id; the graph adapter uses 0 for every generated segment */
   creatorId: number;
   /** trunk/branch/root, so leaf tips pick the matching cap shape */
@@ -68,6 +74,7 @@ export function createNode(
     length,
     radius,
     uRepeat: 1,
+    uPhase: 0,
     creatorId,
     capGroup,
   };
