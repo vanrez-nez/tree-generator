@@ -10,6 +10,7 @@ import type { ModifierMask } from "./graph/modifiers/modifier";
 import { cubicBezierEasing, type CubicBezierCurve } from "./graph/curve";
 import type { LineTubeOptions } from "./graph/line-tube";
 import type { TreeForm } from "./tree-code";
+import { TUNING } from "./tree-ranges";
 
 // Domain layer: assembles a tree (trunk, branches, roots) as a plain line graph using the
 // generic graph primitives + modifiers. The graph engine stays tree-agnostic; all tree
@@ -50,23 +51,17 @@ type TreeParams = {
   trunkCoilTurns: number; // crown coil winding count (0 = no coil)
   trunkCoilAmount: number; // crown coil strength multiplier (0 = no coil)
   trunkCoilBias: number; // crown coil tightness (total radius shrink e^bias)
+  rootCoilTurns: number; // root scroll winding count, all root levels (0 = no coil)
+  rootCoilAmount: number; // root scroll strength multiplier (0 = no coil)
+  rootCoilBias: number; // root scroll tightness (total radius shrink e^bias)
 };
 
 // Default mesh resolution. Not part of the form/code: it scales vertex density without changing
 // the tree's shape.
-export const DEFAULT_SUBDIVISIONS = 6;
-
-// Structural constants that aren't exposed as form variations:
-// - levelDensity: L2 (index 2) is denser than L1 because short L2 limbs lose several disks to the
-//   inside-parent cull, so finer spacing keeps enough alive disks contiguous for the walk.
-// - rootLeanAngles: roots stay unconstrained (90°) so their authored down direction is preserved.
-const FIXED_PARAMS = {
-  levelDensity: [16, 16, 16, 16],
-  rootLeanAngles: [90, 90, 90],
-} as const;
+export const DEFAULT_SUBDIVISIONS = TUNING.defaultSubdivisions;
 
 // Expand the flat, code-friendly form into the nested params the builders use, folding in the
-// fixed structural constants and the externally-supplied mesh resolution.
+// fixed structural constants (TUNING) and the externally-supplied mesh resolution.
 function formToParams(form: TreeForm, subdivisions: number): TreeParams {
   return {
     seed: form.seed,
@@ -80,9 +75,9 @@ function formToParams(form: TreeForm, subdivisions: number): TreeParams {
     radiusScale: form.radiusScale,
     tipScale: form.tipScale,
     subdivisions,
-    levelDensity: [...FIXED_PARAMS.levelDensity],
+    levelDensity: [...TUNING.levelDensity],
     branchLeanAngles: [form.branchLean1, form.branchLean2, form.branchLean3],
-    rootLeanAngles: [...FIXED_PARAMS.rootLeanAngles],
+    rootLeanAngles: [...TUNING.rootLeanAngles],
     rootRadius: form.rootRadius,
     rootHeight: form.rootHeight,
     rootLength: form.rootLength,
@@ -94,22 +89,23 @@ function formToParams(form: TreeForm, subdivisions: number): TreeParams {
     trunkCoilTurns: form.trunkCoilTurns,
     trunkCoilAmount: form.trunkCoilAmount,
     trunkCoilBias: form.trunkCoilBias,
+    rootCoilTurns: form.rootCoilTurns,
+    rootCoilAmount: form.rootCoilAmount,
+    rootCoilBias: form.rootCoilBias,
   };
 }
 
-const TUBE_OPACITY = 0.35;
-const LINEAR_TAPER: CubicBezierCurve = [0.33, 0.33, 0.66, 0.66];
-// Subdivisions value at which the per-level densities apply as-is (and discs are 16-gons).
-const SUBDIVISION_REF = 16;
-const MIN_SUBDIVISIONS = 3;
-// A limb's start radius is capped to this fraction of the parent's radius at the branch point,
-// so children are always visibly thinner than the disc they emerge from.
-const BRANCH_RADIUS_RATIO = 0.75;
+// Local aliases for the generation tuning constants (single source of truth: tree-ranges.ts TUNING).
+const TUBE_OPACITY = TUNING.tubeOpacity;
+const LINEAR_TAPER: CubicBezierCurve = TUNING.taperCurve;
+const SUBDIVISION_REF = TUNING.subdivisionRef;
+const MIN_SUBDIVISIONS = TUNING.minSubdivisions;
+const BRANCH_RADIUS_RATIO = TUNING.branchRadiusRatio;
 
 const TRUNK_ID = "trunk";
-const TRUNK_COLOR = 0x8a6a4f; // brown
-const BRANCH_COLOR = 0x6abf5a; // green
-const ROOT_COLOR = 0xd98a3d; // amber
+const TRUNK_COLOR = TUNING.colors.trunk;
+const BRANCH_COLOR = TUNING.colors.branch;
+const ROOT_COLOR = TUNING.colors.root;
 
 // Per-group recipe shared by every level of a limb system (branches or roots).
 type LimbConfig = {
@@ -124,7 +120,7 @@ type LimbConfig = {
   modifiers: () => ModifierDocument[]; // fresh objects per limb
 };
 
-const SUB_FAN = 0.9; // half-angle (rad) sub-limbs fan around their parent's heading
+const SUB_FAN = TUNING.subFan; // half-angle (rad) sub-limbs fan around their parent's heading
 
 // Deterministic PRNG (mulberry32): one stream per generation, so a given seed reproduces the
 // exact same tree. Consumed in a fixed traversal order by the builders below.
@@ -187,7 +183,7 @@ function makeLimb(
         [0, 0, 0],
         [
           Math.cos(azimuth) * length,
-          config.verticalSign * length * 0.5,
+          config.verticalSign * length * TUNING.limbRise,
           Math.sin(azimuth) * length,
         ],
       ],
@@ -246,9 +242,9 @@ function addSubLimbs(
 function footAnchorMask(): ModifierMask {
   return {
     range: { min: 0, max: 1 },
-    fadeIn: 0.08,
+    fadeIn: TUNING.masks.footAnchorFadeIn,
     fadeOut: 0,
-    curve: [0.5, 0, 0.5, 1],
+    curve: TUNING.masks.easeCurve,
   };
 }
 
@@ -257,34 +253,41 @@ function footAnchorMask(): ModifierMask {
 // coil's reconstruction rebuilds just its 0.6–1 body, and the gnarled shank is coil's unchanged pre-span.
 // Hard edges (no fade) keep coil on its exact-spiral path for a crisply-nested tip.
 function rootShankMask(): ModifierMask {
-  return { range: { min: 0, max: 0.6 }, fadeIn: 0, fadeOut: 0, curve: [0.5, 0, 0.5, 1] };
+  return {
+    range: { min: 0, max: TUNING.masks.rootScrollStart },
+    fadeIn: 0,
+    fadeOut: 0,
+    curve: TUNING.masks.easeCurve,
+  };
 }
 
 function rootScrollMask(): ModifierMask {
-  return { range: { min: 0.6, max: 1 }, fadeIn: 0, fadeOut: 0, curve: [0.5, 0, 0.5, 1] };
+  return {
+    range: { min: TUNING.masks.rootScrollStart, max: 1 },
+    fadeIn: 0,
+    fadeOut: 0,
+    curve: TUNING.masks.easeCurve,
+  };
 }
 
 // The trunk's crown coil acts on just the top 20% (s 0.8–1), curling the tip into a scroll while the
 // trunk below is untouched. Hard edges keep coil on its exact-spiral path.
 function trunkCrownMask(): ModifierMask {
-  return { range: { min: 0.8, max: 1 }, fadeIn: 0, fadeOut: 0, curve: [0.5, 0, 0.5, 1] };
+  return {
+    range: { min: TUNING.masks.trunkCrownStart, max: 1 },
+    fadeIn: 0,
+    fadeOut: 0,
+    curve: TUNING.masks.easeCurve,
+  };
 }
 
 // The trunk: a single leader from the ground to the tip, gnarled and twisted. Its base point
 // stays anchored at the origin (smooth pins endpoints; gnarl/twist fade in from the foot).
 function buildTrunk(params: TreeParams, rng: Rng): GraphLineDocument {
   const modifiers: ModifierDocument[] = [
-      { type: "smooth", params: { mode: "laplacian", segments: 24 } },
-      {
-        type: "gnarl",
-        mask: footAnchorMask(),
-        params: { amount: 1, amplitude: 0.18, cycles: 1.6 },
-      },
-      {
-        type: "twist",
-        mask: footAnchorMask(),
-        params: { amount: 0.6, radius: 0.06, turns: 1 },
-      },
+      { type: "smooth", params: { ...TUNING.modifiers.trunk.smooth } },
+      { type: "gnarl", mask: footAnchorMask(), params: { ...TUNING.modifiers.trunk.gnarl } },
+      { type: "twist", mask: footAnchorMask(), params: { ...TUNING.modifiers.trunk.twist } },
       // Curl the crown (top 20%) into a scroll. Params come from the form (randomizable per tree);
       // turns/amount = 0 makes it a no-op. Seeded below so the curl plane varies per tree.
       {
@@ -298,10 +301,10 @@ function buildTrunk(params: TreeParams, rng: Rng): GraphLineDocument {
       },
       // Guarantee the base stands vertical (perpendicular to the floor) regardless of the
       // lean / gnarl / twist above.
-      { type: "footAlign", params: { height: 0.15, amount: 1 } },
-      // Final: keep the line mesh-ready (radius of curvature >= tube radius). `clearance`/`spacing`
-      // are injected from the tube by assignTubes.
-      { type: "discAlign", params: { safety: 1.1 } },
+      { type: "footAlign", params: { ...TUNING.modifiers.trunk.footAlign } },
+      // Final: keep the line mesh-ready (radius of curvature >= the local tapered tube radius).
+      // `clearance`/taper/`spacing` are injected from the tube by assignTubes.
+      { type: "discAlign", params: { safety: TUNING.discAlignSafety } },
   ];
   seedModifiers(modifiers, rng);
 
@@ -310,7 +313,7 @@ function buildTrunk(params: TreeParams, rng: Rng): GraphLineDocument {
     color: TRUNK_COLOR,
     points: [
       [0, 0, 0],
-      [params.height * 0.12, params.height, 0],
+      [params.height * TUNING.trunkLeanX, params.height, 0],
     ],
     modifiers,
   };
@@ -324,12 +327,12 @@ function branchConfig(params: TreeParams): LimbConfig {
     verticalSign: 1,
     leanAngles: params.branchLeanAngles,
     directionPoints: 2,
-    baseLength: params.height * 0.45,
-    lengthScale: 0.6,
+    baseLength: params.height * TUNING.branchLengthFrac,
+    lengthScale: TUNING.limbLengthScale,
     modifiers: () => [
-      { type: "smooth", params: { mode: "laplacian", segments: 12 } },
-      { type: "gnarl", params: { amount: 0.8, amplitude: 0.16, cycles: 1.4 } },
-      { type: "discAlign", params: { safety: 1.1 } },
+      { type: "smooth", params: { ...TUNING.modifiers.branch.smooth } },
+      { type: "gnarl", params: { ...TUNING.modifiers.branch.gnarl } },
+      { type: "discAlign", params: { safety: TUNING.discAlignSafety } },
     ],
   };
 }
@@ -400,12 +403,20 @@ function rootConfig(params: TreeParams): LimbConfig {
     leanAngles: params.rootLeanAngles,
     directionPoints: 1,
     baseLength: params.rootLength,
-    lengthScale: 0.6,
+    lengthScale: TUNING.limbLengthScale,
     modifiers: () => [
-      { type: "smooth", params: { mode: "laplacian", segments: 12 } },
-      { type: "gnarl", mask: rootShankMask(), params: { amount: 0.7, amplitude: 0.14, cycles: 1.4 } },
-      { type: "coil", mask: rootScrollMask(), params: { amount: 1, turns: 1.5, bias: 1.4 } },
-      { type: "discAlign", params: { safety: 1.1 } }, // mesh safety: clamp the coil eye to the tube radius
+      { type: "smooth", params: { ...TUNING.modifiers.rootSub.smooth } },
+      { type: "gnarl", mask: rootShankMask(), params: { ...TUNING.modifiers.rootSub.gnarl } },
+      {
+        type: "coil",
+        mask: rootScrollMask(),
+        params: {
+          amount: params.rootCoilAmount,
+          turns: params.rootCoilTurns,
+          bias: params.rootCoilBias,
+        },
+      },
+      { type: "discAlign", params: { safety: TUNING.discAlignSafety } }, // mesh safety: clamp bends to the local tapered tube radius
     ],
   };
 }
@@ -437,7 +448,7 @@ function buildBranches(
   return { lines, joints };
 }
 
-const ROOT_STEPS = 9; // authored polyline samples per root (before smooth)
+const ROOT_STEPS = TUNING.rootSteps; // authored polyline samples per root (before smooth)
 
 // Main roots attach low on the trunk and flare outward + down. Their shape is authored entirely
 // in the points (down angle + down curve); only `smooth` rounds/densifies it. Count is how many
@@ -465,13 +476,22 @@ function buildRoots(
     const id = `root-${index}`;
 
     // smooth lays down the base segmentation; gnarl gnarls the shank (0–60%), coil curls the tip
-    // (60–100%) into a scroll. discAlign runs LAST purely as mesh safety: it clamps the tight coil eye's
-    // curvature to >= the tube radius so the tube can't self-intersect. Seeded per-root so each differs.
+    // (60–100%) into a scroll. discAlign runs LAST purely as mesh safety: it clamps bend curvature
+    // to >= the LOCAL tapered tube radius so the tube can't self-intersect — at the thin tip that
+    // floor is small, so the coil eye keeps its tight windings. Seeded per-root so each differs.
     const modifiers: ModifierDocument[] = [
-      { type: "smooth", params: { mode: "laplacian", segments: 32, strength: 0.3 } },
-      { type: "gnarl", mask: rootShankMask(), params: { amount: 0.7, amplitude: 0.14, cycles: 1.4 } },
-      { type: "coil", mask: rootScrollMask(), params: { amount: 1, turns: 2, bias: 1.4 } },
-      { type: "discAlign", params: { safety: 1.1 } },
+      { type: "smooth", params: { ...TUNING.modifiers.rootMain.smooth } },
+      { type: "gnarl", mask: rootShankMask(), params: { ...TUNING.modifiers.rootMain.gnarl } },
+      {
+        type: "coil",
+        mask: rootScrollMask(),
+        params: {
+          amount: params.rootCoilAmount,
+          turns: params.rootCoilTurns,
+          bias: params.rootCoilBias,
+        },
+      },
+      { type: "discAlign", params: { safety: TUNING.discAlignSafety } },
     ];
     seedModifiers(modifiers, rng);
 
@@ -583,10 +603,17 @@ function assignTubes(
     };
 
     // Feed the disc-align modifier the tube it must keep clear of: discs space ~1/density apart,
-    // and the curvature limit uses the (max) tube radius as the clearance.
+    // and the curvature limit follows the tube's taper (base radius → tip radius along s), so a
+    // thin tip is allowed the tight bends its local radius permits (e.g. the coil's scroll eye).
     const discAlign = line.modifiers?.find((modifier) => modifier.type === "discAlign");
     if (discAlign) {
-      discAlign.params = { ...discAlign.params, clearance: radius, spacing: 1 / density };
+      discAlign.params = {
+        ...discAlign.params,
+        clearance: radius,
+        clearanceTipScale: params.tipScale,
+        clearanceCurve: [...LINEAR_TAPER],
+        spacing: 1 / density,
+      };
     }
   }
 }

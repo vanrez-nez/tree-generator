@@ -21,6 +21,7 @@ export type FieldSpec = {
   min: number;
   max: number;
   step: number;
+  default: number;
   randMin: number; // resolved random window (defaults to [min, max])
   randMax: number;
 };
@@ -34,39 +35,16 @@ export const FIELDS: FieldSpec[] = (
   min: range.min,
   max: range.max,
   step: range.step,
+  default: range.default,
   randMin: "randMin" in range ? range.randMin : range.min,
   randMax: "randMax" in range ? range.randMax : range.max,
 }));
 
-// Current "default tree" expressed as a form. Every value sits exactly on its field's grid.
-export const DEFAULT_FORM: TreeForm = {
-  seed: 1,
-  height: 4,
-  branchCount: 3,
-  branchLevels: 3,
-  branchL2: 2,
-  branchL3: 1,
-  rootLevels: 1,
-  rootL2: 2,
-  rootL3: 1,
-  trunkRadius: 0.45,
-  radiusScale: 0.6,
-  tipScale: 0.12,
-  branchLean1: 30,
-  branchLean2: 60,
-  branchLean3: 70,
-  rootRadius: 0.53,
-  rootHeight: 0.03,
-  rootLength: 1.6,
-  rootDownAngle: 0,
-  rootDownCurve: 0,
-  maxRoots: 8,
-  rootSeparation: 0.6,
-  rootLSmooth: 0.5,
-  trunkCoilTurns: 0.5,
-  trunkCoilAmount: 1,
-  trunkCoilBias: 1.4,
-};
+// The "default tree" — one value per field, DERIVED from each field's `default` in tree-ranges.ts
+// so the default lives on the same line as its range and can never drift out of sync with it.
+export const DEFAULT_FORM: TreeForm = Object.fromEntries(
+  FIELDS.map((field) => [field.key, field.default]),
+) as TreeForm;
 
 const ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const BASE = 62n;

@@ -548,6 +548,11 @@ export function setupTweakpane({
     addFormBinding(container, "rootDownAngle", "down angle");
     addFormBinding(container, "rootDownCurve", "down curve");
     addFormBinding(container, "maxRoots", "max roots");
+
+    const rootCoil = container.addFolder({ title: "Root coil", expanded: false });
+    addFormBinding(rootCoil, "rootCoilTurns", "turns");
+    addFormBinding(rootCoil, "rootCoilAmount", "amount");
+    addFormBinding(rootCoil, "rootCoilBias", "bias");
   }
 
   function buildMeshControls(container: ContainerApi): void {
