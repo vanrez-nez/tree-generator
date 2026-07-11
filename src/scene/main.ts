@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import type { MeshStandardNodeMaterial } from "three/webgpu";
 import {
   attribute,
   mat3,
@@ -113,12 +114,12 @@ export class MainScene {
     this.scene.add(this.mesher.object);
     this.loadTree();
 
-    this.mesher.setSurfaceMaterial(this.treeMaterial.material);
+    this.mesher.setSurfaceMaterial(this.treeNodeMaterial());
     this.treeMaterial.surface.onRebuilt(() => {
       // The runtime's wire() just rebuilt the stock channel nodes — layer the seam cross-fade back
       // on top before handing the material to the mesh.
       this.applySeamBlend();
-      this.mesher.setSurfaceMaterial(this.treeMaterial.material);
+      this.mesher.setSurfaceMaterial(this.treeNodeMaterial());
     });
 
     // Same light DIRECTION as before (the old (2,2,3) ×4), pushed out so it sits well above the tree top —
@@ -135,19 +136,19 @@ export class MainScene {
     this.setFloorTiling(6);
     this.scene.add(this.floorPlane);
     this.floorMaterial.surface.onRebuilt(() => {
-      this.floorPlane.material = this.floorMaterial.material;
+      this.floorPlane.material = this.floorMaterial.getNodeMaterial();
     });
 
     // Root collar: dirt mounds around the tree base, on the dedicated collar material. It sits at
     // y = 0 (0.01 above the floor plane → no z-fighting), catches the tree's baked shadow, and casts
     // none itself (the mounds are low; avoids a VSM/alpha-caster pass). Its geometry is built lazily
     // in update()'s rebuild block once the graph has resolved.
-    this.rootCollar = new RootCollar(this.collarMaterial.material);
+    this.rootCollar = new RootCollar(this.collarMaterial.getNodeMaterial());
     this.rootCollar.mesh.receiveShadow = true;
     this.rootCollar.mesh.castShadow = false;
     this.rootCollar.mesh.position.y = 0;
     this.scene.add(this.rootCollar.mesh);
-    this.collarMaterial.surface.onRebuilt(() => this.rootCollar.setMaterial(this.collarMaterial.material));
+    this.collarMaterial.surface.onRebuilt(() => this.rootCollar.setMaterial(this.collarMaterial.getNodeMaterial()));
     // Bleed the tree bark into the collar at the root seam: point the collar at the tree's baked
     // base-colour texture (sampled at the tree's world-space triplanar scale/sharpness), and re-apply
     // the mix whenever the tree material re-bakes (its render-target texture can change).
@@ -172,7 +173,7 @@ export class MainScene {
     geometry.rotateX(-Math.PI / 2); // lie flat on the XZ ground plane (faces +Y)
     const vertexCount = geometry.getAttribute("position").count;
     geometry.setAttribute("vertexAo", new THREE.Float32BufferAttribute(new Float32Array(vertexCount).fill(1), 1));
-    const mesh = new THREE.Mesh(geometry, this.floorMaterial.material);
+    const mesh = new THREE.Mesh(geometry, this.floorMaterial.getNodeMaterial());
     mesh.name = "floor";
     mesh.receiveShadow = true; // catches the tree's baked shadow
     mesh.position.y = -0.01; // just under the debug grid to avoid z-fighting
@@ -392,13 +393,19 @@ export class MainScene {
   // weight: at the band's edges the blend equals the neighbouring faces exactly, so the chart cut
   // at branch junctions disappears into a band-tall fade. Everywhere else uvBlend is 0 and the
   // result matches the stock wiring (modulo the extra fetch).
+  // The runtime exposes the broad NodeMaterial type, but the tree document's material type is
+  // standard/physical, so the standard node slots (roughnessNode, metalnessNode, ...) exist.
+  private treeNodeMaterial(): MeshStandardNodeMaterial {
+    return this.treeMaterial.getNodeMaterial() as MeshStandardNodeMaterial;
+  }
+
   // Must re-run after every runtime wire() (rebuilds, triplanar toggle) since that restores the
   // stock nodes. Skipped in triplanar mode (world-space sampling has no UV seams) and on the live
   // backend. Parallax relief is not carried through this path (parallaxScale stays 0 here).
   private applySeamBlend(): void {
     const surface = this.treeMaterial.surface;
     if (this.treeTriplanar || surface.getBackend() !== "offline") return;
-    const material = this.treeMaterial.material;
+    const material = this.treeNodeMaterial();
     const present = surface.presentChannels();
 
     // The TSL typings can't follow dynamically-typed attribute() nodes — same any-escape the
@@ -414,11 +421,11 @@ export class MainScene {
     };
 
     const baseColor = present.has("baseColor") ? dual("baseColor") : null;
-    material.colorNode = baseColor ? baseColor.mul(surface.colorTint) : null;
+    material.colorNode = baseColor;
     const roughness = present.has("roughness") ? dual("roughness") : null;
-    material.roughnessNode = roughness ? roughness.r.mul(surface.roughnessFactor) : null;
+    material.roughnessNode = roughness ? roughness.r : null;
     const metallic = present.has("metallic") ? dual("metallic") : null;
-    material.metalnessNode = metallic ? metallic.r.mul(surface.metalnessFactor) : null;
+    material.metalnessNode = metallic ? metallic.r : null;
     const vertexAo = attribute("vertexAo", "float");
     const occlusion = present.has("ambientOcclusion") ? dual("ambientOcclusion") : null;
     material.aoNode = occlusion ? occlusion.r.mul(vertexAo) : vertexAo;
